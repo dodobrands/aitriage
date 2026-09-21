@@ -36,6 +36,9 @@ type Baseline struct {
 
 // Finding is a single baselined finding with enough info to reconstruct context.
 type Finding struct {
+	// Source names the scanner that reported it. Absent in version "1" files,
+	// where every entry came from the built-in engine.
+	Source   string `json:"source,omitempty"`
 	RuleID   string `json:"rule_id"`
 	File     string `json:"file"`
 	Line     int    `json:"line,omitempty"`
@@ -56,18 +59,27 @@ func Fingerprint(r core.CheckResult) string {
 
 // ── Create / Load / Save ─────────────────────────────────────────────────────
 
-// New creates a baseline from a set of scan findings.
-func New(results []core.CheckResult) *Baseline {
+// newEmpty builds an empty baseline stamped with the current time.
+func newEmpty() *Baseline {
 	now := time.Now().UTC()
-	b := &Baseline{
+	return &Baseline{
 		Version:   Version,
 		CreatedAt: now,
 		UpdatedAt: now,
-		Findings:  make(map[string]Finding, len(results)),
+		Findings:  map[string]Finding{},
 	}
+}
+
+// New creates a baseline from built-in engine results.
+//
+// Deprecated: use NewFromItems, which accepts findings from every scanner. This
+// remains for callers that only have core results.
+func New(results []core.CheckResult) *Baseline {
+	b := newEmpty()
 	for _, r := range results {
 		fp := Fingerprint(r)
 		b.Findings[fp] = Finding{
+			Source:   "core",
 			RuleID:   r.ID,
 			File:     r.File,
 			Line:     r.Line,

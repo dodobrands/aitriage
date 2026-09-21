@@ -1,4 +1,4 @@
-package handlers
+package artifacts
 
 import (
 	"context"
@@ -31,11 +31,11 @@ func productFindings(product string) []models.Finding {
 }
 
 func TestReportCoversOnlyTheSelectedRepository(t *testing.T) {
-	billing := artifactScope{ProductID: 1, ProductName: "billing", RepoPath: "/srv/billing"}
+	billing := Scope{ProductID: 1, ProductName: "billing", RepoPath: "/srv/billing"}
 
-	doc, err := renderArtifact(context.Background(), formatSARIF, billing, productFindings("billing"))
+	doc, err := Render(context.Background(), FormatSARIF, billing, productFindings("billing"))
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 
 	var log struct {
@@ -60,16 +60,16 @@ func TestReportCoversOnlyTheSelectedRepository(t *testing.T) {
 }
 
 func TestArtifactFilenamesDistinguishRepositories(t *testing.T) {
-	billing := artifactScope{ProductID: 1, ProductName: "billing"}
-	shop := artifactScope{ProductID: 2, ProductName: "shop"}
+	billing := Scope{ProductID: 1, ProductName: "billing"}
+	shop := Scope{ProductID: 2, ProductName: "shop"}
 
-	a, err := renderArtifact(context.Background(), formatSARIF, billing, productFindings("billing"))
+	a, err := Render(context.Background(), FormatSARIF, billing, productFindings("billing"))
 	if err != nil {
-		t.Fatalf("renderArtifact(billing): %v", err)
+		t.Fatalf("Render(billing): %v", err)
 	}
-	b, err := renderArtifact(context.Background(), formatSARIF, shop, productFindings("shop"))
+	b, err := Render(context.Background(), FormatSARIF, shop, productFindings("shop"))
 	if err != nil {
-		t.Fatalf("renderArtifact(shop): %v", err)
+		t.Fatalf("Render(shop): %v", err)
 	}
 
 	if !strings.Contains(a.Filename, "billing") || !strings.Contains(b.Filename, "shop") {
@@ -78,12 +78,12 @@ func TestArtifactFilenamesDistinguishRepositories(t *testing.T) {
 }
 
 func TestAllProductsScopeIsLabelledExplicitly(t *testing.T) {
-	all := artifactScope{AllProducts: true}
+	all := Scope{AllProducts: true}
 
-	doc, err := renderArtifact(context.Background(), formatExecutive, all,
+	doc, err := Render(context.Background(), FormatExecutive, all,
 		append(productFindings("billing"), productFindings("shop")...))
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 
 	// Merging repositories stays possible, but the document must say so rather
@@ -91,7 +91,7 @@ func TestAllProductsScopeIsLabelledExplicitly(t *testing.T) {
 	if !strings.Contains(string(doc.Body), "all products") {
 		t.Error("a multi-repository report does not state that it covers all products")
 	}
-	if !strings.Contains(all.slug(), "all-products") {
-		t.Errorf("slug = %q; a merged report must be distinguishable by filename", all.slug())
+	if !strings.Contains(all.Slug(), "all-products") {
+		t.Errorf("slug = %q; a merged report must be distinguishable by filename", all.Slug())
 	}
 }

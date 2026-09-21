@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/models"
+	"github.com/dodobrands/aitriage/internal/report/artifacts"
 	"github.com/dodobrands/aitriage/internal/server/repositories"
 	"github.com/dodobrands/aitriage/internal/server/utils"
 )
@@ -53,7 +54,7 @@ func (h *ReportHandler) HandleExecutiveReport(w http.ResponseWriter, r *http.Req
 		TotalFindings: len(findings),
 		BySeverity:    make(map[string]int),
 		ByStatus:      make(map[string]int),
-		Scope:         scope.label(),
+		Scope:         scope.Label(),
 		RepoPath:      scope.RepoPath,
 	}
 	if !scope.AllProducts {
@@ -65,9 +66,9 @@ func (h *ReportHandler) HandleExecutiveReport(w http.ResponseWriter, r *http.Req
 		summary.BySeverity[f.Severity]++
 		summary.ByStatus[f.Status]++
 		switch {
-		case isSuppressed(f):
+		case artifacts.IsSuppressed(f):
 			summary.Suppressed++
-		case needsReview(f):
+		case artifacts.NeedsReview(f):
 			summary.NeedsReview++
 			summary.Open++
 		default:
@@ -79,8 +80,8 @@ func (h *ReportHandler) HandleExecutiveReport(w http.ResponseWriter, r *http.Req
 	// severity histogram: a histogram cannot be acted on or reviewed.
 	if r.URL.Query().Get("format") == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment;filename=aitriage-%s.csv", scope.slug()))
-		_, _ = w.Write(renderCSV(findings))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment;filename=aitriage-%s.csv", scope.Slug()))
+		_, _ = w.Write(artifacts.RenderCSV(findings))
 		return
 	}
 
@@ -183,32 +184,32 @@ func (h *ReportHandler) HandleListReportHistory(w http.ResponseWriter, r *http.R
 // artifact covers plus the findings inside it. An empty value means every
 // product, which stays available but is no longer the silent default of a
 // report a team is about to hand to a reviewer.
-func (h *ReportHandler) resolveScope(ctx context.Context, rawProductID string) (artifactScope, []models.Finding, error) {
+func (h *ReportHandler) resolveScope(ctx context.Context, rawProductID string) (artifacts.Scope, []models.Finding, error) {
 	raw := strings.TrimSpace(rawProductID)
 	if raw == "" || raw == "all" {
 		findings, err := h.findingRepo.ListAll(ctx)
 		if err != nil {
-			return artifactScope{}, nil, err
+			return artifacts.Scope{}, nil, err
 		}
-		return artifactScope{AllProducts: true}, findings, nil
+		return artifacts.Scope{AllProducts: true}, findings, nil
 	}
 
 	productID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return artifactScope{}, nil, fmt.Errorf("invalid product_id %q", rawProductID)
+		return artifacts.Scope{}, nil, fmt.Errorf("invalid product_id %q", rawProductID)
 	}
 
 	product, err := h.productRepo.GetByID(ctx, productID)
 	if err != nil || product == nil {
-		return artifactScope{}, nil, fmt.Errorf("product %d not found", productID)
+		return artifacts.Scope{}, nil, fmt.Errorf("product %d not found", productID)
 	}
 
 	findings, err := h.findingRepo.ListByProductID(ctx, productID)
 	if err != nil {
-		return artifactScope{}, nil, err
+		return artifacts.Scope{}, nil, err
 	}
 
-	scope := artifactScope{ProductID: productID, ProductName: product.Name}
+	scope := artifacts.Scope{ProductID: productID, ProductName: product.Name}
 	if product.RepoURL != nil {
 		scope.RepoPath = strings.TrimSpace(*product.RepoURL)
 	}
@@ -240,7 +241,7 @@ func (h *ReportHandler) HandleGenerateReport(w http.ResponseWriter, r *http.Requ
 	if req.Format == "" {
 		req.Format = "sarif"
 	}
-	format, ok := normalizeFormat(req.Format)
+	format, ok := artifacts.NormalizeFormat(req.Format)
 	if !ok {
 		utils.JSONError(w, fmt.Sprintf("unsupported report format %q (use sarif, csv, pdf, cyclonedx or spdx)", req.Format), http.StatusBadRequest)
 		return
@@ -258,12 +259,12 @@ func (h *ReportHandler) HandleGenerateReport(w http.ResponseWriter, r *http.Requ
 
 	// Render once up front so a report is never recorded as READY when it
 	// cannot actually be produced (a missing repository path for an SBOM, say).
-	if _, err := renderArtifact(r.Context(), format, scope, findings); err != nil {
+	if _, err := artifacts.Render(r.Context(), format, scope, findings); err != nil {
 		utils.JSONError(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 
-	reportID, err := h.reportRepo.CreateReport(scope.label(), string(format), "READY", scopeProductID(scope), "")
+	reportID, err := h.reportRepo.CreateReport(scope.Label(), string(format), "READY", scopeProductID(scope), "")
 	if err != nil {
 		utils.JSONError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -279,7 +280,7 @@ func (h *ReportHandler) HandleGenerateReport(w http.ResponseWriter, r *http.Requ
 		"ok":           true,
 		"id":           reportID,
 		"format":       string(format),
-		"scope":        scope.label(),
+		"scope":        scope.Label(),
 		"findings":     len(findings),
 		"download_url": downloadURL,
 	})
@@ -300,7 +301,7 @@ func (h *ReportHandler) HandleDownloadReport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	format, ok := normalizeFormat(report.Format)
+	format, ok := artifacts.NormalizeFormat(report.Format)
 	if !ok {
 		utils.JSONError(w, fmt.Sprintf("report %d has an unsupported format %q", reportID, report.Format), http.StatusUnprocessableEntity)
 		return
@@ -316,7 +317,7 @@ func (h *ReportHandler) HandleDownloadReport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	doc, err := renderArtifact(r.Context(), format, scope, findings)
+	doc, err := artifacts.Render(r.Context(), format, scope, findings)
 	if err != nil {
 		utils.JSONError(w, err.Error(), http.StatusUnprocessableEntity)
 		return
@@ -326,14 +327,14 @@ func (h *ReportHandler) HandleDownloadReport(w http.ResponseWriter, r *http.Requ
 	// The executive document is meant to be read and printed in the browser,
 	// so it opens inline; machine-readable formats download.
 	disposition := "attachment"
-	if format == formatExecutive {
+	if format == artifacts.FormatExecutive {
 		disposition = "inline"
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf("%s;filename=%s", disposition, doc.Filename))
 	_, _ = w.Write(doc.Body)
 }
 
-func scopeProductID(scope artifactScope) *int64 {
+func scopeProductID(scope artifacts.Scope) *int64 {
 	if scope.AllProducts {
 		return nil
 	}

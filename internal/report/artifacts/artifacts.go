@@ -1,4 +1,4 @@
-package handlers
+package artifacts
 
 import (
 	"bytes"
@@ -22,49 +22,49 @@ import (
 // finding. Nothing in this file calls an LLM: a team without an API key must
 // still be able to produce a complete, defensible security report.
 
-// artifactFormat is a normalized report format identifier.
-type artifactFormat string
+// Format is a normalized report format identifier.
+type Format string
 
 const (
-	formatSARIF     artifactFormat = "sarif"
-	formatCSV       artifactFormat = "csv"
-	formatExecutive artifactFormat = "executive"
-	formatCycloneDX artifactFormat = "cyclonedx"
-	formatSPDX      artifactFormat = "spdx"
+	FormatSARIF     Format = "sarif"
+	FormatCSV       Format = "csv"
+	FormatExecutive Format = "executive"
+	FormatCycloneDX Format = "cyclonedx"
+	FormatSPDX      Format = "spdx"
 )
 
-// normalizeFormat maps user-supplied format names onto the supported set.
+// NormalizeFormat maps user-supplied format names onto the supported set.
 // "pdf" maps to the print-ready executive document: AITriage does not embed a
 // PDF engine, and the browser's own "Print to PDF" produces a better document
 // than a hand-rolled one.
-func normalizeFormat(value string) (artifactFormat, bool) {
+func NormalizeFormat(value string) (Format, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "sarif":
-		return formatSARIF, true
+		return FormatSARIF, true
 	case "csv":
-		return formatCSV, true
+		return FormatCSV, true
 	case "pdf", "executive", "html":
-		return formatExecutive, true
+		return FormatExecutive, true
 	case "cyclonedx", "cdx":
-		return formatCycloneDX, true
+		return FormatCycloneDX, true
 	case "spdx":
-		return formatSPDX, true
+		return FormatSPDX, true
 	default:
 		return "", false
 	}
 }
 
 // artifact is a rendered report ready to be written to an HTTP response.
-type artifact struct {
+type Artifact struct {
 	ContentType string
 	Filename    string
 	Body        []byte
 }
 
-// isSuppressed reports whether a finding must not be counted as an open issue.
+// IsSuppressed reports whether a finding must not be counted as an open issue.
 // It mirrors the health-check semantics: false positives, accepted risks and
 // closed items are context, not outstanding work.
-func isSuppressed(f models.Finding) bool {
+func IsSuppressed(f models.Finding) bool {
 	switch strings.ToLower(strings.TrimSpace(f.Status)) {
 	case "false_positive", "risk_accepted", "resolved", "closed", "mitigated":
 		return true
@@ -72,11 +72,11 @@ func isSuppressed(f models.Finding) bool {
 	return f.RiskAccepted
 }
 
-// needsReview reports whether a finding was never triaged to a verdict. These
+// NeedsReview reports whether a finding was never triaged to a verdict. These
 // are the findings that keep a gate red even when nothing is confirmed, so
 // every artifact states their number explicitly.
-func needsReview(f models.Finding) bool {
-	if isSuppressed(f) {
+func NeedsReview(f models.Finding) bool {
+	if IsSuppressed(f) {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(f.Status)) {
@@ -86,17 +86,17 @@ func needsReview(f models.Finding) bool {
 	return true
 }
 
-// artifactScope describes exactly which findings an artifact covers, so the
+// Scope describes exactly which findings an artifact covers, so the
 // document itself can state its own boundary instead of leaving the reader to
 // guess whether it is one repository or all of them.
-type artifactScope struct {
+type Scope struct {
 	ProductID   int64
 	ProductName string
 	RepoPath    string
 	AllProducts bool
 }
 
-func (s artifactScope) label() string {
+func (s Scope) Label() string {
 	if s.AllProducts {
 		return "all products"
 	}
@@ -106,7 +106,7 @@ func (s artifactScope) label() string {
 	return s.ProductName
 }
 
-func (s artifactScope) slug() string {
+func (s Scope) Slug() string {
 	if s.AllProducts {
 		return "all-products"
 	}
@@ -158,37 +158,37 @@ func (c severityCounts) total() int {
 	return c.Critical + c.High + c.Medium + c.Low + c.Info
 }
 
-// renderArtifact produces the requested document for the given scope.
-func renderArtifact(ctx context.Context, format artifactFormat, scope artifactScope, findings []models.Finding) (artifact, error) {
+// Render produces the requested document for the given scope.
+func Render(ctx context.Context, format Format, scope Scope, findings []models.Finding) (Artifact, error) {
 	stamp := time.Now().UTC().Format("20060102-150405")
-	base := fmt.Sprintf("aitriage-%s-%s", scope.slug(), stamp)
+	base := fmt.Sprintf("aitriage-%s-%s", scope.Slug(), stamp)
 
 	switch format {
-	case formatSARIF:
+	case FormatSARIF:
 		body, err := renderSARIF(scope, findings)
 		if err != nil {
-			return artifact{}, err
+			return Artifact{}, err
 		}
-		return artifact{ContentType: "application/sarif+json", Filename: base + ".sarif.json", Body: body}, nil
+		return Artifact{ContentType: "application/sarif+json", Filename: base + ".sarif.json", Body: body}, nil
 
-	case formatCSV:
-		return artifact{ContentType: "text/csv; charset=utf-8", Filename: base + ".csv", Body: renderCSV(findings)}, nil
+	case FormatCSV:
+		return Artifact{ContentType: "text/csv; charset=utf-8", Filename: base + ".csv", Body: RenderCSV(findings)}, nil
 
-	case formatExecutive:
-		return artifact{ContentType: "text/html; charset=utf-8", Filename: base + ".html", Body: renderExecutiveHTML(scope, findings)}, nil
+	case FormatExecutive:
+		return Artifact{ContentType: "text/html; charset=utf-8", Filename: base + ".html", Body: renderExecutiveHTML(scope, findings)}, nil
 
-	case formatCycloneDX, formatSPDX:
+	case FormatCycloneDX, FormatSPDX:
 		return renderSBOM(ctx, format, scope, base)
 
 	default:
-		return artifact{}, fmt.Errorf("unsupported report format: %s", format)
+		return Artifact{}, fmt.Errorf("unsupported report format: %s", format)
 	}
 }
 
 // renderSARIF emits SARIF 2.1.0 describing the open findings. Suppressed
 // findings are carried with a SARIF suppression rather than dropped, so a
 // reviewer can see what was dismissed and why.
-func renderSARIF(scope artifactScope, findings []models.Finding) ([]byte, error) {
+func renderSARIF(scope Scope, findings []models.Finding) ([]byte, error) {
 	type sarifMessage struct {
 		Text string `json:"text"`
 	}
@@ -284,7 +284,7 @@ func renderSARIF(scope artifactScope, findings []models.Finding) ([]byte, error)
 			}
 			result.Locations = []sarifLocation{loc}
 		}
-		if isSuppressed(f) {
+		if IsSuppressed(f) {
 			justification := strings.ToLower(strings.TrimSpace(f.Status))
 			if f.RiskAcceptedReason != nil && strings.TrimSpace(*f.RiskAcceptedReason) != "" {
 				justification = *f.RiskAcceptedReason
@@ -319,9 +319,9 @@ func sarifLevel(severity string) string {
 	}
 }
 
-// renderCSV emits one row per finding, including triage state, so the sheet can
+// RenderCSV emits one row per finding, including triage state, so the sheet can
 // be handed to a reviewer without further processing.
-func renderCSV(findings []models.Finding) []byte {
+func RenderCSV(findings []models.Finding) []byte {
 	var buf bytes.Buffer
 	// Excel opens UTF-8 CSV correctly only with a BOM; reports are read by
 	// non-technical reviewers, so the BOM is worth the three bytes.
@@ -332,9 +332,9 @@ func renderCSV(findings []models.Finding) []byte {
 	for _, f := range findings {
 		var triage string
 		switch {
-		case isSuppressed(f):
+		case IsSuppressed(f):
 			triage = "suppressed"
-		case needsReview(f):
+		case NeedsReview(f):
 			triage = "needs review"
 		default:
 			triage = "confirmed"
@@ -359,22 +359,22 @@ func renderCSV(findings []models.Finding) []byte {
 // renderSBOM scans the product's working tree to build a dependency inventory.
 // An SBOM describes what the project depends on, which findings alone cannot
 // answer, so this is the one artifact that reads the source tree.
-func renderSBOM(ctx context.Context, format artifactFormat, scope artifactScope, base string) (artifact, error) {
+func renderSBOM(ctx context.Context, format Format, scope Scope, base string) (Artifact, error) {
 	path := strings.TrimSpace(scope.RepoPath)
 	if path == "" {
-		return artifact{}, fmt.Errorf("an SBOM needs the project path, but product %q has no repository path configured", scope.label())
+		return Artifact{}, fmt.Errorf("an SBOM needs the project path, but product %q has no repository path configured", scope.Label())
 	}
 
 	report, err := scanner.Scan(ctx, path, scanner.ScanOptions{})
 	if err != nil {
-		return artifact{}, fmt.Errorf("dependency scan of %s failed: %w", path, err)
+		return Artifact{}, fmt.Errorf("dependency scan of %s failed: %w", path, err)
 	}
 
 	var (
 		body []byte
 		name string
 	)
-	if format == formatCycloneDX {
+	if format == FormatCycloneDX {
 		body, err = sbom.CycloneDX(report, path)
 		name = base + ".cyclonedx.json"
 	} else {
@@ -382,21 +382,21 @@ func renderSBOM(ctx context.Context, format artifactFormat, scope artifactScope,
 		name = base + ".spdx.json"
 	}
 	if err != nil {
-		return artifact{}, err
+		return Artifact{}, err
 	}
-	return artifact{ContentType: "application/json", Filename: name, Body: body}, nil
+	return Artifact{ContentType: "application/json", Filename: name, Body: body}, nil
 }
 
 // renderExecutiveHTML builds a self-contained, print-ready report. It is the
 // document a team hands to a reviewer or a marketplace, so it states its own
 // scope, the triage state of every finding, and what AITriage did not verify.
-func renderExecutiveHTML(scope artifactScope, findings []models.Finding) []byte {
+func renderExecutiveHTML(scope Scope, findings []models.Finding) []byte {
 	var open, suppressed, review severityCounts
 	for _, f := range findings {
 		switch {
-		case isSuppressed(f):
+		case IsSuppressed(f):
 			suppressed.add(f.Severity)
-		case needsReview(f):
+		case NeedsReview(f):
 			review.add(f.Severity)
 			open.add(f.Severity)
 		default:
@@ -417,7 +417,7 @@ func renderExecutiveHTML(scope artifactScope, findings []models.Finding) []byte 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>`)
-	b.WriteString(html.EscapeString("Security Report — " + scope.label()))
+	b.WriteString(html.EscapeString("Security Report — " + scope.Label()))
 	b.WriteString(`</title>
 <style>
   :root { color-scheme: light; }
@@ -452,7 +452,7 @@ func renderExecutiveHTML(scope artifactScope, findings []models.Finding) []byte 
 `)
 
 	fmt.Fprintf(&b, "<h1>Security Report</h1>\n<div class=\"meta\">")
-	fmt.Fprintf(&b, "Scope: <strong>%s</strong>", html.EscapeString(scope.label()))
+	fmt.Fprintf(&b, "Scope: <strong>%s</strong>", html.EscapeString(scope.Label()))
 	if scope.RepoPath != "" {
 		fmt.Fprintf(&b, "<br>Repository: <span class=\"path\">%s</span>", html.EscapeString(scope.RepoPath))
 	}
@@ -506,9 +506,9 @@ func renderExecutiveHTML(scope artifactScope, findings []models.Finding) []byte 
 		for _, f := range ordered {
 			var state string
 			switch {
-			case isSuppressed(f):
+			case IsSuppressed(f):
 				state = "Suppressed (" + html.EscapeString(f.Status) + ")"
-			case needsReview(f):
+			case NeedsReview(f):
 				state = "Needs review"
 			default:
 				state = "Confirmed"

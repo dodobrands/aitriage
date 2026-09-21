@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
-	"github.com/dodobrands/aitriage/internal/scanner"
+	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,11 +22,11 @@ import (
 // honoured everywhere.
 
 type baselineInput struct {
-	Path string `json:"path"`
+	Path string `json:"path,omitempty"`
 	// Action is one of: status (default), create, update, clear.
 	// create and update are the same operation: both record the current scan as
 	// the new starting line. Both are refused under the safe profile.
-	Action string `json:"action"`
+	Action string `json:"action,omitempty"`
 }
 
 type baselineResult struct {
@@ -126,12 +126,13 @@ func baselineStatusFor(path string) baselineResult {
 }
 
 func baselineWrite(ctx context.Context, path, action string) (*mcp.CallToolResult, baselineResult, error) {
-	report, err := scanner.Scan(ctx, path, scanner.ScanOptions{})
-	if err != nil {
-		return nil, baselineResult{}, fmt.Errorf("scan failed: %v", err)
-	}
+	// Every scanner, so the baseline covers what the project actually reports.
+	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
+		ProjectPath: path,
+		RunExternal: true,
+	})
 
-	created := baseline.New(report.Results)
+	created := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
 	if existing, loadErr := baseline.Load(path); loadErr == nil && existing != nil {
 		// Keep the original creation date: it records how long the project has
 		// been operating against a baseline.

@@ -1,4 +1,4 @@
-package handlers
+package artifacts
 
 import (
 	"context"
@@ -27,11 +27,11 @@ func sampleFindings() []models.Finding {
 }
 
 func TestExecutiveReportStatesItsOwnScope(t *testing.T) {
-	scope := artifactScope{ProductID: 7, ProductName: "billing-api", RepoPath: "/srv/billing-api"}
+	scope := Scope{ProductID: 7, ProductName: "billing-api", RepoPath: "/srv/billing-api"}
 
-	doc, err := renderArtifact(context.Background(), formatExecutive, scope, sampleFindings())
+	doc, err := Render(context.Background(), FormatExecutive, scope, sampleFindings())
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 	body := string(doc.Body)
 
@@ -49,11 +49,11 @@ func TestExecutiveReportStatesItsOwnScope(t *testing.T) {
 }
 
 func TestExecutiveReportSeparatesConfirmedFromUnreviewed(t *testing.T) {
-	scope := artifactScope{ProductID: 1, ProductName: "app"}
+	scope := Scope{ProductID: 1, ProductName: "app"}
 
-	doc, err := renderArtifact(context.Background(), formatExecutive, scope, sampleFindings())
+	doc, err := Render(context.Background(), FormatExecutive, scope, sampleFindings())
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 	body := string(doc.Body)
 
@@ -70,14 +70,14 @@ func TestExecutiveReportSeparatesConfirmedFromUnreviewed(t *testing.T) {
 }
 
 func TestExecutiveReportEscapesFindingText(t *testing.T) {
-	scope := artifactScope{ProductID: 1, ProductName: "app"}
+	scope := Scope{ProductID: 1, ProductName: "app"}
 	findings := []models.Finding{
 		{RuleID: "X", Title: `<script>alert(1)</script>`, Severity: "HIGH", FilePath: ptr("a.js")},
 	}
 
-	doc, err := renderArtifact(context.Background(), formatExecutive, scope, findings)
+	doc, err := Render(context.Background(), FormatExecutive, scope, findings)
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 	if strings.Contains(string(doc.Body), "<script>alert(1)</script>") {
 		t.Error("finding text was interpolated into the report without escaping")
@@ -85,11 +85,11 @@ func TestExecutiveReportEscapesFindingText(t *testing.T) {
 }
 
 func TestSARIFCarriesSuppressionsRatherThanDroppingThem(t *testing.T) {
-	scope := artifactScope{ProductID: 1, ProductName: "app", RepoPath: "/srv/app"}
+	scope := Scope{ProductID: 1, ProductName: "app", RepoPath: "/srv/app"}
 
-	doc, err := renderArtifact(context.Background(), formatSARIF, scope, sampleFindings())
+	doc, err := Render(context.Background(), FormatSARIF, scope, sampleFindings())
 	if err != nil {
-		t.Fatalf("renderArtifact: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 
 	var log struct {
@@ -132,7 +132,7 @@ func TestSARIFCarriesSuppressionsRatherThanDroppingThem(t *testing.T) {
 }
 
 func TestCSVRowsCarryTriageState(t *testing.T) {
-	body := string(renderCSV(sampleFindings()))
+	body := string(RenderCSV(sampleFindings()))
 
 	if !strings.HasPrefix(body, "\ufeff") {
 		t.Error("CSV has no UTF-8 BOM; Excel will mangle non-ASCII text")
@@ -145,9 +145,9 @@ func TestCSVRowsCarryTriageState(t *testing.T) {
 }
 
 func TestSBOMWithoutARepositoryPathFailsClearly(t *testing.T) {
-	scope := artifactScope{ProductID: 3, ProductName: "no-path"}
+	scope := Scope{ProductID: 3, ProductName: "no-path"}
 
-	_, err := renderArtifact(context.Background(), formatCycloneDX, scope, nil)
+	_, err := Render(context.Background(), FormatCycloneDX, scope, nil)
 	if err == nil {
 		t.Fatal("an SBOM without a project path must fail rather than emit an empty inventory")
 	}
@@ -159,28 +159,28 @@ func TestSBOMWithoutARepositoryPathFailsClearly(t *testing.T) {
 func TestFormatAliases(t *testing.T) {
 	// The UI offers "PDF"; AITriage embeds no PDF engine and renders a
 	// print-ready document instead, which the browser prints better than we could.
-	for input, want := range map[string]artifactFormat{
-		"SARIF":     formatSARIF,
-		"sarif":     formatSARIF,
-		"pdf":       formatExecutive,
-		"cyclonedx": formatCycloneDX,
-		"cdx":       formatCycloneDX,
-		"spdx":      formatSPDX,
-		"csv":       formatCSV,
+	for input, want := range map[string]Format{
+		"SARIF":     FormatSARIF,
+		"sarif":     FormatSARIF,
+		"pdf":       FormatExecutive,
+		"cyclonedx": FormatCycloneDX,
+		"cdx":       FormatCycloneDX,
+		"spdx":      FormatSPDX,
+		"csv":       FormatCSV,
 	} {
-		got, ok := normalizeFormat(input)
+		got, ok := NormalizeFormat(input)
 		if !ok || got != want {
-			t.Errorf("normalizeFormat(%q) = %q, %v; want %q", input, got, ok, want)
+			t.Errorf("NormalizeFormat(%q) = %q, %v; want %q", input, got, ok, want)
 		}
 	}
-	if _, ok := normalizeFormat("SARIF v2.1.0"); ok {
+	if _, ok := NormalizeFormat("SARIF v2.1.0"); ok {
 		t.Error("a display name must not be accepted as a format id")
 	}
 }
 
 func TestScopeSlugIsFilesystemSafe(t *testing.T) {
-	scope := artifactScope{ProductID: 1, ProductName: "Acme / Billing API (prod)"}
-	slug := scope.slug()
+	scope := Scope{ProductID: 1, ProductName: "Acme / Billing API (prod)"}
+	slug := scope.Slug()
 
 	if strings.ContainsAny(slug, " /()") {
 		t.Errorf("slug %q is not safe for a filename", slug)

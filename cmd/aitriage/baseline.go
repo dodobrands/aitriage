@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
-	"github.com/dodobrands/aitriage/internal/scanner"
+	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
 	"github.com/spf13/cobra"
 )
 
@@ -75,15 +75,15 @@ func runBaselineCreate(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Use '--force' on scan to overwrite.\n\n")
 	}
 
-	// Run scan
+	// Every scanner, not just the built-in engine: on a real project most of the
+	// noise a baseline exists to absorb comes from Semgrep, Trivy and Gitleaks.
 	fmt.Fprintf(os.Stderr, "  Scanning project...\n")
-	report, err := scanner.Scan(ctx, projectPath, scanner.ScanOptions{})
-	if err != nil {
-		return fmt.Errorf("scan failed: %w", err)
-	}
+	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
+		ProjectPath: projectPath,
+		RunExternal: true,
+	})
 
-	// Create baseline from findings
-	b := baseline.New(report.Results)
+	b := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
 
 	if err := baseline.Save(projectPath, b); err != nil {
 		return fmt.Errorf("failed to save baseline: %w", err)
@@ -126,15 +126,18 @@ func runBaselineUpdate(cmd *cobra.Command, args []string) error {
 	// Load existing baseline for comparison
 	prev, _ := baseline.Load(projectPath)
 
-	// Run scan
 	fmt.Fprintf(os.Stderr, "  Scanning project...\n")
-	report, err := scanner.Scan(ctx, projectPath, scanner.ScanOptions{})
-	if err != nil {
-		return fmt.Errorf("scan failed: %w", err)
-	}
+	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
+		ProjectPath: projectPath,
+		RunExternal: true,
+	})
 
-	// Create new baseline
-	b := baseline.New(report.Results)
+	b := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
+	if prev != nil {
+		// Keep the original creation date: it records how long the project has
+		// been operating against a baseline.
+		b.CreatedAt = prev.CreatedAt
+	}
 
 	if err := baseline.Save(projectPath, b); err != nil {
 		return fmt.Errorf("failed to save baseline: %w", err)

@@ -887,6 +887,33 @@ const SecureCoderPanel: React.FC<{
     setBaselineBusy(false);
   }, []);
 
+  // Quick checks: one question at a time, without paying for a full audit.
+  // The AI IDE tools have offered these all along; the Web UI could only run
+  // everything, so people skipped the check entirely.
+  const [checkResult, setCheckResult] = useState<{ check: string; count: number; summary: string } | null>(null);
+  const [checkRunning, setCheckRunning] = useState<string | null>(null);
+
+  const runQuickCheck = useCallback(async (kind: 'nfr' | 'deploy' | 'entropy') => {
+    setCheckRunning(kind);
+    setCheckResult(null);
+    try {
+      const res = await fetch(`/api/check/${kind}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '.' }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setCheckResult({ check: data.check, count: data.count, summary: data.summary });
+      } else {
+        setCheckResult({ check: kind, count: 0, summary: data.error || 'Check failed' });
+      }
+    } catch {
+      setCheckResult({ check: kind, count: 0, summary: 'Could not reach the server' });
+    }
+    setCheckRunning(null);
+  }, []);
+
   useEffect(() => {
     if (expandedCat === 'ignore') fetchIgnored();
     if (expandedCat === 'config') fetchConfig();
@@ -1547,6 +1574,50 @@ const SecureCoderPanel: React.FC<{
                             ))}
                           </div>
                         )}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Quick checks */}
+          <div className="simple-securecoder-menu__section" data-view="checks">
+            <button onClick={() => setExpandedCat(expandedCat === 'checks' ? null : 'checks')} className="simple-securecoder-menu__trigger w-full flex items-center gap-3 px-6 py-3 group" aria-expanded={expandedCat === 'checks'}>
+              <span className={`material-symbols-outlined text-[16px] transition-colors ${expandedCat === 'checks' ? 'text-[var(--accent-color)]' : 'text-[#3f3f46] group-hover:text-[var(--accent-color)]'}`}>bolt</span>
+              <span className="simple-securecoder-menu__label">
+                <strong>{i18n.language?.startsWith('ru') ? 'Быстрые проверки' : 'Quick checks'}</strong>
+                <small>{i18n.language?.startsWith('ru') ? 'без полного аудита' : 'without a full audit'}</small>
+              </span>
+              <span className="material-symbols-outlined">chevron_right</span>
+            </button>
+            <AnimatePresence initial={false}>
+              {expandedCat === 'checks' && (
+                <motion.div initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.1 }} className="simple-securecoder-menu__content overflow-hidden">
+                  <div className="px-6 pb-4 pt-2 space-y-3">
+                    <div className="flex gap-2">
+                      {([
+                        { id: 'nfr' as const, ru: 'Требования', en: 'Requirements', icon: 'checklist' },
+                        { id: 'deploy' as const, ru: 'Инфраструктура', en: 'Infrastructure', icon: 'deployed_code' },
+                        { id: 'entropy' as const, ru: 'История git', en: 'Git history', icon: 'history' },
+                      ]).map(check => (
+                        <button
+                          key={check.id}
+                          onClick={() => void runQuickCheck(check.id)}
+                          disabled={checkRunning !== null}
+                          className="flex-1 py-1.5 bg-[rgba(255,255,255,0.03)] hover:bg-[rgba(255,255,255,0.06)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(255,255,255,0.12)] text-[#f4f4f5] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-[12px]">{check.icon}</span>
+                          {checkRunning === check.id
+                            ? (i18n.language?.startsWith('ru') ? '...' : '...')
+                            : (i18n.language?.startsWith('ru') ? check.ru : check.en)}
+                        </button>
+                      ))}
+                    </div>
+                    {checkResult && (
+                      <div className="text-[11px] leading-relaxed text-[#a1a1aa] border-l-2 border-[var(--accent-color-line)] pl-3">
+                        <strong className="text-[#f4f4f5]">{checkResult.count}</strong> — {checkResult.summary}
                       </div>
                     )}
                   </div>

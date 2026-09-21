@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
-	"github.com/dodobrands/aitriage/internal/scanner"
+	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
 )
 
 // A baseline accepts today's findings as the starting line so the gate judges
@@ -92,13 +92,14 @@ func (s *Server) baselineWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := scanner.Scan(r.Context(), projectPath, scanner.ScanOptions{})
-	if err != nil {
-		jsonError(w, fmt.Sprintf("scan failed: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// Run every scanner that is available, so the baseline covers what the
+	// project actually reports rather than only the built-in engine's share.
+	rich := orchestrator.RunAllScanners(r.Context(), orchestrator.Options{
+		ProjectPath: projectPath,
+		RunExternal: true,
+	})
 
-	created := baseline.New(report.Results)
+	created := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
 	if existing, loadErr := baseline.Load(projectPath); loadErr == nil && existing != nil {
 		// Preserve the original creation date so the record shows how long the
 		// project has been operating against a baseline.

@@ -26,6 +26,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/models"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 	"github.com/dodobrands/aitriage/internal/scanner/deps"
@@ -336,6 +337,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.Handle("/api/reports/generate", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(reportHandler.HandleGenerateReport)))
 	mux.Handle("/api/reports/download/", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(reportHandler.HandleDownloadReport)))
 	mux.Handle("/api/baseline", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleBaseline)))
+	mux.Handle("/api/diff", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleDiff)))
+	mux.Handle("/api/check/", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(s.handleCheck)))
+	mux.Handle("/api/suppressions", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(s.handleSuppressions)))
 
 	mux.Handle("/api/analyze", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleAnalyze)))
 	mux.Handle("/api/pipeline", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handlePipeline)))
@@ -499,12 +503,13 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, fmt.Sprintf("failed to read baseline: %v", loadErr), http.StatusInternalServerError)
 			return
 		}
-		if accepted != nil {
-			filtered := baseline.Filter(rich.Report.Results, accepted)
-			baselinedCount = len(filtered.Baseline)
-			rich.Report.Results = filtered.New
-			orchestrator.RecomputeHealthCheck(&rich)
-		}
+		baselinedCount = orchestrator.ApplyBaseline(&rich, accepted)
+	}
+
+	// Dismissals are always applied: a false positive someone already reviewed
+	// must not come back as an open finding on the next scan.
+	if store, storeErr := suppression.Load(containerPath); storeErr == nil {
+		orchestrator.ApplySuppressions(&rich, store)
 	}
 
 	s.lastResult = &rich

@@ -21,7 +21,7 @@ import (
 
 func seedBaseline(t *testing.T, dir string, results []core.CheckResult) *baseline.Baseline {
 	t.Helper()
-	b := baseline.New(results)
+	b := baseline.NewFromItems(baseline.FromCore(results))
 	if err := baseline.Save(dir, b); err != nil {
 		t.Fatalf("save baseline: %v", err)
 	}
