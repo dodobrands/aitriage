@@ -3,6 +3,7 @@ package suppression
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
@@ -164,6 +165,13 @@ func TestAMissingStoreIsEmptyNotAnError(t *testing.T) {
 }
 
 func TestTheStoreIsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission bits: os.WriteFile reports 0666
+		// whatever mode is requested. Access there is governed by ACLs, which
+		// this assertion cannot express.
+		t.Skip("POSIX permission bits do not apply on Windows")
+	}
+
 	dir := t.TempDir()
 	store := New()
 	if _, _, err := store.Add(item("core", "X", "a", "e"), "false-positive", "", ""); err != nil {
