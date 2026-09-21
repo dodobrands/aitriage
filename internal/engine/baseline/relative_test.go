@@ -13,10 +13,10 @@ import (
 // nothing at all.
 
 func TestPathsAreStoredRelativeToTheProject(t *testing.T) {
-	root := "/home/alice/projects/shop"
+	root := t.TempDir()
 	items := Relativize(root, []Item{
-		{Source: "core", RuleID: "ENTR-17", File: "/home/alice/projects/shop/app/config.php"},
-		{Source: "trivy", RuleID: "CVE-1", File: "/home/alice/projects/shop/composer.lock"},
+		{Source: "core", RuleID: "ENTR-17", File: filepath.Join(root, "app", "config.php")},
+		{Source: "trivy", RuleID: "CVE-1", File: filepath.Join(root, "composer.lock")},
 	})
 
 	for _, item := range items {
@@ -33,7 +33,7 @@ func TestPathsAreStoredRelativeToTheProject(t *testing.T) {
 }
 
 func TestRelativePathLeavesUnusualPathsAlone(t *testing.T) {
-	root := "/home/alice/project"
+	root := t.TempDir()
 
 	// Already relative: nothing to do.
 	if got := RelativePath(root, "app/main.go"); got != "app/main.go" {
@@ -41,13 +41,14 @@ func TestRelativePathLeavesUnusualPathsAlone(t *testing.T) {
 	}
 	// Outside the root: keep it rather than emit ../../.. — a finding is never
 	// dropped or mangled just because its path is unusual.
-	outside := "/etc/passwd"
+	outside := filepath.Join(t.TempDir(), "passwd")
 	if got := RelativePath(root, outside); got != outside {
 		t.Errorf("path outside the root = %q; want it untouched", got)
 	}
 	// No root known: pass through, cleaned.
-	if got := RelativePath("", "/a/b/../c"); got != "/a/c" {
-		t.Errorf("got %q; want /a/c", got)
+	unclean := filepath.Join(root, "a", "b", "..", "c")
+	if got, want := RelativePath("", unclean), filepath.ToSlash(filepath.Clean(unclean)); got != want {
+		t.Errorf("got %q; want %q", got, want)
 	}
 	// Project-level findings carry no file.
 	if got := RelativePath(root, ""); got != "" {
@@ -58,7 +59,8 @@ func TestRelativePathLeavesUnusualPathsAlone(t *testing.T) {
 func TestPathsAreSlashedOnEveryPlatform(t *testing.T) {
 	// The file is committed and read on other systems, so separators must not
 	// depend on who wrote it.
-	got := RelativePath("/home/alice/p", filepath.Join("/home/alice/p", "a", "b", "c.go"))
+	root := t.TempDir()
+	got := RelativePath(root, filepath.Join(root, "a", "b", "c.go"))
 	if got != "a/b/c.go" {
 		t.Errorf("got %q; want a/b/c.go", got)
 	}
@@ -68,8 +70,8 @@ func TestPathsAreSlashedOnEveryPlatform(t *testing.T) {
 // Without the migration below, upgrading would resurface everything a team had
 // already accepted — the worst possible outcome for a baseline.
 func TestBaselineWrittenWithAbsolutePathsStillMatchesAfterUpgrade(t *testing.T) {
-	root := "/home/alice/projects/shop"
-	absolute := Item{Source: "trivy", RuleID: "CVE-1", File: root + "/composer.lock", Evidence: "guzzle 7.8.1"}
+	root := t.TempDir()
+	absolute := Item{Source: "trivy", RuleID: "CVE-1", File: filepath.Join(root, "composer.lock"), Evidence: "guzzle 7.8.1"}
 
 	// A version "2" baseline, as written before the fix.
 	old := NewFromItems([]Item{absolute})
@@ -85,9 +87,9 @@ func TestBaselineWrittenWithAbsolutePathsStillMatchesAfterUpgrade(t *testing.T) 
 }
 
 func TestVersionOneBaselineSurvivesTheRelativePathChange(t *testing.T) {
-	root := "/home/alice/projects/shop"
+	root := t.TempDir()
 	legacyResults := []core.CheckResult{
-		{ID: "ENTR-17", File: root + "/app/config.php", Evidence: "key=abc", Severity: "CRITICAL"},
+		{ID: "ENTR-17", File: filepath.Join(root, "app", "config.php"), Evidence: "key=abc", Severity: "CRITICAL"},
 	}
 	legacy := New(legacyResults) // version "1", absolute paths
 
@@ -99,7 +101,7 @@ func TestVersionOneBaselineSurvivesTheRelativePathChange(t *testing.T) {
 }
 
 func TestCurrentBaselinesNeedNoLegacyLookup(t *testing.T) {
-	root := "/home/alice/projects/shop"
+	root := t.TempDir()
 	relative := Item{Source: "trivy", RuleID: "CVE-1", File: "composer.lock", Evidence: "e"}
 
 	modern := NewFromItems([]Item{relative})
@@ -119,10 +121,10 @@ func TestCurrentBaselinesNeedNoLegacyLookup(t *testing.T) {
 
 // The stored record must not contain anything identifying the machine.
 func TestStoredEntriesCarryNoLocalLayout(t *testing.T) {
-	root := "/home/alice/projects/shop"
+	root := t.TempDir()
 	items := Relativize(root, []Item{
-		{Source: "core", RuleID: "R1", File: root + "/src/a.go"},
-		{Source: "semgrep", RuleID: "R2", File: root + "/web/b.ts"},
+		{Source: "core", RuleID: "R1", File: filepath.Join(root, "src", "a.go")},
+		{Source: "semgrep", RuleID: "R2", File: filepath.Join(root, "web", "b.ts")},
 	})
 
 	b := NewFromItems(items)
