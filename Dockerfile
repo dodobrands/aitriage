@@ -34,17 +34,21 @@ WORKDIR /src
 RUN go mod download github.com/zricethezav/gitleaks/v8@v8.30.1 && \
     cp -a /go/pkg/mod/github.com/zricethezav/gitleaks/v8@v8.30.1/. /src/ && \
     chmod -R u+w /src && \
-    go mod edit -require=golang.org/x/crypto@v0.52.0 && \
+    go mod edit -require=golang.org/x/crypto@v0.55.0 && \
     go mod edit -require=golang.org/x/text@v0.39.0 && \
     go mod tidy && \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -trimpath -ldflags="-s -w -X=github.com/zricethezav/gitleaks/v8/version.Version=v8.30.1" -o /gitleaks .
 
 # Trivy v0.72.0 was released with Go 1.26.4 and oras-go 2.6.0. Rebuilding the
-# exact tagged source on patched Go 1.26.5, oras-go 2.6.2, go-git 5.19.2,
-# x/text 0.39.0, and gRPC-Go 1.82.1
-# removes the fixable CVEs without changing Trivy's scanner version or behavior.
-FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS trivy-builder
+# exact tagged source on a patched toolchain and patched dependencies removes the
+# fixable CVEs without changing Trivy's scanner version or behavior.
+#
+# Every pin below answers a CVE the image gate reported, and each one has to be
+# revisited whenever a new advisory lands — this is the same maintenance that
+# blocked v1.11.1. Current set: Go 1.26.6 (stdlib), x/crypto 0.55.0,
+# x/net 0.56.0, x/mod 0.40.0, gRPC-Go 1.83.1.
+FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS trivy-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
@@ -54,7 +58,10 @@ RUN go mod download github.com/aquasecurity/trivy@v0.72.0 && \
     go mod edit -require=oras.land/oras-go/v2@v2.6.2 && \
     go mod edit -require=github.com/go-git/go-git/v5@v5.19.2 && \
     go mod edit -require=golang.org/x/text@v0.39.0 && \
-    go mod edit -require=google.golang.org/grpc@v1.82.1 && \
+    go mod edit -require=golang.org/x/crypto@v0.55.0 && \
+    go mod edit -require=golang.org/x/net@v0.56.0 && \
+    go mod edit -require=golang.org/x/mod@v0.40.0 && \
+    go mod edit -require=google.golang.org/grpc@v1.83.1 && \
     go mod tidy && \
     GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -trimpath -ldflags="-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.72.0" -o /trivy ./cmd/trivy
