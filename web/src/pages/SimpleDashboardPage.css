@@ -1793,3 +1793,70 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Triage breakdown in the posture strip. Confirmed and unreviewed findings are
+   shown apart so a failing gate with nothing proven explains itself. */
+.simple-posture-strip__triage {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding-left: 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: help;
+}
+
+.simple-posture-strip__triage > span {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--simple-text-muted, #71717a);
+  white-space: nowrap;
+}
+
+.simple-posture-strip__triage strong {
+  color: var(--simple-text-strong, #f4f4f5);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .simple-posture-strip__triage {
+    padding-left: 0;
+    border-left: none;
+  }
+}
+
+/* Honest split between what works without an AI provider and what does not. */
+.simple-ai-offline {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-left: 3px solid rgba(96, 165, 250, 0.7);
+  border-radius: 8px;
+  background: rgba(96, 165, 250, 0.06);
+}
+
+.simple-ai-offline > span.material-symbols-outlined {
+  font-size: 18px;
+  color: #60a5fa;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.simple-ai-offline strong {
+  display: block;
+  font-size: 12px;
+  color: var(--simple-text-strong, #f4f4f5);
+  margin-bottom: 3px;
+}
+
+.simple-ai-offline span:not(.material-symbols-outlined) {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--simple-text-muted, #a1a1aa);
+}

@@ -33,6 +33,13 @@ func trackTriageLLMStages(state *AgentState, inner llm.Client) llm.Client {
 }
 
 func (c *stageUsageClient) Chat(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
+	// Defence in depth: the pipeline refuses a nil client up front, but this
+	// wrapper is also reachable from other callers. A missing provider must
+	// surface as an error, never as a segfault inside a background goroutine.
+	if c == nil || c.inner == nil {
+		return "", llm.Usage{}, ErrNoLLMClient
+	}
+
 	response, usage, err := c.inner.Chat(ctx, messages)
 	c.record(c.stageFor(messages), usage)
 	return response, usage, err

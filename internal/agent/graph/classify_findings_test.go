@@ -507,7 +507,7 @@ func TestClassifyFindingsInvalidCachedFalsePositiveFallsBackToLLM(t *testing.T) 
 	}
 	var usage llm.Usage
 
-	tm, disps, _, stats, err := ClassifyFindingsWithAudit(context.Background(), "", project, findings, mock, &usage, 150)
+	tm, disps, _, stats, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

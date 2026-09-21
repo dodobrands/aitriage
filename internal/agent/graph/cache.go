@@ -35,7 +35,9 @@ import (
 // identity from the CLI/yaml config now overrides the env-derived defaults —
 // pre-v4 namespaces could record "default" provider/model while a specific
 // model produced the verdicts.
-const verdictCacheSchemaVersion = 4
+// v5 adds the output language to the namespace: a cached rationale written in
+// one language must not be served into a run that asked for another.
+const verdictCacheSchemaVersion = 5
 const verdictCacheRulesDigestVersion = "rules-v1"
 
 type verdictCacheKeyContext struct {
@@ -47,6 +49,7 @@ type verdictCacheKeyContext struct {
 	AITriageVersion string   `json:"aitriage_version"`
 	PromptVersion   string   `json:"prompt_version"`
 	RulesDigest     string   `json:"rules_digest"`
+	Language        string   `json:"language"`
 	PolicyProfile   string   `json:"policy_profile"`
 	PolicyFailOn    string   `json:"policy_fail_on"`
 	MinimumScore    int      `json:"minimum_score"`
@@ -77,6 +80,7 @@ func withVerdictCacheLLMIdentity(state *AgentState) verdictCacheOption {
 			ctx.BaseURLHash = hashCacheField(v)
 		}
 		ctx.DisableThinking = state.LLMDisableThinking
+		ctx.Language = prompts.NormalizeLanguage(state.Language)
 	}
 }
 
@@ -324,6 +328,7 @@ func (ctx verdictCacheKeyContext) namespace() string {
 	normalized.BaseURLHash = cacheField(normalized.BaseURLHash)
 	normalized.AITriageVersion = cacheField(normalized.AITriageVersion)
 	normalized.PromptVersion = cacheField(normalized.PromptVersion)
+	normalized.Language = cacheField(normalized.Language)
 	normalized.RulesDigest = cacheField(normalized.RulesDigest)
 	normalized.PolicyProfile = cacheField(normalized.PolicyProfile)
 	normalized.PolicyFailOn = cacheField(normalized.PolicyFailOn)

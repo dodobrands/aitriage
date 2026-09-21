@@ -31,9 +31,9 @@
   advice: "Create .env.example with all required env variables (without values) for documentation."
 
 - id: NFR-ENV-002
-  name: .env Committed to Git
-  severity: CRITICAL
-  check: file_not_exists
+  name: .env Exposed to Git
+  severity: HIGH
+  check: file_tracked_by_git
   pattern: ".env"
-  message: ".env file exists in project root — may be committed to git"
-  advice: "Add .env to .gitignore immediately. Rotate all secrets if it was ever committed."
+  message: ".env is tracked by git or not covered by .gitignore, so its secrets can reach the repository"
+  advice: "Add .env to .gitignore. If it was ever committed, remove it from history and rotate every secret it held."

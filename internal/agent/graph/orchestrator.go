@@ -18,11 +18,21 @@ import (
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
+// ErrNoLLMClient is returned when the pipeline is asked to run without a usable
+// LLM client. Every stage of the graph issues Chat calls, so this is a caller
+// contract violation rather than a recoverable runtime condition — it is
+// reported as a plain error so callers surface it instead of panicking.
+var ErrNoLLMClient = errors.New("no LLM client configured: the SecureCoder pipeline requires an LLM provider")
+
 // Run Orchestrates the full SecureCoder-enhanced pipeline:
 //
 //	enrichFindings → buildThreatModel → runPoCVerification →
 //	computeHealthCheck → generateReport → generateSummary → generateAIFixSpec
 func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
+	if llmClient == nil {
+		return ErrNoLLMClient
+	}
+
 	// Step 0: Gather repository context (reads files from disk, no LLM)
 	fmt.Fprintf(os.Stderr, "📂 Gathering Repository Context...\n")
 	reportRunwayProgress(state, 1, "preparing_context")
@@ -71,9 +81,11 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	fmt.Fprintf(os.Stderr, "🩺 Computing Security Health Check (all sources, FP-aware)...\n")
 	reportRunwayProgress(state, 3, "computing_health_check")
 	computeHealthCheck(state)
-	fmt.Fprintf(os.Stderr, "   ✅ Health Check: %d/100 (%s) — %d active, %d ignored (FP), %d deduped\n",
+	fmt.Fprintf(os.Stderr, "   ✅ Health Check: %d/100 (%s) — %d active (%d confirmed, %d unreviewed), %d ignored (FP), %d deduped\n",
 		state.HealthCheck.Score, state.HealthCheck.Grade,
 		state.HealthCheck.Breakdown.ActiveFindings,
+		state.HealthCheck.Breakdown.ConfirmedFindings,
+		state.HealthCheck.Breakdown.NeedsReviewFindings,
 		state.HealthCheck.Breakdown.IgnoredFindings,
 		state.HealthCheck.Breakdown.DedupedFindings)
 
@@ -266,9 +278,21 @@ func computeHealthCheck(state *AgentState) {
 	// the model and written to artifacts. Score that same inventory so the health
 	// gate cannot count Core/NFR/external aliases as separate vulnerabilities.
 	ignored := make(map[int]bool)
+	// Anything not classified as a confirmed True Positive is unreviewed work.
+	// Tracking it separately lets the gate explain itself instead of reporting
+	// "active findings" next to "0 true positives".
+	unreviewed := make(map[int]bool)
 	for _, d := range state.FindingDispositions {
-		if d.Disposition == "False Positive" && d.FindingIndex >= 0 && d.FindingIndex < len(state.EnrichedFindings) {
+		if d.FindingIndex < 0 || d.FindingIndex >= len(state.EnrichedFindings) {
+			continue
+		}
+		switch d.Disposition {
+		case "False Positive":
 			ignored[d.FindingIndex] = true
+		case "True Positive":
+			// confirmed; neither ignored nor unreviewed
+		default:
+			unreviewed[d.FindingIndex] = true
 		}
 	}
 	ignoredCore := make(map[string]bool)
@@ -285,6 +309,12 @@ func computeHealthCheck(state *AgentState) {
 		}
 	}
 	for i, f := range state.EnrichedFindings {
+		// A listening port describes the machine AITriage ran on, not the code
+		// under audit. Counting it would make a repository's score depend on
+		// what happened to be running on a developer's laptop.
+		if f.Type == "network" {
+			continue
+		}
 		source := strings.TrimSpace(f.Source)
 		if source == "" {
 			source = f.Type
@@ -297,13 +327,18 @@ func computeHealthCheck(state *AgentState) {
 		if !isIgnored && len(f.Origins) == 1 && f.Origins[0].Type == "core" {
 			isIgnored = ignoredCore[hcKey(f.Origins[0].RuleID, f.File, f.Line)]
 		}
+		// With no dispositions at all (a scan that never ran AI triage), every
+		// finding is by definition unreviewed.
+		isUnreviewed := unreviewed[i] || len(state.FindingDispositions) == 0
+
 		in.Findings = append(in.Findings, healthcheck.Finding{
-			Source:   source,
-			Class:    class,
-			Severity: f.Severity,
-			File:     f.File,
-			Line:     f.Line,
-			Ignored:  isIgnored,
+			Source:      source,
+			Class:       class,
+			Severity:    f.Severity,
+			File:        f.File,
+			Line:        f.Line,
+			Ignored:     isIgnored,
+			NeedsReview: isUnreviewed,
 		})
 	}
 
@@ -599,7 +634,7 @@ func buildThreatModel(ctx context.Context, state *AgentState, llmClient llm.Clie
 		repoContextText = state.RepoContext.FormatForLLM(5000) // ~5K tokens for threat model
 	}
 
-	tm, dispositions, audit, cacheStats, err := ClassifyFindingsWithAudit(ctx, repoContextText, state.ProjectPath, state.EnrichedFindings, trackTriageLLMStages(state, llmClient), &state.TotalUsage, GetBatchSize(state), withVerdictCachePolicy(state.Policy), withVerdictCacheLLMIdentity(state))
+	tm, dispositions, audit, cacheStats, err := ClassifyFindingsWithAudit(ctx, repoContextText, state.ProjectPath, state.Language, state.EnrichedFindings, trackTriageLLMStages(state, llmClient), &state.TotalUsage, GetBatchSize(state), withVerdictCachePolicy(state.Policy), withVerdictCacheLLMIdentity(state))
 	state.VerdictCacheStats = cacheStats
 	if err != nil {
 		return err
@@ -628,7 +663,7 @@ func buildThreatModel(ctx context.Context, state *AgentState, llmClient llm.Clie
 // threatModelLLMCall sends a single batch of findings to the LLM and returns the
 // parsed threat model plus the raw (unvalidated) dispositions. Transport errors
 // are wrapped plainly; malformed JSON is wrapped with errThreatModelParse.
-func threatModelLLMCall(ctx context.Context, repoContextText, projectPath string, batch []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) (*ThreatModel, []rawDisposition, error) {
+func threatModelLLMCall(ctx context.Context, repoContextText, projectPath, language string, batch []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) (*ThreatModel, []rawDisposition, error) {
 	findingsJSON, _ := json.MarshalIndent(batch, "", "  ")
 	userPrompt := fmt.Sprintf(prompts.ThreatModelUserPromptTemplate,
 		repoContextText,
@@ -639,7 +674,7 @@ func threatModelLLMCall(ctx context.Context, repoContextText, projectPath string
 
 	messages := []llm.Message{
 		{Role: "system", Content: prompts.ThreatModelSystemPrompt},
-		{Role: "user", Content: userPrompt},
+		{Role: "user", Content: userPrompt + prompts.LocalisationContract(language)},
 	}
 
 	response, u, err := llmClient.Chat(ctx, messages)
@@ -770,7 +805,7 @@ func runPoCVerification(ctx context.Context, state *AgentState, llmClient llm.Cl
 
 	// Phase 5b: verify ALL true positives (deduped, batched, bounded concurrency,
 	// budget-capped) instead of silently dropping everything past the 75th.
-	pocResults, stats, err := verifyPoCs(ctx, tpFindings, trackLLMStage(state, usageStagePoC, llmClient), &state.TotalUsage)
+	pocResults, stats, err := verifyPoCs(ctx, state.Language, tpFindings, trackLLMStage(state, usageStagePoC, llmClient), &state.TotalUsage)
 	state.PoCStats = stats
 	if err != nil {
 		return fmt.Errorf("PoC verification LLM call failed: %w", err)
@@ -904,7 +939,7 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 
 	messages := []llm.Message{
 		{Role: "system", Content: prompts.ReportSystemPrompt},
-		{Role: "user", Content: userPrompt},
+		{Role: "user", Content: userPrompt + prompts.LocalisationContract(state.Language)},
 	}
 
 	response, usage, err := trackLLMStage(state, usageStageReport, llmClient).Chat(ctx, messages)
@@ -1182,7 +1217,7 @@ func generateAIFixSpec(ctx context.Context, state *AgentState, llmClient llm.Cli
 
 	messages := []llm.Message{
 		{Role: "system", Content: prompts.FixSpecSystemPrompt},
-		{Role: "user", Content: userPrompt},
+		{Role: "user", Content: userPrompt + prompts.LocalisationContract(state.Language)},
 	}
 
 	response, usage, err := trackLLMStage(state, usageStageFixSpec, llmClient).Chat(ctx, messages)

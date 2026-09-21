@@ -38,7 +38,7 @@ type PoCStats struct {
 
 // verifyPoCs runs PoC verification over ALL true-positive findings (deduped),
 // returning the collected results. Transport/provider errors are fatal.
-func verifyPoCs(ctx context.Context, tpFindings []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) ([]PoCResult, PoCStats, error) {
+func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) ([]PoCResult, PoCStats, error) {
 	if len(tpFindings) == 0 {
 		return nil, PoCStats{}, nil
 	}
@@ -88,7 +88,7 @@ func verifyPoCs(ctx context.Context, tpFindings []EnrichedFinding, llmClient llm
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			res, u, batchStats, err := pocBatchLLM(ctx, batch, llmClient)
+			res, u, batchStats, err := pocBatchLLM(ctx, language, batch, llmClient)
 			usageMu.Lock()
 			addUsage(usage, u)
 			usageMu.Unlock()
@@ -130,13 +130,13 @@ func verifyPoCs(ctx context.Context, tpFindings []EnrichedFinding, llmClient llm
 
 // pocBatchLLM verifies a single batch of findings. Transport errors are wrapped
 // plainly; malformed JSON is wrapped with errPoCParse.
-func pocBatchLLM(ctx context.Context, batch []EnrichedFinding, llmClient llm.Client) ([]PoCResult, llm.Usage, PoCStats, error) {
+func pocBatchLLM(ctx context.Context, language string, batch []EnrichedFinding, llmClient llm.Client) ([]PoCResult, llm.Usage, PoCStats, error) {
 	findingsJSON, _ := json.MarshalIndent(batch, "", "  ")
 	userPrompt := fmt.Sprintf(prompts.PoCUserPromptTemplate, len(batch), string(findingsJSON))
 
 	messages := []llm.Message{
 		{Role: "system", Content: prompts.PoCSystemPrompt},
-		{Role: "user", Content: userPrompt},
+		{Role: "user", Content: userPrompt + prompts.LocalisationContract(language)},
 	}
 
 	response, u, err := llmClient.Chat(ctx, messages)

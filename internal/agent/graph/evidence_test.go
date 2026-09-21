@@ -21,7 +21,7 @@ func TestClassifyFindingsRejectsWrongIdentityToNeedsReview(t *testing.T) {
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), findings, mock, &usage, 150)
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, _, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), findings, mock, &usage, 150)
+	_, dispositions, _, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
 	}
@@ -69,7 +69,7 @@ func TestClassifyFindingsAcceptsValidatedTestOnlyFalsePositive(t *testing.T) {
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, findings, mock, &usage, 150)
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestClassifyFindingsAcceptsValidatedCodeMitigationFalsePositive(t *testing.
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, _, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, findings, mock, &usage, 150)
+	_, dispositions, _, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
 	}
@@ -122,7 +122,7 @@ func TestCodeMitigationAcceptsAbsoluteInProjectEvidence(t *testing.T) {
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, findings, mock, &usage, 150)
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestClassifyFindingsAuditPreservesRawResponseAndGlobalMapping(t *testing.T)
 	findings := makeFindings(218)
 	mock := &fakeLLM{t: t}
 	var usage llm.Usage
-	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), findings, mock, &usage, 150)
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
 	if err != nil {
 		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
 	}

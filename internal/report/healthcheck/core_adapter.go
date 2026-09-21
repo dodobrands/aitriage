@@ -23,6 +23,10 @@ func FromCoreResults(results []core.CheckResult) Input {
 				File:     r.File,
 				Line:     r.Line,
 				Ignored:  ignored,
+				// A deterministic scan produces hypotheses, not verdicts. Nobody
+				// has confirmed these, so a report must not present them as
+				// proven; only triage can move a finding out of this state.
+				NeedsReview: !ignored,
 			})
 		}
 	}

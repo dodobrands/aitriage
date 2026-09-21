@@ -13,18 +13,44 @@ rules:
     extensions: [".json", ".txt", ".toml", ".yaml", ".lock", ".sum"]
     target: filename
     condition: "missing_lockfile"
-    files:
-      - "package-lock.json"
-      - "yarn.lock"
-      - "pnpm-lock.yaml"
-      - "requirements.txt"
-      - "Pipfile.lock"
-      - "poetry.lock"
-      - "go.sum"
-      - "uv.lock"
-      - "pdm.lock"
-      - "Cargo.lock"
-    suggestion: "HIGH: No dependency lockfile found. Deployment will be nondeterministic and vulnerable to dependency hijacking. Create a lockfile immediately."
+    # A lockfile is only required for a package manager the project actually
+    # uses. Each entry is checked independently: a PHP project is asked for
+    # composer.lock and nothing else.
+    ecosystems:
+      - name: "npm"
+        manifests: ["package.json"]
+        lockfiles: ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "bun.lockb", "bun.lock"]
+      - name: "Composer (PHP)"
+        manifests: ["composer.json"]
+        lockfiles: ["composer.lock"]
+      - name: "Go"
+        manifests: ["go.mod"]
+        lockfiles: ["go.sum"]
+      - name: "Python"
+        manifests: ["pyproject.toml", "Pipfile", "requirements.in"]
+        lockfiles: ["poetry.lock", "Pipfile.lock", "uv.lock", "pdm.lock", "requirements.txt", "requirements.lock"]
+      - name: "Cargo (Rust)"
+        manifests: ["Cargo.toml"]
+        lockfiles: ["Cargo.lock"]
+      - name: "Bundler (Ruby)"
+        manifests: ["Gemfile"]
+        lockfiles: ["Gemfile.lock"]
+      - name: "Mix (Elixir)"
+        manifests: ["mix.exs"]
+        lockfiles: ["mix.lock"]
+      - name: "NuGet (.NET)"
+        manifests: ["packages.config", "Directory.Packages.props"]
+        lockfiles: ["packages.lock.json"]
+      - name: "Gradle"
+        manifests: ["build.gradle", "build.gradle.kts"]
+        lockfiles: ["gradle.lockfile", "gradle/verification-metadata.xml"]
+      - name: "CocoaPods"
+        manifests: ["Podfile"]
+        lockfiles: ["Podfile.lock"]
+      - name: "Deno"
+        manifests: ["deno.json", "deno.jsonc"]
+        lockfiles: ["deno.lock"]
+    suggestion: "HIGH: A dependency manifest has no lockfile. Deployment will be nondeterministic and vulnerable to dependency hijacking. Commit the lockfile for the package manager named in the evidence."
 
   - id: ENTR-11
     name: "Placeholder Leaked to Production"

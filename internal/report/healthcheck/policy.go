@@ -13,6 +13,11 @@ const (
 	FailOnCritical = "critical"
 	FailOnAny      = "any"
 	FailOnNever    = "never"
+	// FailOnConfirmed blocks only on findings someone actually confirmed.
+	// Unreviewed findings are reported but do not fail the build. Teams choose
+	// this when they triage on their own schedule and do not want an unreviewed
+	// scanner hypothesis to stop a release.
+	FailOnConfirmed = "confirmed"
 
 	unlimitedThreshold = -1
 )
@@ -114,8 +119,18 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 	if policy.FailOn == FailOnAny && res.Breakdown.ActiveFindings > 0 {
 		reasons = append(reasons, BlockingReason{
 			Code:      "active_findings",
-			Message:   "Active findings are not allowed by this policy",
+			Message:   activeFindingsMessage(res.Breakdown),
 			Count:     res.Breakdown.ActiveFindings,
+			Threshold: 0,
+		})
+	}
+
+	if policy.FailOn == FailOnConfirmed && res.Breakdown.ConfirmedFindings > 0 {
+		reasons = append(reasons, BlockingReason{
+			Code: "confirmed_findings",
+			Message: fmt.Sprintf("%d confirmed finding(s) are not allowed by this policy (%d unreviewed finding(s) reported but not blocking)",
+				res.Breakdown.ConfirmedFindings, res.Breakdown.NeedsReviewFindings),
+			Count:     res.Breakdown.ConfirmedFindings,
 			Threshold: 0,
 		})
 	}
@@ -243,6 +258,8 @@ func normalizeFailOn(failOn string) string {
 		return FailOnAny
 	case FailOnNever:
 		return FailOnNever
+	case FailOnConfirmed:
+		return FailOnConfirmed
 	default:
 		return FailOnCritical
 	}
@@ -264,4 +281,20 @@ func normalizeList(in []string) []string {
 
 func normalizeKey(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// activeFindingsMessage states why the gate blocked in terms a reader can act
+// on. "Active findings are not allowed" next to "0 true positives" reads as a
+// contradiction; naming the unreviewed count explains it.
+func activeFindingsMessage(bd Breakdown) string {
+	switch {
+	case bd.ConfirmedFindings == 0 && bd.NeedsReviewFindings > 0:
+		return fmt.Sprintf("%d finding(s) have not been reviewed yet. None are confirmed exploitable, but this policy requires every finding to be triaged (confirmed, or dismissed as a false positive / accepted risk) before the gate can pass",
+			bd.NeedsReviewFindings)
+	case bd.NeedsReviewFindings > 0:
+		return fmt.Sprintf("%d confirmed and %d unreviewed finding(s) are open; this policy allows neither",
+			bd.ConfirmedFindings, bd.NeedsReviewFindings)
+	default:
+		return fmt.Sprintf("%d confirmed finding(s) are open; this policy allows none", bd.ConfirmedFindings)
+	}
 }

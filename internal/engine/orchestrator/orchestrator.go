@@ -12,6 +12,7 @@ import (
 
 	"github.com/dodobrands/aitriage/internal/agent/architect"
 	"github.com/dodobrands/aitriage/internal/agent/llm"
+	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 	"github.com/dodobrands/aitriage/internal/scanner"
 	"github.com/dodobrands/aitriage/internal/scanner/deployaudit"
 	"github.com/dodobrands/aitriage/internal/scanner/entropy"
@@ -149,6 +150,9 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 					return
 				}
 				findings = external.FilterTestLikeFindings(findings)
+				// Authoritative scope gate: vendored trees and ignored files are
+				// not this project's code, whatever the tool decided to read.
+				findings = external.FilterOutOfScope(opts.ProjectPath, findings)
 				addFindings(findings)
 				record(external.ScannerExecution{Scanner: label, Status: external.StatusCompleted, Version: version, Findings: len(findings), DurationMs: dur})
 				fmt.Fprintf(os.Stderr, "   ▶ %s ✓ %d findings (%dms)\n", label, len(findings), dur)
@@ -218,6 +222,27 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 		defer wg.Done()
 		critFiles := entropy.FindCriticalFiles(opts.ProjectPath)
 		historyLeaks := entropy.ScanGitHistory(opts.ProjectPath)
+
+		// Git history is scanned with the same scope rules as everything else:
+		// a secret inside a vendored dependency is that dependency's problem,
+		// and an ignored file is not part of the delivered application.
+		scope := external.NewScopeFilter(opts.ProjectPath)
+		inScopeLeaks := historyLeaks[:0]
+		for _, leak := range historyLeaks {
+			if scope.InScope(leak.FilePath) {
+				inScopeLeaks = append(inScopeLeaks, leak)
+			}
+		}
+		historyLeaks = inScopeLeaks
+
+		inScopeCritical := critFiles[:0]
+		for _, file := range critFiles {
+			if scope.InScope(file.Path) {
+				inScopeCritical = append(inScopeCritical, file)
+			}
+		}
+		critFiles = inScopeCritical
+
 		if len(critFiles) > 0 || len(historyLeaks) > 0 {
 			mu.Lock()
 			result.CriticalFiles = critFiles
@@ -268,5 +293,77 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	sort.Slice(result.ScannerExecutions, func(i, j int) bool {
 		return result.ScannerExecutions[i].Scanner < result.ScannerExecutions[j].Scanner
 	})
+	applyFullHealthCheck(&result)
 	return result
+}
+
+// applyFullHealthCheck recomputes the score and gate verdict over every scanner
+// that ran, not just the built-in engine.
+//
+// scanner.Scan can only see its own results, so the health check it returns
+// covers the core engine alone. Used as-is, a repository whose only problems
+// were found by Semgrep, Trivy, Gitleaks, Bandit, the NFR checks or the deploy
+// audit would be scored 100/100 and pass the gate — a live SQL injection could
+// be reported in the finding list while the verdict said PASSED.
+//
+// Network findings are deliberately excluded: an open port describes the machine
+// AITriage runs on, not the repository being audited.
+//
+// Nothing here has been triaged: a deterministic scan produces hypotheses, so
+// every finding is marked as needing review. AI triage, when it runs, recomputes
+// this with real dispositions.
+// RecomputeHealthCheck re-derives the score and gate verdict after a caller has
+// changed which findings are in play — applying a baseline, for example. Without
+// it the verdict would describe a finding set that is no longer the one reported.
+func RecomputeHealthCheck(result *llm.RichScanResult) {
+	applyFullHealthCheck(result)
+}
+
+func applyFullHealthCheck(result *llm.RichScanResult) {
+	in := healthcheck.FromCoreResults(result.Report.Results)
+
+	for _, f := range result.External {
+		source := strings.TrimSpace(f.Source)
+		if source == "" {
+			source = "external"
+		}
+		class := strings.TrimSpace(f.RuleID)
+		if class == "" {
+			class = strings.TrimSpace(f.VulnerabilityClass)
+		}
+		in.Findings = append(in.Findings, healthcheck.Finding{
+			Source:      source,
+			Class:       class,
+			Severity:    f.Severity,
+			File:        f.File,
+			Line:        f.Line,
+			NeedsReview: true,
+		})
+	}
+
+	for _, f := range result.NFR {
+		in.Findings = append(in.Findings, healthcheck.Finding{
+			Source:      "nfr",
+			Class:       f.RuleID,
+			Severity:    f.Severity,
+			NeedsReview: true,
+		})
+	}
+
+	for _, f := range result.Deploy {
+		in.Findings = append(in.Findings, healthcheck.Finding{
+			Source:      "deploy",
+			Class:       f.Issue,
+			Severity:    f.Severity,
+			File:        f.File,
+			Line:        f.Line,
+			NeedsReview: true,
+		})
+	}
+
+	evaluated := healthcheck.ApplyPolicy(healthcheck.Evaluate(in), result.Report.HealthCheck.Policy)
+	result.Report.HealthCheck = evaluated
+	result.Report.SecurityScore = evaluated.Score
+	result.Report.SecurityGrade = evaluated.Grade
+	result.Report.HasCriticalFailures = evaluated.HasCriticalFailures
 }

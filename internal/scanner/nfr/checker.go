@@ -1,13 +1,17 @@
 package nfr
 
 import (
+	"context"
 	"embed"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -27,7 +31,7 @@ type Rule struct {
 	Severity               string   `yaml:"severity"`
 	Message                string   `yaml:"message"`
 	Advice                 string   `yaml:"advice"`
-	Check                  string   `yaml:"check"`   // "file_contains" | "file_exists" | "file_not_exists"
+	Check                  string   `yaml:"check"`   // "file_contains" | "file_exists" | "file_not_exists" | "file_tracked_by_git"
 	Pattern                string   `yaml:"pattern"` // regex for file_contains
 	Files                  []string `yaml:"files"`   // basename globs to inspect recursively
 	AppliesPattern         string   `yaml:"applies_pattern"`
@@ -155,6 +159,11 @@ func evaluateRule(projectPath string, rule Rule) (bool, error) {
 	case "file_not_exists":
 		_, err := os.Stat(filepath.Join(projectPath, rule.Pattern))
 		return err == nil, nil // violated if file EXISTS
+	case "file_tracked_by_git":
+		// Violated only when the file is actually exposed: either git tracks it,
+		// or it sits in the tree with nothing ignoring it. A developer's local
+		// .env that .gitignore covers is correct practice, not a critical leak.
+		return fileIsExposedToGit(projectPath, rule.Pattern), nil
 	default:
 		return false, nil
 	}
@@ -227,4 +236,43 @@ func GetAllRulesAsText() string {
 		builder.WriteString(fmt.Sprintf("- [%s] %s (%s)\n  Advice: %s\n", r.ID, r.Name, r.Severity, r.Advice))
 	}
 	return builder.String()
+}
+
+// fileIsExposedToGit reports whether a sensitive file would reach the
+// repository. It asks git itself, because only git knows what is tracked; when
+// the project is not a git repository at all, the presence of the file is the
+// only signal available and is reported as exposure.
+func fileIsExposedToGit(projectPath, name string) bool {
+	if _, err := os.Stat(filepath.Join(projectPath, name)); err != nil {
+		return false // nothing to expose
+	}
+
+	if _, err := os.Stat(filepath.Join(projectPath, ".git")); err != nil {
+		return true // not a repository: cannot prove the file is ignored
+	}
+
+	// Tracked by git: the file is in the repository right now.
+	if runGitQuiet(projectPath, "ls-files", "--error-unmatch", "--", name) == nil {
+		return true
+	}
+
+	// Untracked but ignored: correctly excluded, nothing to report.
+	if runGitQuiet(projectPath, "check-ignore", "-q", "--", name) == nil {
+		return false
+	}
+
+	// Untracked and not ignored: one `git add .` away from being committed.
+	return true
+}
+
+// runGitQuiet runs a git query in the project and reports only success.
+func runGitQuiet(projectPath string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = projectPath
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	return cmd.Run()
 }

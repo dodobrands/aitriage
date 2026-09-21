@@ -51,7 +51,8 @@ func RunSemgrepConfigs(ctx context.Context, path string, taintRuleIDs []string, 
 		}
 		args = append(args, "--config", c)
 	}
-	args = append(args, "--exclude", "aitriage-reports", "--exclude", ".aitriage", "--exclude", ".aitriage-cache", path)
+	args = append(args, SemgrepExcludeArgs()...)
+	args = append(args, path)
 
 	result, err := RunTool(ctx, "semgrep", args...)
 	if err != nil {
