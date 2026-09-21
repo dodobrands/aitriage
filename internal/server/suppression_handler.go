@@ -91,9 +91,11 @@ func (s *Server) suppressionAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item := baseline.Item{
-		Source:   req.Source,
-		RuleID:   req.RuleID,
-		File:     req.File,
+		Source: req.Source,
+		RuleID: req.RuleID,
+		// Relative to the project: the record is committed and must mean the
+		// same thing on every machine.
+		File:     baseline.RelativePath(projectPath, req.File),
 		Line:     req.Line,
 		Severity: req.Severity,
 		Evidence: req.Evidence,

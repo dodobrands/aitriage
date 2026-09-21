@@ -18,6 +18,10 @@ import (
 
 // BaselineItems flattens a scan result into the source-agnostic findings a
 // baseline stores.
+//
+// Paths are made relative to the project root. The baseline file is meant to be
+// committed, and an absolute path both leaked the author's directory layout into
+// the repository and matched nothing on any other machine (issue #30).
 func BaselineItems(result *llm.RichScanResult) []baseline.Item {
 	if result == nil {
 		return nil
@@ -26,7 +30,7 @@ func BaselineItems(result *llm.RichScanResult) []baseline.Item {
 	items = append(items, baseline.FromExternal(result.External)...)
 	items = append(items, baseline.FromNFR(result.NFR)...)
 	items = append(items, baseline.FromDeploy(result.Deploy)...)
-	return items
+	return baseline.Relativize(result.ProjectPath, items)
 }
 
 // ApplyBaseline removes accepted findings from every source and recomputes the
@@ -39,21 +43,51 @@ func ApplyBaseline(result *llm.RichScanResult, accepted *baseline.Baseline) int 
 
 	hidden := 0
 
-	coreFiltered := baseline.Filter(result.Report.Results, accepted)
-	hidden += len(coreFiltered.Baseline)
-	result.Report.Results = coreFiltered.New
+	root := result.ProjectPath
 
-	external, externalAccepted := baseline.FilterExternal(result.External, accepted)
-	hidden += externalAccepted
-	result.External = external
+	keptCore := result.Report.Results[:0]
+	for _, r := range result.Report.Results {
+		item := baseline.Relativize(root, baseline.FromCore([]core.CheckResult{r}))[0]
+		if accepted.AcceptsInProject(root, item) {
+			hidden++
+			continue
+		}
+		keptCore = append(keptCore, r)
+	}
+	result.Report.Results = keptCore
 
-	nfrKept, nfrAccepted := baseline.FilterNFR(result.NFR, accepted)
-	hidden += nfrAccepted
-	result.NFR = nfrKept
+	keptExternal := result.External[:0]
+	for _, f := range result.External {
+		item := baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]
+		if accepted.AcceptsInProject(root, item) {
+			hidden++
+			continue
+		}
+		keptExternal = append(keptExternal, f)
+	}
+	result.External = keptExternal
 
-	deployKept, deployAccepted := baseline.FilterDeploy(result.Deploy, accepted)
-	hidden += deployAccepted
-	result.Deploy = deployKept
+	keptNFR := result.NFR[:0]
+	for _, f := range result.NFR {
+		item := baseline.Relativize(root, baseline.FromNFR([]nfr.NFRFinding{f}))[0]
+		if accepted.AcceptsInProject(root, item) {
+			hidden++
+			continue
+		}
+		keptNFR = append(keptNFR, f)
+	}
+	result.NFR = keptNFR
+
+	keptDeploy := result.Deploy[:0]
+	for _, f := range result.Deploy {
+		item := baseline.Relativize(root, baseline.FromDeploy([]deployaudit.DeployFinding{f}))[0]
+		if accepted.AcceptsInProject(root, item) {
+			hidden++
+			continue
+		}
+		keptDeploy = append(keptDeploy, f)
+	}
+	result.Deploy = keptDeploy
 
 	RecomputeHealthCheck(result)
 	return hidden
@@ -72,11 +106,13 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	suppressed := 0
 
+	root := result.ProjectPath
+
 	for i, r := range result.Report.Results {
 		if r.Status != core.Absent {
 			continue
 		}
-		item := baseline.FromCore([]core.CheckResult{r})[0]
+		item := baseline.Relativize(root, baseline.FromCore([]core.CheckResult{r}))[0]
 		if _, ok := store.Suppresses(item); ok {
 			result.Report.Results[i].AuditStatus = core.AuditStatusIgnored
 			suppressed++
@@ -85,7 +121,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptExternal := result.External[:0]
 	for _, f := range result.External {
-		if _, ok := store.Suppresses(baseline.FromExternal([]external.UnifiedFinding{f})[0]); ok {
+		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}
@@ -95,7 +131,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptNFR := result.NFR[:0]
 	for _, f := range result.NFR {
-		if _, ok := store.Suppresses(baseline.FromNFR([]nfr.NFRFinding{f})[0]); ok {
+		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromNFR([]nfr.NFRFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}
@@ -105,7 +141,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptDeploy := result.Deploy[:0]
 	for _, f := range result.Deploy {
-		if _, ok := store.Suppresses(baseline.FromDeploy([]deployaudit.DeployFinding{f})[0]); ok {
+		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromDeploy([]deployaudit.DeployFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}

@@ -93,8 +93,8 @@ func TestVersionOneBaselineStillMatchesCoreFindings(t *testing.T) {
 
 	// A new-format baseline does not need the legacy fallback.
 	modern := NewFromItems([]Item{sameFinding})
-	if modern.Version != SchemaVersion2 {
-		t.Errorf("new baseline version = %q; want %q", modern.Version, SchemaVersion2)
+	if modern.Version != CurrentSchema {
+		t.Errorf("new baseline version = %q; want %q", modern.Version, CurrentSchema)
 	}
 	if !modern.Accepts(sameFinding) {
 		t.Error("the new format does not match its own findings")

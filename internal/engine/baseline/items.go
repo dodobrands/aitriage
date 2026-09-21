@@ -3,6 +3,7 @@ package baseline
 import (
 	"crypto/sha256"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/core"
@@ -20,10 +21,24 @@ import (
 // Item is the source-agnostic shape every scanner is mapped into before being
 // accepted or matched.
 
-// SchemaVersion2 is the source-aware baseline format. Version "1" files remain
-// readable: their entries are matched with the original core-only fingerprint,
-// so upgrading AITriage never silently resurfaces an accepted finding.
-const SchemaVersion2 = "2"
+// Baseline formats, oldest first. Every older format stays readable: an upgrade
+// must never silently resurface findings a team already accepted.
+//
+//	"1" — core findings only, absolute paths
+//	"2" — every scanner, absolute paths
+//	"3" — every scanner, paths relative to the project root
+//
+// Absolute paths were a leak and a portability bug (issue #30): the file is
+// meant to be committed, and it carried the author's home directory into the
+// repository, where it also matched nothing on another machine or in CI.
+const (
+	SchemaVersion1 = "1"
+	SchemaVersion2 = "2"
+	SchemaVersion3 = "3"
+)
+
+// CurrentSchema is what new baselines are written as.
+const CurrentSchema = SchemaVersion3
 
 // Item is one finding, from any scanner, in the form a baseline stores.
 type Item struct {
@@ -47,6 +62,40 @@ func FingerprintItem(item Item) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", normalizeSource(item.Source), item.RuleID, item.File, item.Evidence)
 	hash := sha256.Sum256([]byte(data))
 	return fmt.Sprintf("%x", hash[:12])
+}
+
+// RelativePath expresses a scanner-reported path relative to the project root.
+//
+// Scanners report absolute paths, and storing those made the baseline file
+// unusable anywhere but the machine that wrote it. A path already relative, or
+// one outside the root, is returned cleaned but otherwise untouched — a finding
+// is never dropped just because its path is unusual.
+func RelativePath(root, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if root == "" || !filepath.IsAbs(path) {
+		return filepath.ToSlash(filepath.Clean(path))
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return filepath.ToSlash(filepath.Clean(path))
+	}
+	rel, err := filepath.Rel(absRoot, filepath.Clean(path))
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return filepath.ToSlash(filepath.Clean(path))
+	}
+	return filepath.ToSlash(rel)
+}
+
+// Relativize rewrites every item's path against the project root.
+func Relativize(root string, items []Item) []Item {
+	for i := range items {
+		items[i].File = RelativePath(root, items[i].File)
+	}
+	return items
 }
 
 func normalizeSource(source string) string {
@@ -138,7 +187,7 @@ func FromDeploy(findings []deployaudit.DeployFinding) []Item {
 // NewFromItems builds a source-aware baseline from findings of any scanner.
 func NewFromItems(items []Item) *Baseline {
 	b := newEmpty()
-	b.Version = SchemaVersion2
+	b.Version = CurrentSchema
 	for _, item := range items {
 		fp := FingerprintItem(item)
 		b.Findings[fp] = Finding{
@@ -156,18 +205,61 @@ func NewFromItems(items []Item) *Baseline {
 
 // Accepts reports whether a finding is already in the baseline.
 //
-// A version "1" baseline was written before findings carried a source, so its
-// keys use the original core-only fingerprint. Those keys are still honoured for
-// core findings, which is what keeps an upgrade from resurfacing everything a
-// team had already accepted.
+// Older formats are matched as well as the current one. This is what keeps an
+// upgrade from resurfacing everything a team had already accepted:
+//
+//   - "1" predates the source field, so its keys use the original core-only
+//     fingerprint, and only core findings can match them.
+//   - "1" and "2" stored absolute paths, so a finding whose path is now relative
+//     is also tried against the absolute form the file would have recorded.
+//
+// The caller supplies absPath because only it knows the project root; an empty
+// value simply skips the absolute-path attempt.
 func (b *Baseline) Accepts(item Item) bool {
+	return b.acceptsWithAbsolute(item, "")
+}
+
+// AcceptsInProject is Accepts for a known project root, so baselines written
+// before paths were made relative still match.
+func (b *Baseline) AcceptsInProject(root string, item Item) bool {
+	if b == nil {
+		return false
+	}
+	absolute := ""
+	if root != "" && item.File != "" && !filepath.IsAbs(item.File) {
+		absolute = filepath.Join(root, item.File)
+	}
+	return b.acceptsWithAbsolute(item, absolute)
+}
+
+func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 	if b == nil || len(b.Findings) == 0 {
 		return false
 	}
 	if _, ok := b.Findings[FingerprintItem(item)]; ok {
 		return true
 	}
-	if b.Version == Version && normalizeSource(item.Source) == "core" {
+
+	legacyPaths := []string{}
+	if absolutePath != "" && b.Version != CurrentSchema {
+		legacyPaths = append(legacyPaths, absolutePath)
+	}
+
+	for _, path := range legacyPaths {
+		aged := item
+		aged.File = path
+		if _, ok := b.Findings[FingerprintItem(aged)]; ok {
+			return true
+		}
+		if b.Version == SchemaVersion1 && normalizeSource(item.Source) == "core" {
+			legacy := Fingerprint(core.CheckResult{ID: item.RuleID, File: path, Evidence: item.Evidence})
+			if _, ok := b.Findings[legacy]; ok {
+				return true
+			}
+		}
+	}
+
+	if b.Version == SchemaVersion1 && normalizeSource(item.Source) == "core" {
 		legacy := Fingerprint(core.CheckResult{ID: item.RuleID, File: item.File, Evidence: item.Evidence})
 		if _, ok := b.Findings[legacy]; ok {
 			return true

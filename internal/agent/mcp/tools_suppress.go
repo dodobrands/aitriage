@@ -96,9 +96,11 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 				return nil, suppressResult{}, fmt.Errorf("rule_id is required to dismiss a finding")
 			}
 			item := baseline.Item{
-				Source:   input.Source,
-				RuleID:   input.RuleID,
-				File:     input.File,
+				Source: input.Source,
+				RuleID: input.RuleID,
+				// Relative to the project: the record is committed and must mean
+				// the same thing on every machine.
+				File:     baseline.RelativePath(path, input.File),
 				Line:     input.Line,
 				Evidence: input.Evidence,
 			}

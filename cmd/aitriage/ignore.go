@@ -88,9 +88,11 @@ func runIgnoreAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	item := baseline.Item{
-		Source:   ignoreSource,
-		RuleID:   ruleID,
-		File:     ignoreFile,
+		Source: ignoreSource,
+		RuleID: ruleID,
+		// Stored relative to the project so the record is portable and does not
+		// carry the local directory layout into the repository.
+		File:     baseline.RelativePath(projectPath, ignoreFile),
 		Line:     ignoreLine,
 		Evidence: ignoreEvid,
 	}
