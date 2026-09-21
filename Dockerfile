@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build
 
 # ─── Stage 2: Build Go binary ─────────────────────────────────────────────────
-FROM golang:1.25.12-bookworm AS go-builder
+FROM golang:1.25.13-bookworm AS go-builder
 WORKDIR /app
 
 # C deps for tree-sitter CGO
@@ -27,7 +27,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${AITRIAGE_VERSION}" 
 # Build the latest upstream Gitleaks release with patched Go dependencies. The
 # upstream v8.30.1 asset was built with Go 1.24.11 and x/crypto 0.35.0, both of
 # which now have fixable HIGH CVEs. Module source is authenticated by Go sumdb.
-FROM --platform=$BUILDPLATFORM golang:1.25.12-bookworm AS gitleaks-builder
+FROM --platform=$BUILDPLATFORM golang:1.25.13-bookworm AS gitleaks-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
