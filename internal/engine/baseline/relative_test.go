@@ -39,11 +39,15 @@ func TestRelativePathLeavesUnusualPathsAlone(t *testing.T) {
 	if got := RelativePath(root, "app/main.go"); got != "app/main.go" {
 		t.Errorf("relative path was rewritten: %q", got)
 	}
-	// Outside the root: keep it rather than emit ../../.. — a finding is never
-	// dropped or mangled just because its path is unusual.
+	// A name beginning with two dots is still inside the project.
+	if got := RelativePath(root, filepath.Join(root, "..config")); got != "..config" {
+		t.Errorf("in-project file became %q; want ..config", got)
+	}
+	// Outside the root: preserve the location with portable separators rather
+	// than emit ../../.. — a finding is never dropped because it is unusual.
 	outside := filepath.Join(t.TempDir(), "passwd")
-	if got := RelativePath(root, outside); got != outside {
-		t.Errorf("path outside the root = %q; want it untouched", got)
+	if got, want := RelativePath(root, outside), filepath.ToSlash(outside); got != want {
+		t.Errorf("path outside the root = %q; want %q", got, want)
 	}
 	// No root known: pass through, cleaned.
 	unclean := filepath.Join(root, "a", "b", "..", "c")
@@ -135,5 +139,74 @@ func TestStoredEntriesCarryNoLocalLayout(t *testing.T) {
 		if finding.File != "" && (finding.File[0] == '/' || len(finding.File) > 1 && finding.File[1] == ':') {
 			t.Errorf("%s stored a rooted path: %q", finding.RuleID, finding.File)
 		}
+	}
+}
+
+func TestCLIFilterMatchesCurrentAndOlderBaselines(t *testing.T) {
+	root := t.TempDir()
+	absolute := filepath.Join(root, "app", "config.php")
+	accepted := core.CheckResult{ID: "ENTR-17", File: absolute, Evidence: "key=abc"}
+	newFinding := core.CheckResult{ID: "ENTR-18", File: absolute, Evidence: "key=def"}
+
+	current := NewFromItems(Relativize(root, FromCore([]core.CheckResult{accepted})))
+	oldV2 := NewFromItems(FromCore([]core.CheckResult{accepted}))
+	oldV2.Version = SchemaVersion2
+	oldV1 := New([]core.CheckResult{accepted})
+
+	for _, tc := range []struct {
+		name string
+		b    *Baseline
+	}{
+		{"current", current},
+		{"v2", oldV2},
+		{"v1", oldV1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FilterInProject(root, []core.CheckResult{accepted, newFinding}, tc.b)
+			if len(got.Baseline) != 1 || got.Baseline[0].ID != accepted.ID {
+				t.Errorf("accepted = %+v", got.Baseline)
+			}
+			if len(got.New) != 1 || got.New[0].ID != newFinding.ID {
+				t.Errorf("new = %+v", got.New)
+			}
+		})
+	}
+}
+
+func TestOlderBaselinesStillMatchAfterCheckoutMoves(t *testing.T) {
+	oldRoot := t.TempDir()
+	newRoot := t.TempDir()
+	oldFile := filepath.Join(oldRoot, "app", "config.php")
+	accepted := core.CheckResult{ID: "ENTR-17", File: oldFile, Evidence: "key=abc"}
+	newFile := filepath.Join(newRoot, "app", "config.php")
+	current := Item{Source: "core", RuleID: accepted.ID, File: "app/config.php", Evidence: accepted.Evidence}
+
+	oldV2 := NewFromItems(FromCore([]core.CheckResult{accepted}))
+	oldV2.Version = SchemaVersion2
+	oldV1 := New([]core.CheckResult{accepted})
+	for _, b := range []*Baseline{oldV1, oldV2} {
+		if !b.AcceptsInProject(newRoot, current) {
+			t.Errorf("version %s lost an accepted finding after checkout moved", b.Version)
+		}
+		changed := current
+		changed.Evidence = "different key"
+		if b.AcceptsInProject(newRoot, changed) {
+			t.Errorf("version %s hid different evidence", b.Version)
+		}
+		if got := FilterInProject(newRoot, []core.CheckResult{{ID: accepted.ID, File: newFile, Evidence: accepted.Evidence}}, b); len(got.Baseline) != 1 {
+			t.Errorf("version %s CLI filter lost an accepted finding", b.Version)
+		}
+	}
+}
+
+func TestLegacyPathMatchesAcrossOperatingSystems(t *testing.T) {
+	if !LegacyPathMatches(`C:\Users\alice\shop\app\config.php`, "app/config.php") {
+		t.Error("Windows baseline path did not match a relative file")
+	}
+	if LegacyPathMatches(`C:\Users\alice\shop\other\config.php`, "app/config.php") {
+		t.Error("different directories matched")
+	}
+	if LegacyPathMatches("/home/alice/shop/app/config.php", "../app/config.php") {
+		t.Error("parent traversal matched an old path")
 	}
 }

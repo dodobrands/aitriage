@@ -303,7 +303,7 @@ var scanCmd = &cobra.Command{
 			} else if b == nil {
 				fmt.Fprintln(os.Stderr, "⚠ No baseline found. Run 'aitriage baseline create .' first.")
 			} else {
-				fr := baseline.Filter(report.Results, b)
+				fr := baseline.FilterInProject(path, report.Results, b)
 				report.Results = fr.New
 				if len(fr.Baseline) > 0 {
 					fmt.Fprintf(os.Stderr, "  [baseline] %d findings suppressed (%d new)\n", len(fr.Baseline), len(fr.New))

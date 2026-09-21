@@ -151,6 +151,25 @@ func Filter(results []core.CheckResult, b *Baseline) FilterResult {
 	return fr
 }
 
+// FilterInProject matches core findings using the same project-relative paths
+// that NewFromItems stores. It also retains matching for older baseline files.
+func FilterInProject(projectPath string, results []core.CheckResult, b *Baseline) FilterResult {
+	if b == nil || len(b.Findings) == 0 {
+		return FilterResult{New: results}
+	}
+
+	var fr FilterResult
+	for _, r := range results {
+		item := Relativize(projectPath, FromCore([]core.CheckResult{r}))[0]
+		if b.AcceptsInProject(projectPath, item) {
+			fr.Baseline = append(fr.Baseline, r)
+		} else {
+			fr.New = append(fr.New, r)
+		}
+	}
+	return fr
+}
+
 // ── Stats ────────────────────────────────────────────────────────────────────
 
 // Stats returns a human-readable summary of the baseline.

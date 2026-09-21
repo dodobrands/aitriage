@@ -189,6 +189,37 @@ func (s *Store) Suppresses(item baseline.Item) (Entry, bool) {
 	return entry, ok
 }
 
+// SuppressesInProject also recognises decisions written before paths were made
+// project-relative. Existing dismissals must keep working after an upgrade or
+// after the project is checked out in a different directory.
+func (s *Store) SuppressesInProject(root string, item baseline.Item) (Entry, bool) {
+	if entry, ok := s.Suppresses(item); ok {
+		return entry, true
+	}
+	if s == nil || item.File == "" {
+		return Entry{}, false
+	}
+	if root != "" {
+		legacy := item
+		legacy.File = filepath.Join(root, filepath.FromSlash(item.File))
+		if entry, ok := s.Entries[baseline.FingerprintItem(legacy)]; ok {
+			return entry, true
+		}
+	}
+	for key, entry := range s.Entries {
+		if entry.RuleID != item.RuleID || !strings.EqualFold(entry.Source, item.Source) ||
+			!baseline.LegacyPathMatches(entry.File, item.File) {
+			continue
+		}
+		legacy := item
+		legacy.File = entry.File
+		if baseline.FingerprintItem(legacy) == key {
+			return entry, true
+		}
+	}
+	return Entry{}, false
+}
+
 // List returns the entries in a stable order: newest first, then by rule id, so
 // output does not churn between runs.
 func (s *Store) List() []Entry {

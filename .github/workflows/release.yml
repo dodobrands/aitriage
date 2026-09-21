@@ -214,6 +214,7 @@ jobs:
         timeout-minutes: 60
         env:
           RELEASE_IMAGE: ghcr.io/dodobrands/aitriage:${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           for attempt in $(seq 1 120); do
@@ -221,8 +222,16 @@ jobs:
               platforms=$(printf '%s' "$manifest" | jq -r '.manifests[]?.platform | "\(.os)/\(.architecture)"')
               if printf '%s\n' "$platforms" | grep -qx 'linux/amd64' && \
                  printf '%s\n' "$platforms" | grep -qx 'linux/arm64'; then
-                echo "Verified $RELEASE_IMAGE for linux/amd64 and linux/arm64."
-                exit 0
+                # A retag can leave the previous image under this name while
+                # the new build runs. Verify the embedded source revision too.
+                if docker pull --quiet --platform linux/amd64 "$RELEASE_IMAGE" >/dev/null; then
+                  revision=$(docker image inspect "$RELEASE_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')
+                  if [ "$revision" = "$RELEASE_SHA" ]; then
+                    echo "Verified $RELEASE_IMAGE for linux/amd64 and linux/arm64 at $RELEASE_SHA."
+                    exit 0
+                  fi
+                  echo "Image revision $revision does not match release commit $RELEASE_SHA yet."
+                fi
               fi
             fi
             echo "Waiting for $RELEASE_IMAGE ($attempt/120)..."

@@ -113,7 +113,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 			continue
 		}
 		item := baseline.Relativize(root, baseline.FromCore([]core.CheckResult{r}))[0]
-		if _, ok := store.Suppresses(item); ok {
+		if _, ok := store.SuppressesInProject(root, item); ok {
 			result.Report.Results[i].AuditStatus = core.AuditStatusIgnored
 			suppressed++
 		}
@@ -121,7 +121,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptExternal := result.External[:0]
 	for _, f := range result.External {
-		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]); ok {
+		if _, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}
@@ -131,7 +131,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptNFR := result.NFR[:0]
 	for _, f := range result.NFR {
-		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromNFR([]nfr.NFRFinding{f}))[0]); ok {
+		if _, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromNFR([]nfr.NFRFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}
@@ -141,7 +141,7 @@ func ApplySuppressions(result *llm.RichScanResult, store *suppression.Store) int
 
 	keptDeploy := result.Deploy[:0]
 	for _, f := range result.Deploy {
-		if _, ok := store.Suppresses(baseline.Relativize(root, baseline.FromDeploy([]deployaudit.DeployFinding{f}))[0]); ok {
+		if _, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromDeploy([]deployaudit.DeployFinding{f}))[0]); ok {
 			suppressed++
 			continue
 		}

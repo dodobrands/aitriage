@@ -3,6 +3,7 @@ package baseline
 import (
 	"crypto/sha256"
 	"fmt"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -84,7 +85,7 @@ func RelativePath(root, path string) string {
 		return filepath.ToSlash(filepath.Clean(path))
 	}
 	rel, err := filepath.Rel(absRoot, filepath.Clean(path))
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return filepath.ToSlash(filepath.Clean(path))
 	}
 	return filepath.ToSlash(rel)
@@ -258,6 +259,28 @@ func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 			}
 		}
 	}
+	// An old file can also travel to a checkout with a different root. Its
+	// stored file path is enough to reconstruct the old fingerprint, including
+	// the evidence from the current finding, without accepting a different rule.
+	if b.Version == SchemaVersion1 || b.Version == SchemaVersion2 {
+		for key, finding := range b.Findings {
+			if finding.RuleID != item.RuleID || !LegacyPathMatches(finding.File, item.File) {
+				continue
+			}
+			if b.Version == SchemaVersion2 && normalizeSource(finding.Source) != normalizeSource(item.Source) {
+				continue
+			}
+			aged := item
+			aged.File = finding.File
+			if b.Version == SchemaVersion2 && FingerprintItem(aged) == key {
+				return true
+			}
+			if b.Version == SchemaVersion1 && normalizeSource(item.Source) == "core" &&
+				Fingerprint(core.CheckResult{ID: item.RuleID, File: finding.File, Evidence: item.Evidence}) == key {
+				return true
+			}
+		}
+	}
 
 	if b.Version == SchemaVersion1 && normalizeSource(item.Source) == "core" {
 		legacy := Fingerprint(core.CheckResult{ID: item.RuleID, File: item.File, Evidence: item.Evidence})
@@ -266,6 +289,22 @@ func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 		}
 	}
 	return false
+}
+
+// LegacyPathMatches checks whether an absolute path from an older project file
+// names the same relative file in a checkout at a different location.
+func LegacyPathMatches(oldAbsolute, currentRelative string) bool {
+	old := strings.ReplaceAll(oldAbsolute, `\`, "/")
+	rel := pathpkg.Clean(strings.ReplaceAll(currentRelative, `\`, "/"))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") ||
+		strings.HasPrefix(rel, "/") || strings.Contains(rel, ":") {
+		return false
+	}
+	windowsAbsolute := len(old) >= 3 && old[1] == ':' && old[2] == '/'
+	if !strings.HasPrefix(old, "/") && !windowsAbsolute {
+		return false
+	}
+	return strings.HasSuffix(pathpkg.Clean(old), "/"+rel)
 }
 
 // ItemFilterResult separates a scan into what is new and what was accepted.

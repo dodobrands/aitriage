@@ -203,3 +203,31 @@ func TestCorruptStoreIsReportedRatherThanIgnored(t *testing.T) {
 		t.Error("a corrupt store loaded as if it were empty")
 	}
 }
+
+func TestOlderDismissalStillMatchesAfterCheckoutMoves(t *testing.T) {
+	oldRoot := t.TempDir()
+	newRoot := t.TempDir()
+	old := item("trivy", "CVE-1", filepath.Join(oldRoot, "composer.lock"), "pkg 1.0")
+	store := New()
+	if _, _, err := store.Add(old, ReasonFalsePositive, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(oldRoot, store); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(oldRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := item("trivy", "CVE-1", "composer.lock", "pkg 1.0")
+	if _, ok := reloaded.SuppressesInProject(oldRoot, current); !ok {
+		t.Error("dismissal stopped matching in its original checkout")
+	}
+	if _, ok := reloaded.SuppressesInProject(newRoot, current); !ok {
+		t.Error("dismissal stopped matching after checkout moved")
+	}
+	current.Evidence = "pkg 2.0"
+	if _, ok := reloaded.SuppressesInProject(newRoot, current); ok {
+		t.Error("dismissal hid changed evidence")
+	}
+}
