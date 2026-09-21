@@ -33,6 +33,10 @@ type Finding struct {
 	File     string
 	Line     int
 	Ignored  bool // true => excluded from penalties (audit-ignored OR AI False Positive)
+	// NeedsReview marks a finding that no one has confirmed or dismissed yet.
+	// It still counts as active — an unreviewed finding is unresolved work — but
+	// the gate says so explicitly instead of implying the issue is proven.
+	NeedsReview bool
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -50,17 +54,22 @@ type Input struct {
 // Breakdown explains how the final score was derived. It is serialised into the
 // report so dashboards and CI can show the reasoning behind the number.
 type Breakdown struct {
-	BaseScore       int            `json:"base_score"`        // always 100
-	Penalty         int            `json:"penalty"`           // points removed (post-saturation)
-	Bonus           int            `json:"bonus"`             // points added for good practices
-	RawWeight       float64        `json:"raw_weight"`        // total weighted penalty before saturation
-	ActiveFindings  int            `json:"active_findings"`   // findings counted after dedup + ignore filter
-	IgnoredFindings int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
-	DedupedFindings int            `json:"deduped_findings"`  // duplicates collapsed
-	PenaltyBySource map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
-	CountBySeverity map[string]int `json:"count_by_severity"` // active finding count per severity
-	CountBySource   map[string]int `json:"count_by_source"`   // active finding count per source
-	CountByClass    map[string]int `json:"count_by_class"`    // active finding count per class/rule
+	BaseScore      int     `json:"base_score"`      // always 100
+	Penalty        int     `json:"penalty"`         // points removed (post-saturation)
+	Bonus          int     `json:"bonus"`           // points added for good practices
+	RawWeight      float64 `json:"raw_weight"`      // total weighted penalty before saturation
+	ActiveFindings int     `json:"active_findings"` // findings counted after dedup + ignore filter
+	// ConfirmedFindings and NeedsReviewFindings partition ActiveFindings, so a
+	// report can say "0 confirmed, 25 unreviewed" instead of leaving a reader to
+	// wonder why a gate failed with nothing proven.
+	ConfirmedFindings   int            `json:"confirmed_findings"`
+	NeedsReviewFindings int            `json:"needs_review_findings"`
+	IgnoredFindings     int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
+	DedupedFindings     int            `json:"deduped_findings"`  // duplicates collapsed
+	PenaltyBySource     map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
+	CountBySeverity     map[string]int `json:"count_by_severity"` // active finding count per severity
+	CountBySource       map[string]int `json:"count_by_source"`   // active finding count per source
+	CountByClass        map[string]int `json:"count_by_class"`    // active finding count per class/rule
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -192,6 +201,11 @@ func Evaluate(in Input) Result {
 		}
 		bd.CountBySeverity[sev]++
 		bd.ActiveFindings++
+		if f.NeedsReview {
+			bd.NeedsReviewFindings++
+		} else {
+			bd.ConfirmedFindings++
+		}
 
 		if sev == "CRITICAL" || sev == "HIGH" {
 			hasCritical = true

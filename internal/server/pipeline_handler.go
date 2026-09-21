@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dodobrands/aitriage/internal/agent/graph"
+	"github.com/dodobrands/aitriage/internal/agent/prompts"
 	"github.com/dodobrands/aitriage/internal/models"
 )
 
@@ -19,7 +20,7 @@ import (
 // its durable session and artifacts can still be opened from Runway History.
 func (s *Server) handlePipeline(w http.ResponseWriter, r *http.Request) {
 	if s.llmClient == nil {
-		jsonError(w, "AI Pipeline is offline. Please provide a GEMINI_API_KEY.", http.StatusServiceUnavailable)
+		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -80,7 +81,7 @@ func (s *Server) handlePipeline(w http.ResponseWriter, r *http.Request) {
 		"label":      "Preparing repository context…",
 		"progress":   2,
 	})
-	go s.runRunwaySession(session, product, findings)
+	go s.runRunwaySession(session, product, findings, prompts.NormalizeLanguage(r.URL.Query().Get("lang")))
 
 	ticker := time.NewTicker(450 * time.Millisecond)
 	defer ticker.Stop()

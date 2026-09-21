@@ -60,7 +60,7 @@ func TestVerifyPoCsDedup(t *testing.T) {
 	mock := &pocLLM{t: t}
 	var usage llm.Usage
 
-	_, _, err := verifyPoCs(context.Background(), []EnrichedFinding{dup, dup, other}, mock, &usage)
+	_, _, err := verifyPoCs(context.Background(), "", []EnrichedFinding{dup, dup, other}, mock, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestVerifyPoCsBudgetOverflowToNeedsReview(t *testing.T) {
 	mock := &pocLLM{t: t}
 	var usage llm.Usage
 
-	results, _, err := verifyPoCs(context.Background(), tpFindings(3), mock, &usage)
+	results, _, err := verifyPoCs(context.Background(), "", tpFindings(3), mock, &usage)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestVerifyPoCsTransportErrorFatal(t *testing.T) {
 	}}
 	var usage llm.Usage
 
-	_, stats, err := verifyPoCs(context.Background(), tpFindings(2), mock, &usage)
+	_, stats, err := verifyPoCs(context.Background(), "", tpFindings(2), mock, &usage)
 	if err == nil {
 		t.Fatal("expected error on PoC transport failure")
 	}
@@ -114,7 +114,7 @@ func TestVerifyPoCsMalformedTolerated(t *testing.T) {
 	}}
 	var usage llm.Usage
 
-	results, stats, err := verifyPoCs(context.Background(), tpFindings(2), mock, &usage)
+	results, stats, err := verifyPoCs(context.Background(), "", tpFindings(2), mock, &usage)
 	if err != nil {
 		t.Fatalf("malformed PoC response should be tolerated, got: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestVerifyPoCsSafetyRefusalToNeedsReview(t *testing.T) {
 	}}
 	var usage llm.Usage
 
-	results, stats, err := verifyPoCs(context.Background(), tpFindings(2), mock, &usage)
+	results, stats, err := verifyPoCs(context.Background(), "", tpFindings(2), mock, &usage)
 	if err != nil {
 		t.Fatalf("safety refusal should not fail PoC verification: %v", err)
 	}

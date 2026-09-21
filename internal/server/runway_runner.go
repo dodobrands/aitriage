@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/agent/graph"
@@ -16,8 +17,21 @@ import (
 // runRunwaySession is the canonical Web execution path. Simple mode and the
 // advanced pipeline both use this method, which in turn uses the same graph.Run
 // orchestrator and handoff builder as CI/CD.
-func (s *Server) runRunwaySession(session *models.RunwaySession, product *models.Product, findings []models.Finding) {
+func (s *Server) runRunwaySession(session *models.RunwaySession, product *models.Product, findings []models.Finding, language string) {
 	ctx := context.Background()
+
+	// This runs in a detached goroutine, where net/http cannot recover for us:
+	// an unhandled panic here would take the whole server down mid-audit. Record
+	// it against the session instead, so the failure is visible and survivable.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("Runway session panicked",
+				"session_id", session.ID,
+				"panic", recovered,
+				"stack", string(debug.Stack()))
+			s.markRunwayFailed(ctx, session, fmt.Errorf("internal error during audit: %v", recovered))
+		}
+	}()
 	updateProgress := func(step int, progressMessage string) {
 		session.Status = "running"
 		session.CurrentStep = step
@@ -38,6 +52,7 @@ func (s *Server) runRunwaySession(session *models.RunwaySession, product *models
 	state := &graph.AgentState{
 		ProjectPath:    projectPath,
 		BatchSize:      cfg.LLM.BatchSize,
+		Language:       language,
 		RunwayProgress: updateProgress,
 	}
 	for _, finding := range findings {

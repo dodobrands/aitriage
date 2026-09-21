@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useReports } from '../hooks/useReports';
+import { useProducts } from '../hooks/useProducts';
 import { useTitle } from '../hooks/useTitle';
 import { LoadingScreen } from '../components/common/LoadingScreen';
 
@@ -24,6 +25,14 @@ const FORMATS = [
 export const ReportsPage: React.FC = () => {
   const { t } = useTranslation('pages');
   useTitle(t('reports.title'));
+  const { products } = useProducts();
+  // A report covers one repository unless the user deliberately widens it.
+  // `undefined` means "not chosen yet", which is different from an explicit
+  // `null` ("all products"), so the default below is derived rather than
+  // written into state by an effect.
+  const [chosenScope, setChosenScope] = useState<number | null | undefined>(undefined);
+  const scopeProductId = chosenScope === undefined ? (products[0]?.id ?? null) : chosenScope;
+
   const {
     executiveSummary,
     reportHistory,
@@ -31,10 +40,11 @@ export const ReportsPage: React.FC = () => {
     generating,
     generateError,
     generateSuccess,
+    lastDownloadURL,
     downloadCSV,
     generateReport,
     refresh,
-  } = useReports();
+  } = useReports(scopeProductId);
   const [selectedFormat, setSelectedFormat] = useState(0);
   const [includeDeps, setIncludeDeps] = useState(true);
   const [signArtifact, setSignArtifact] = useState(false);
@@ -54,7 +64,9 @@ export const ReportsPage: React.FC = () => {
 
   const handleGenerate = () => {
     if (generating) return;
-    generateReport(FORMATS[selectedFormat].name, { includeDeps, sign: signArtifact });
+    // Send the machine-readable id, not the display name: the backend selects
+    // the renderer by id and cannot parse "SARIF v2.1.0".
+    generateReport(FORMATS[selectedFormat].id, { includeDeps, sign: signArtifact });
   };
 
   return (
@@ -88,6 +100,25 @@ export const ReportsPage: React.FC = () => {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Report scope. The artifact covers exactly what is selected here,
+              and the selection is echoed in the generated document itself. */}
+          <label className="flex items-center gap-2">
+            <span className="text-[9px] font-bold tracking-widest text-on-surface-variant opacity-60 uppercase hidden sm:inline">
+              {t('reports.scope.label')}
+            </span>
+            <select
+              value={scopeProductId === null ? 'all' : String(scopeProductId)}
+              onChange={(e) => setChosenScope(e.target.value === 'all' ? null : Number(e.target.value))}
+              className="h-8 px-2 bg-surface-container-low border border-outline-variant text-[11px] text-on-surface focus:border-primary outline-none max-w-[240px]"
+            >
+              {products.map((p) => (
+                <option key={p.id} value={String(p.id)}>
+                  {p.name}
+                </option>
+              ))}
+              <option value="all">{t('reports.scope.allProducts')}</option>
+            </select>
+          </label>
           <button
             onClick={refresh}
             className="btn-secondary h-8 px-4 flex items-center gap-2 group relative overflow-hidden"
@@ -286,6 +317,16 @@ export const ReportsPage: React.FC = () => {
                     <span className="text-label-xs text-success uppercase tracking-widest">
                       {t('reports.successMessage')}
                     </span>
+                    {/* Open the artifact straight away: the point of generating
+                        a report is to read or send it. */}
+                    {lastDownloadURL && (
+                      <button
+                        onClick={() => window.open(lastDownloadURL, '_blank')}
+                        className="ml-auto text-label-xs font-bold uppercase tracking-widest text-success underline decoration-success/40 underline-offset-4"
+                      >
+                        {t('reports.pull')}
+                      </button>
+                    )}
                   </div>
                 )}
                 <button

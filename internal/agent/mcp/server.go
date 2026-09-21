@@ -129,6 +129,7 @@ func (s *Server) registerTools() {
 	registerScannersListTool(s.srv)
 	registerExternalTools(s.srv, s.guard, s.profile == ProfileSafe)
 	registerSecureCoderTools(s.srv, s.guard, s.profile.allowsMutation())
+	registerBaselineTool(s.srv, s.guard, s.profile.allowsMutation())
 	registerDeployTool(s.srv, s.guard)
 	registerNFRTool(s.srv, s.guard)
 	registerDiagramTool(s.srv, s.guard)

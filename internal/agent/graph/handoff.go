@@ -203,6 +203,11 @@ func writeAgentHandoffFooter(sb *strings.Builder, state *AgentState, fpCount int
 		_, _ = fmt.Fprintf(sb, "\n_LLM usage (provider reported): %s. Cost is not estimated because it depends on provider, model, caching, and billing tier._\n", formatLLMUsage(state.TotalUsage))
 	}
 	if state.VerdictCacheStats.Enabled {
+		// The raw counters answer "did the cache work"; this line answers the
+		// question an operator actually asks, which is "what did it save me".
+		if reused := verdictReusePercent(state.VerdictCacheStats); reused > 0 {
+			_, _ = fmt.Fprintf(sb, "\n_Cache reuse: %d%% of verdicts came from cache, so those findings cost no tokens this run._\n", reused)
+		}
 		_, _ = fmt.Fprintf(sb, "\n_AITriage verdict cache: %d hits · %d misses · %d stored · %d sensitive skipped · %d stale FP invalidated · saved=%t._\n",
 			state.VerdictCacheStats.Hits,
 			state.VerdictCacheStats.Misses,
@@ -234,4 +239,15 @@ func writeAgentHandoffFooter(sb *strings.Builder, state *AgentState, fpCount int
 			state.ArtifactCacheStats.EligibilitySkipped,
 			state.ArtifactCacheStats.IntegrityFailed)
 	}
+}
+
+// verdictReusePercent reports the share of verdicts served from cache. It
+// returns 0 when nothing was classified, so a run with no findings does not
+// claim a saving it did not make.
+func verdictReusePercent(stats VerdictCacheStats) int {
+	total := stats.Hits + stats.Misses
+	if total <= 0 {
+		return 0
+	}
+	return stats.Hits * 100 / total
 }

@@ -1,6 +1,7 @@
 package external
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,13 +61,9 @@ func newGitleaksConfig() (string, func(), error) {
 		return "", func() {}, err
 	}
 	cleanup := func() { _ = os.Remove(f.Name()) }
-	content := `[extend]
-useDefault = true
-
-[allowlist]
-description = "AITriage generated artifacts"
-paths = ['''(^|/)(aitriage-reports|[.]aitriage|[.]aitriage-cache)(/|$)''']
-`
+	content := fmt.Sprintf("[extend]\nuseDefault = true\n\n[allowlist]\n"+
+		"description = \"AITriage out-of-scope paths\"\n"+
+		"paths = ['''%s''']\n", GitleaksAllowlistPattern())
 	if err := f.Chmod(0o600); err != nil {
 		_ = f.Close()
 		cleanup()

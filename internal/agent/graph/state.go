@@ -20,6 +20,12 @@ type AgentState struct {
 	DeepScan    bool
 	BatchSize   int
 
+	// Language is the output language for generated narrative (report, fix spec,
+	// summary). Technical identifiers stay verbatim in every language. It is
+	// part of the verdict/artifact cache namespace, since the same findings
+	// rendered in a different language are different artifacts.
+	Language string
+
 	// RunwayProgress is optional; web Runway uses it to persist live progress.
 	RunwayProgress func(step int, progressMessage string)
 

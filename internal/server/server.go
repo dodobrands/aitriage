@@ -23,6 +23,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/prompts"
 	"github.com/dodobrands/aitriage/internal/config"
 	"github.com/dodobrands/aitriage/internal/engine"
+	"github.com/dodobrands/aitriage/internal/engine/baseline"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
 	"github.com/dodobrands/aitriage/internal/models"
@@ -33,6 +34,13 @@ import (
 	"github.com/dodobrands/aitriage/internal/server/middleware"
 	"github.com/dodobrands/aitriage/internal/server/repositories"
 )
+
+// llmUnavailableMessage is the single user-facing explanation for every AI
+// surface that cannot run without a configured provider. It names all supported
+// keys instead of one, because any of them unlocks the feature.
+const llmUnavailableMessage = "AI features are offline: no LLM provider is configured. " +
+	"Set GEMINI_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY (or configure llm.api_key in .aitriage.yaml) and restart AITriage. " +
+	"Scanning and report generation work without it."
 
 type Server struct {
 	hostPrefix         string
@@ -326,6 +334,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.Handle("/api/reports/engagement/", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(reportHandler.HandleEngagementReport)))
 	mux.Handle("/api/reports/history", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(reportHandler.HandleListReportHistory)))
 	mux.Handle("/api/reports/generate", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(reportHandler.HandleGenerateReport)))
+	mux.Handle("/api/reports/download/", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(reportHandler.HandleDownloadReport)))
+	mux.Handle("/api/baseline", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleBaseline)))
 
 	mux.Handle("/api/analyze", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleAnalyze)))
 	mux.Handle("/api/pipeline", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handlePipeline)))
@@ -405,6 +415,13 @@ type scanRequest struct {
 	Path     string `json:"path"`
 	Stack    string `json:"stack,omitempty"`
 	External bool   `json:"external,omitempty"`
+	// ProbeNetwork opts into scanning listening ports on the host running
+	// AITriage. It is off by default because it describes the environment, not
+	// the audited repository.
+	ProbeNetwork bool `json:"probe_network,omitempty"`
+	// UseBaseline reports only findings absent from the accepted baseline, so a
+	// legacy codebase can be gated on regressions instead of on its whole history.
+	UseBaseline bool `json:"use_baseline,omitempty"`
 }
 
 type findingDTO struct {
@@ -431,8 +448,11 @@ type scanResponse struct {
 	ScannerCoverage string                      `json:"scanner_coverage"`
 	Scanners        []external.ScannerExecution `json:"scanners,omitempty"`
 	ManifestPath    string                      `json:"manifest_path,omitempty"`
-	Duration        string                      `json:"duration"`
-	Error           string                      `json:"error,omitempty"`
+	// BaselinedFindings counts findings suppressed by an accepted baseline. It is
+	// always reported so a reduced result can never look like a clean project.
+	BaselinedFindings int    `json:"baselined_findings"`
+	Duration          string `json:"duration"`
+	Error             string `json:"error,omitempty"`
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
@@ -461,10 +481,32 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		ProjectPath: containerPath,
 		ForceStack:  req.Stack,
 		RunExternal: req.External || containerFull,
-		ProbeHost:   "localhost",
+		// Port probing is opt-in. It inspects the machine AITriage runs on, not
+		// the code being audited, so it must never happen because someone asked
+		// for a source scan.
+		ProbeHost: requestedProbeHost(req.ProbeNetwork),
 	}
 
 	rich := orchestrator.RunAllScanners(ctx, opts)
+
+	// A baseline hides findings the team has already accepted. It is applied
+	// here, before scoring and persistence, so the score, the gate verdict and
+	// the stored findings all describe the same set: what is new.
+	baselinedCount := 0
+	if req.UseBaseline {
+		accepted, loadErr := baseline.Load(containerPath)
+		if loadErr != nil {
+			jsonError(w, fmt.Sprintf("failed to read baseline: %v", loadErr), http.StatusInternalServerError)
+			return
+		}
+		if accepted != nil {
+			filtered := baseline.Filter(rich.Report.Results, accepted)
+			baselinedCount = len(filtered.Baseline)
+			rich.Report.Results = filtered.New
+			orchestrator.RecomputeHealthCheck(&rich)
+		}
+	}
+
 	s.lastResult = &rich
 	scannerCoverage := "core"
 	if opts.RunExternal {
@@ -848,18 +890,19 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(scanResponse{
-		Ok:              true,
-		ScanID:          scanID,
-		Findings:        findings,
-		Dependencies:    rich.Report.Dependencies,
-		Stacks:          stacks,
-		SecurityScore:   rich.Report.SecurityScore,
-		SecurityGrade:   rich.Report.SecurityGrade,
-		HealthCheck:     rich.Report.HealthCheck,
-		ScannerCoverage: scannerCoverage,
-		Scanners:        rich.ScannerExecutions,
-		ManifestPath:    manifestPath,
-		Duration:        duration,
+		Ok:                true,
+		ScanID:            scanID,
+		BaselinedFindings: baselinedCount,
+		Findings:          findings,
+		Dependencies:      rich.Report.Dependencies,
+		Stacks:            stacks,
+		SecurityScore:     rich.Report.SecurityScore,
+		SecurityGrade:     rich.Report.SecurityGrade,
+		HealthCheck:       rich.Report.HealthCheck,
+		ScannerCoverage:   scannerCoverage,
+		Scanners:          rich.ScannerExecutions,
+		ManifestPath:      manifestPath,
+		Duration:          duration,
 	})
 }
 
@@ -935,7 +978,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"trivy":    external.IsInstalled("trivy"),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "tools": tools})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":    true,
+		"tools": tools,
+		// Scanning, scoring, the gate verdict and every report format work
+		// without a provider. Only triage and the written narrative need one, so
+		// the UI can say which half of the product is available rather than
+		// letting a user discover it by pressing a button that fails.
+		"ai_available": s.llmClient != nil,
+	})
 }
 
 // handlePrompts serves unified prompt templates from prompts.WebPromptTemplates.
@@ -1211,7 +1262,6 @@ func (s *Server) handleFindingVerification(w http.ResponseWriter, r *http.Reques
 	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
 		ProjectPath: scanPath,
 		RunExternal: runExternal,
-		ProbeHost:   "localhost",
 	})
 
 	stillPresent, matchedBy := findingStillPresent(finding, scanPath, &rich)
@@ -1725,7 +1775,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":    false,
-			"error": "AI Consultant is offline. Please provide a GEMINI_API_KEY.",
+			"error": llmUnavailableMessage,
 		})
 		return
 	}
@@ -1909,7 +1959,7 @@ Your task is to:
 
 func (s *Server) handleAITriage(w http.ResponseWriter, r *http.Request) {
 	if s.llmClient == nil {
-		jsonError(w, "AI Consultant is offline. Please provide a GEMINI_API_KEY.", http.StatusServiceUnavailable)
+		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -3383,6 +3433,14 @@ func (s *Server) handleRunwayStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The Runway pipeline is LLM-driven end to end. Without a configured client
+	// every stage would dereference a nil interface inside a background
+	// goroutine, taking the whole server down. Refuse early instead.
+	if s.llmClient == nil {
+		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
+		return
+	}
+
 	ctx := r.Context()
 	session, err := s.runwayRepo.GetByID(ctx, id)
 	if err != nil {
@@ -3407,8 +3465,22 @@ func (s *Server) handleRunwayStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go s.runRunwaySession(session, product, findings)
+	// The audit narrative follows the language the operator is reading the UI
+	// in. Identifiers inside it stay verbatim — see prompts.LocalisationContract.
+	language := prompts.NormalizeLanguage(r.URL.Query().Get("lang"))
+
+	go s.runRunwaySession(session, product, findings, language)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": "Runway scan started"})
+}
+
+// requestedProbeHost returns the host to port-scan for a scan request. Network
+// probing reports on the environment AITriage is running in rather than on the
+// audited source, so it happens only when explicitly requested.
+func requestedProbeHost(requested bool) string {
+	if !requested {
+		return ""
+	}
+	return "localhost"
 }

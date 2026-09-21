@@ -357,22 +357,16 @@ func matchesExcludedPath(r Rule, f *core.FileInfo) bool {
 
 func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, results *[]core.CheckResult, mu *sync.Mutex) {
 	if rule.Condition == "missing_lockfile" {
-		hasLock := false
-
-		// Check the filesystem directly at project root — reliable regardless of how ctx.Files is scoped
-		for _, lockFile := range rule.Files {
-			path := filepath.Join(ctx.RootPath, lockFile)
-			if _, err := os.Stat(path); err == nil {
-				hasLock = true
-				break
-			}
-		}
+		// Only ecosystems the project actually uses are considered. A PHP
+		// project must have composer.lock; it must not be asked for go.sum.
+		missing := missingLockEcosystems(rule, ctx.RootPath)
+		hasLock := len(missing) == 0
 
 		if !hasLock {
 			mu.Lock()
 			*results = append(*results, core.CheckResult{
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
-				Evidence:   "No lockfile found in " + ctx.RootPath,
+				Evidence:   "No lockfile for " + strings.Join(missing, ", ") + " in " + ctx.RootPath,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
 			})
 			mu.Unlock()
@@ -784,4 +778,55 @@ func (e *Engine) isLineIgnored(f *core.FileInfo, line int, ruleID string) bool {
 // containsSuppression checks if a line contains a suppression directive.
 func containsSuppression(line, directive string) bool {
 	return strings.Contains(line, directive)
+}
+
+// missingLockEcosystems returns the names of package ecosystems that the project
+// demonstrably uses (their manifest is present) but has not pinned with a
+// lockfile. A project using no known ecosystem returns nothing: there is no
+// dependency set to pin, so there is nothing to report.
+func missingLockEcosystems(rule Rule, rootPath string) []string {
+	ecosystems := rule.Ecosystems
+	if len(ecosystems) == 0 {
+		// Legacy rule shape: a flat list of lockfiles, any one of which counts.
+		for _, lockFile := range rule.Files {
+			if fileExistsAt(rootPath, lockFile) {
+				return nil
+			}
+		}
+		if len(rule.Files) == 0 {
+			return nil
+		}
+		return []string{"dependencies"}
+	}
+
+	var missing []string
+	for _, eco := range ecosystems {
+		manifestPresent := false
+		for _, manifest := range eco.Manifests {
+			if fileExistsAt(rootPath, manifest) {
+				manifestPresent = true
+				break
+			}
+		}
+		if !manifestPresent {
+			continue // the project does not use this ecosystem
+		}
+
+		locked := false
+		for _, lockFile := range eco.Lockfiles {
+			if fileExistsAt(rootPath, lockFile) {
+				locked = true
+				break
+			}
+		}
+		if !locked {
+			missing = append(missing, eco.Name)
+		}
+	}
+	return missing
+}
+
+func fileExistsAt(rootPath, name string) bool {
+	_, err := os.Stat(filepath.Join(rootPath, name))
+	return err == nil
 }

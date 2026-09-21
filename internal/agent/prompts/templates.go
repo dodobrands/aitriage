@@ -1,9 +1,11 @@
 package prompts
 
+import "strings"
+
 // SecureCoderPromptVersion is part of the deterministic verdict-cache namespace.
 // Bump it whenever the prompts or evidence contract change in a way that could
 // alter TP/FP/NR decisions.
-const SecureCoderPromptVersion = "securecoder-v2"
+const SecureCoderPromptVersion = "securecoder-v3"
 
 const (
 	PoCPromptVersion     = "poc-v1"
@@ -30,7 +32,7 @@ const SecureCoderFramework = `You are AITriage SecureCoder — an autonomous sec
 7. Assign CS-XXX-NNN vulnerability IDs to all findings.
 
 Emojis are strictly forbidden everywhere in your response.
-MUST respond in English regardless of the programming language or comments in the source code.
+MUST follow the LOCALISATION CONTRACT supplied with each request. If no contract is supplied, respond in English. The language of the source code and its comments never decides the response language.
 
 ## Evaluation Ruleset
 ` + SecureCodingGuidelines
@@ -635,4 +637,48 @@ Analyze whether this finding can be safely risk-accepted:
 
 Be honest and conservative. If in doubt, recommend fixing.`,
 	},
+}
+
+// SupportedLanguages maps a language tag to the name used in prompts. Only
+// languages the UI can request are listed; anything else falls back to English.
+var SupportedLanguages = map[string]string{
+	"en": "English",
+	"ru": "Russian",
+}
+
+// NormalizeLanguage resolves a requested language tag to a supported one.
+func NormalizeLanguage(tag string) string {
+	key := strings.ToLower(strings.TrimSpace(tag))
+	if idx := strings.IndexAny(key, "-_"); idx > 0 {
+		key = key[:idx]
+	}
+	if _, ok := SupportedLanguages[key]; ok {
+		return key
+	}
+	return "en"
+}
+
+// LocalisationContract renders the per-request language instruction.
+//
+// It is appended to the USER message, never to the system prompt. The system
+// prompt is a stable, versioned artifact: keeping it byte-identical across
+// languages preserves the provider-side prompt cache, which is where most of
+// this tool's token cost is saved. Language is presentation, so it travels with
+// the request rather than with the identity of the auditor.
+//
+// Only prose is localised. Every identifier a human or a machine joins on —
+// rule IDs, CS-XXX-NNN, CWE/CVE, severities, disposition labels, JSON keys —
+// stays verbatim, so a report written in one language remains comparable with
+// one written in another, and stored findings do not change meaning with the
+// reader's locale.
+func LocalisationContract(tag string) string {
+	language := SupportedLanguages[NormalizeLanguage(tag)]
+	return "\n\nLOCALISATION CONTRACT:\n" +
+		"- Write prose in " + language + ": rationales, descriptions, summaries, impact and remediation narrative.\n" +
+		"- Every value that is an identifier, a code or an enum stays exactly as specified. Do not translate:\n" +
+		"  rule IDs, CS-XXX-NNN vulnerability IDs, CWE/CVE identifiers, file paths, code, commands,\n" +
+		"  severity labels (CRITICAL/HIGH/MEDIUM/LOW/INFO), disposition labels\n" +
+		"  (True Positive / False Positive / Needs Manual Review), and every JSON key and\n" +
+		"  schema-defined JSON value in the response.\n" +
+		"- If you are tempted to translate an identifier, you are looking at a code, not at prose.\n"
 }

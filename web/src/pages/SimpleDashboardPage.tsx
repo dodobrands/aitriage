@@ -9,6 +9,8 @@ import { securityService } from '../services/securityService';
 import type { Finding, Product } from '../types';
 import { AgentHandoffPanel } from '../components/securecoder/AgentHandoffPanel';
 import { downloadRunwayArtifact } from '../services/runwayArtifacts';
+import { decideRestore } from '../lib/runwayRestore';
+import { runScanCompletionRefreshers } from '../lib/scanCompletion';
 import './SimpleDashboardPage.css';
 
 interface SimpleDashboardPageProps {
@@ -167,6 +169,16 @@ const PathInput: React.FC<{ value: string; onChange: (p: string) => void }> = ({
   );
 };
 
+/** Status of the accepted baseline, as reported by GET /api/baseline. */
+interface BaselineStatus {
+  exists: boolean;
+  path: string;
+  total: number;
+  by_severity?: Record<string, number>;
+  created_at?: string;
+  updated_at?: string;
+}
+
 /* ── Scan Panel (right column) ── */
 type ScanStatus = { state: 'idle' | 'scanning' | 'done' | 'error'; findings?: number; duration?: string; coverage?: string; error?: string };
 
@@ -191,6 +203,10 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
   const [toolStatus, setToolStatus] = useState<Record<string, boolean>>({});
 
   const [currentPath, setCurrentPath] = useState('.');
+  // Which project the primary action will scan. Clicking a row used to only
+  // highlight it while the button still scanned everything, so "I picked a repo"
+  // produced a report covering all of them.
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
   const loadPath = useCallback((path: string) => {
     setLoadingProjects(true);
@@ -276,22 +292,16 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
       setActiveScans(i + 1);
       await runScan(projects[i].path);
     }
-    if (onScanComplete) {
-      setTimeout(() => onScanComplete(), 2000);
-    } else {
-      setTimeout(() => window.location.reload(), 2000);
-    }
+    // A finished scan must be reflected by refetching state, never by reloading
+    // the page: a reload drops scan results the user is still looking at.
+    setTimeout(() => onScanComplete?.(), 2000);
   };
 
   const scanOne = async (path: string) => {
     setTotalScans(1);
     setActiveScans(1);
     await runScan(path);
-    if (onScanComplete) {
-      setTimeout(() => onScanComplete(), 1500);
-    } else {
-      setTimeout(() => window.location.reload(), 1500);
-    }
+    setTimeout(() => onScanComplete?.(), 1500);
   };
 
   const isAnyScanRunning = !!scanningProject;
@@ -394,17 +404,19 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
               const status = scanStatuses[p.path];
               const isActive = scanningProject === p.path;
               const isDimmed = isAnyScanRunning && !isActive;
+              const isSelected = selectedPath === p.path;
               return (
                 <div key={p.path}
                   className={`flex items-center gap-2.5 px-3 py-2 rounded-lg transition-all duration-300 ${
                     isActive ? 'bg-[rgba(34,197,94,0.06)] border-l-2 border-l-[#22c55e] border-y border-r border-[rgba(34,197,94,0.1)]'
                     : status?.state === 'done' ? 'border-l-2 border-l-[#22c55e]/40 border-y border-r border-transparent'
                     : status?.state === 'error' ? 'border-l-2 border-l-[#ef4444]/40 border-y border-r border-transparent'
+                    : isSelected ? 'bg-[var(--accent-color-soft)] border border-[var(--accent-color-line)]'
                     : 'border border-transparent hover:bg-surface-bright/40'
                   } ${isDimmed ? 'opacity-30' : ''}`}
                 >
-                  <div 
-                    onClick={() => !isAnyScanRunning && setCurrentPath(p.path)}
+                  <div
+                    onClick={() => !isAnyScanRunning && setSelectedPath(prev => (prev === p.path ? null : p.path))}
                     className="flex-1 flex items-center gap-2.5 min-w-0 cursor-pointer group"
                   >
                     {/* Icon */}
@@ -522,7 +534,11 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
       {/* Action button */}
       <div className="p-3 border-t border-[rgba(255,255,255,0.06)] bg-surface-container-low">
         <button
-          onClick={() => showCustomPath ? scanOne(scanPath) : scanAll()}
+          onClick={() => {
+            if (showCustomPath) return scanOne(scanPath);
+            if (selectedPath) return scanOne(selectedPath);
+            return scanAll();
+          }}
           disabled={isAnyScanRunning}
           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--accent-color)] text-[var(--accent-color-on-text)] text-[13px] font-medium hover:bg-[var(--accent-color-hover)] disabled:opacity-40 transition-all shadow-[0_0_14px_var(--accent-color-soft)]"
         >
@@ -534,7 +550,11 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
           ) : (
             <>
               <span className="material-symbols-outlined text-[16px]">play_arrow</span>
-              {showCustomPath ? 'Run Scan' : `Scan All (${projects.length})`}
+              {showCustomPath
+                ? 'Run Scan'
+                : selectedPath
+                  ? `Scan ${selectedPath.split('/').filter(Boolean).pop() || selectedPath}`
+                  : `Scan All (${projects.length})`}
             </>
           )}
         </button>
@@ -554,7 +574,7 @@ const SecureCoderPanel: React.FC<{
   onClose: () => void;
   onNavigateToReports?: (sessionId?: number) => void;
 }> = ({ activeProducts, onClose, onNavigateToReports }) => {
-  const { t } = useTranslation('pages');
+  const { t, i18n } = useTranslation('pages');
   const reduceMotion = useReducedMotion();
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
   
@@ -829,10 +849,49 @@ const SecureCoderPanel: React.FC<{
     setDepScanning(false);
   };
 
+  // Baseline: accept today's findings as the starting line so the gate reports
+  // only new work. It existed only in the CLI, so the people most likely to need
+  // it — those working entirely here — could not reach it.
+  const [baselineStatus, setBaselineStatus] = useState<BaselineStatus | null>(null);
+  const [baselineBusy, setBaselineBusy] = useState(false);
+
+  const fetchBaseline = useCallback(async () => {
+    try {
+      const res = await fetch('/api/baseline');
+      const data = await res.json();
+      if (data.ok) setBaselineStatus(data);
+    } catch { /* leave the previous status visible */ }
+  }, []);
+
+  const writeBaseline = useCallback(async () => {
+    setBaselineBusy(true);
+    try {
+      const res = await fetch('/api/baseline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (data.ok) setBaselineStatus(data);
+    } catch { /* status stays as it was */ }
+    setBaselineBusy(false);
+  }, []);
+
+  const clearBaseline = useCallback(async () => {
+    setBaselineBusy(true);
+    try {
+      const res = await fetch('/api/baseline', { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) setBaselineStatus(data);
+    } catch { /* status stays as it was */ }
+    setBaselineBusy(false);
+  }, []);
+
   useEffect(() => {
     if (expandedCat === 'ignore') fetchIgnored();
     if (expandedCat === 'config') fetchConfig();
-  }, [expandedCat, fetchIgnored, fetchConfig]);
+    if (expandedCat === 'baseline') fetchBaseline();
+  }, [expandedCat, fetchIgnored, fetchConfig, fetchBaseline]);
 
   useEffect(() => {
     if (configScannerBackend === 'wiz') {
@@ -848,13 +907,23 @@ const SecureCoderPanel: React.FC<{
 
 
 
-  const restoreRunwayFromSession = useCallback((session: any) => {
+  // True once the operator has deliberately started or reset an audit. From then
+  // on the background poller may refresh the run it is watching, but must never
+  // pull the screen back to a different, already finished one.
+  const runwayUserDrivenRef = useRef(false);
+  // Mirrors runwaySessionId for the polling closure, which would otherwise read
+  // the value captured when the interval was created.
+  const runwaySessionIdRef = useRef<number | null>(null);
+
+  const restoreRunwayFromSession = useCallback((session: any, options?: { takeOver?: boolean }) => {
     if (!session) return;
+    const takeOver = options?.takeOver ?? true;
     const status = String(session.status || '').toLowerCase();
     const rawStep = Number(session.current_step || 0);
     const displayStep = (status === 'running' || status === 'in_progress') && rawStep === 0 ? 1 : rawStep;
 
     setRunwaySessionId(session.id);
+    runwaySessionIdRef.current = session.id;
     setRunwayStep(displayStep);
     setRunwayProgressMessage(session.progress_message || '');
     setRunwayAutoMode(session.auto_mode || false);
@@ -873,7 +942,11 @@ const SecureCoderPanel: React.FC<{
     const proj = activeProducts.find(p => p.id === session.product_id);
     if (proj) {
       setRunwayProject(proj);
-      setRunwayOpen(true);
+      // A finished audit is history: show it if the operator opens Runway, but
+      // never force it back onto the screen while they are doing something else.
+      if (takeOver && status !== 'completed' && status !== 'failed') {
+        setRunwayOpen(true);
+      }
     }
   }, [activeProducts, t]);
 
@@ -897,7 +970,17 @@ const SecureCoderPanel: React.FC<{
             status === 'completed'
           );
           if (!cancelled && data.ok && shouldRestore) {
-            restoreRunwayFromSession(data.session);
+            const decision = decideRestore({
+              status: data.session.status,
+              sessionId: data.session.id,
+              onScreenSessionId: runwaySessionIdRef.current,
+              userDriven: runwayUserDrivenRef.current,
+            });
+            if (!decision.apply) {
+              return false;
+            }
+
+            restoreRunwayFromSession(data.session, { takeOver: decision.takeOver });
             return true;
           }
         } catch (e) { /* ignore */ }
@@ -919,6 +1002,7 @@ const SecureCoderPanel: React.FC<{
 
   const triggerBackendOrchestrator = async () => {
     if (!runwayProject) return;
+    runwayUserDrivenRef.current = true;
     setRunwayAutoMode(true);
     setRunwayLoading(true);
     runwayLoadingRef.current = true;
@@ -937,6 +1021,7 @@ const SecureCoderPanel: React.FC<{
         if (createData.ok && createData.session) {
           sessionId = createData.session.id;
           setRunwaySessionId(sessionId);
+          runwaySessionIdRef.current = sessionId;
         } else {
           throw new Error('Failed to create session');
         }
@@ -949,7 +1034,8 @@ const SecureCoderPanel: React.FC<{
     }
 
     try {
-      const res = await fetch(`/api/runway/start/${sessionId}`, { method: 'POST' });
+      // The audit narrative is written in the language the operator is reading.
+      const res = await fetch(`/api/runway/start/${sessionId}?lang=${encodeURIComponent(i18n.language || 'en')}`, { method: 'POST' });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Failed to start scan.');
       setRunwayStep(prev => (prev > 0 ? prev : 1));
@@ -1037,6 +1123,11 @@ const SecureCoderPanel: React.FC<{
         console.error('Failed to delete runway session:', e);
       }
     }
+    // Mark the operator as driving before clearing state, so the 5s poller
+    // cannot immediately restore the session that was just dismissed.
+    runwayUserDrivenRef.current = true;
+    runwaySessionIdRef.current = null;
+
     setRunwaySessionId(null);
     setRunwayStep(0);
     setRunwayProgressMessage('');
@@ -1458,6 +1549,60 @@ const SecureCoderPanel: React.FC<{
                         )}
                       </div>
                     )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Baseline */}
+          <div className="simple-securecoder-menu__section" data-view="baseline">
+            <button onClick={() => setExpandedCat(expandedCat === 'baseline' ? null : 'baseline')} className="simple-securecoder-menu__trigger w-full flex items-center gap-3 px-6 py-3 group" aria-expanded={expandedCat === 'baseline'}>
+              <span className={`material-symbols-outlined text-[16px] transition-colors ${expandedCat === 'baseline' ? 'text-[var(--accent-color)]' : 'text-[#3f3f46] group-hover:text-[var(--accent-color)]'}`}>flag</span>
+              <span className="simple-securecoder-menu__label">
+                <strong>{i18n.language?.startsWith('ru') ? 'Точка отсчёта' : 'Baseline'}</strong>
+                <small>{baselineStatus?.exists
+                  ? (i18n.language?.startsWith('ru') ? `${baselineStatus.total} принято` : `${baselineStatus.total} accepted`)
+                  : (i18n.language?.startsWith('ru') ? 'не задана' : 'not set')}</small>
+              </span>
+              <span className="material-symbols-outlined">chevron_right</span>
+            </button>
+            <AnimatePresence initial={false}>
+              {expandedCat === 'baseline' && (
+                <motion.div initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.1 }} className="simple-securecoder-menu__content overflow-hidden">
+                  <div className="px-6 pb-4 pt-2 space-y-3">
+                    <p className="text-[11px] leading-relaxed text-[#71717a]">
+                      {i18n.language?.startsWith('ru')
+                        ? 'Принимает текущие находки за точку отсчёта. Они остаются видны в отчётах, но гейт начинает судить только новые. Это штатный способ подключить сканер к существующей кодовой базе, не утонув в накопленном долге.'
+                        : 'Accepts the current findings as the starting line. They stay visible in reports, but the gate judges only new ones — the standard way to adopt scanning on an existing codebase without drowning in accumulated debt.'}
+                    </p>
+                    {baselineStatus?.exists && (
+                      <div className="text-[10px] text-[#a1a1aa] font-mono space-y-0.5">
+                        <div>{i18n.language?.startsWith('ru') ? 'Принято' : 'Accepted'}: <span className="text-[#f4f4f5]">{baselineStatus.total}</span></div>
+                        {baselineStatus.created_at && <div>{i18n.language?.startsWith('ru') ? 'Создана' : 'Created'}: {String(baselineStatus.created_at).replace('T', ' ').replace('Z', '')}</div>}
+                        {baselineStatus.updated_at && <div>{i18n.language?.startsWith('ru') ? 'Обновлена' : 'Updated'}: {String(baselineStatus.updated_at).replace('T', ' ').replace('Z', '')}</div>}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => void writeBaseline()}
+                        disabled={baselineBusy}
+                        className="flex-1 py-1.5 bg-[rgba(255,255,255,0.03)] hover:bg-[rgba(255,255,255,0.06)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(255,255,255,0.12)] text-[#f4f4f5] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[12px]">flag</span>
+                        {baselineStatus?.exists
+                          ? (i18n.language?.startsWith('ru') ? 'Обновить' : 'Update')
+                          : (i18n.language?.startsWith('ru') ? 'Принять текущее' : 'Accept current')}
+                      </button>
+                      <button
+                        onClick={() => void clearBaseline()}
+                        disabled={baselineBusy || !baselineStatus?.exists}
+                        className="flex-1 py-1.5 bg-[rgba(239,68,68,0.06)] border border-[rgba(239,68,68,0.12)] hover:bg-[rgba(239,68,68,0.12)] text-[#ef4444] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[12px]">delete_sweep</span>
+                        {i18n.language?.startsWith('ru') ? 'Очистить' : 'Clear'}
+                      </button>
+                    </div>
                   </div>
                 </motion.div>
               )}
@@ -2354,7 +2499,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   const reduceMotion = useReducedMotion();
   const { findings, loading: findingsLoading, error: findingsError, refresh: refreshFindings } = useFindings() as any;
   const { metrics, loading: metricsLoading, error: metricsError, refresh: refreshMetrics } = useMetrics();
-  const { products, loading: productsLoading, error: productsError } = useProducts();
+  const { products, loading: productsLoading, error: productsError, refresh: refreshProducts } = useProducts();
 
   const [globalScanning, setGlobalScanning] = useState(false);
   const [globalScanPath, setGlobalScanPath] = useState('/host');
@@ -2403,8 +2548,11 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
       });
       const data = await res.json();
       if (data.ok) {
-        refreshFindings?.();
-        refreshMetrics?.();
+        runScanCompletionRefreshers({
+          findings: refreshFindings,
+          metrics: refreshMetrics,
+          products: refreshProducts,
+        });
       } else {
         alert(data.error || 'Scan failed');
       }
@@ -2434,9 +2582,16 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   const [aiSummaryLang, setAiSummaryLang] = useState<'en' | 'ru'>('ru');
   const [isAiSummaryExpanded, setIsAiSummaryExpanded] = useState(false);
   const [toolStatus, setToolStatus] = useState<Record<string, boolean>>({});
+  // Scanning, scoring, the gate and every report format work without a provider.
+  // Only triage and the written narrative need one, so the UI says which half is
+  // available instead of letting the user find out by pressing a button.
+  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch('/api/health').then(r => r.json()).then(d => { if (d.ok && d.tools) setToolStatus(d.tools); }).catch(() => {});
+    fetch('/api/health').then(r => r.json()).then(d => {
+      if (d.ok && d.tools) setToolStatus(d.tools);
+      if (d.ok && typeof d.ai_available === 'boolean') setAiAvailable(d.ai_available);
+    }).catch(() => {});
   }, []);
 
   // SecureCoder Bulk Selection & Active File Scope State
@@ -2498,7 +2653,8 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
       }
       setSelectedFindings(new Set());
       setBulkIgnoreModalOpen(false);
-      window.location.reload();
+      refreshFindings?.();
+      refreshMetrics?.();
     } catch (e) {
       console.error(e);
     } finally {
@@ -2664,6 +2820,26 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   }, [sevCounts]);
 
 
+  // A scanner finding is a hypothesis until someone confirms it. Showing the two
+  // apart is what makes a failing gate legible: "0 confirmed, 25 unreviewed"
+  // explains itself, where "25 active findings" next to "0 true positives" reads
+  // as a contradiction.
+  const triageCounts = useMemo(() => {
+    const counts = { confirmed: 0, needsReview: 0, suppressed: 0 };
+    findings?.forEach((f: Finding) => {
+      if (productFilter !== null && f.product_id !== productFilter) return;
+      const status = (f.status || 'open').toLowerCase();
+      if (['false_positive', 'risk_accepted', 'resolved', 'closed', 'mitigated'].includes(status)) {
+        counts.suppressed++;
+      } else if (['verified', 'confirmed', 'true_positive'].includes(status)) {
+        counts.confirmed++;
+      } else {
+        counts.needsReview++;
+      }
+    });
+    return counts;
+  }, [findings, productFilter]);
+
   const projectStats = useMemo(() => {
     let total = 0;
     let resolved = 0;
@@ -2779,7 +2955,8 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
           next.delete(f.id);
           return next;
         });
-        window.location.reload();
+        refreshFindings?.();
+        refreshMetrics?.();
       }
       return;
     }
@@ -2802,7 +2979,8 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
           })
         });
       }
-      window.location.reload();
+      refreshFindings?.();
+      refreshMetrics?.();
     } catch (e) {
       console.error(e);
     }
@@ -2879,6 +3057,23 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
               </div>
             )}
 
+            {aiAvailable === false && (
+              <motion.section variants={itemVariants} className="simple-ai-offline" role="status">
+                <span className="material-symbols-outlined" aria-hidden="true">info</span>
+                <div>
+                  <strong>
+                    {i18n.language?.startsWith('ru')
+                      ? 'Базовый аудит активен. ИИ-триаж выключен — провайдер не настроен.'
+                      : 'Basic audit active. AI triage is off — no provider configured.'}
+                  </strong>
+                  <span>
+                    {i18n.language?.startsWith('ru')
+                      ? 'Работает без ключа: сканирование, рейтинг безопасности, вердикт политики, отчёты SARIF / CSV / SBOM / для руководства. Требует ключа: автоматический разбор находок на подтверждённые и ложные, PoC и текстовые выводы.'
+                      : 'Works without a key: scanning, security score, policy verdict, and SARIF / CSV / SBOM / executive reports. Needs a key: automatic triage into confirmed and false positives, PoC reasoning, and written conclusions.'}
+                  </span>
+                </div>
+              </motion.section>
+            )}
             <motion.section variants={itemVariants} className="simple-posture-strip" aria-label={t('securityScore')}>
               <div className="simple-posture-strip__repository">
                 <span className="material-symbols-outlined" aria-hidden="true">shield_lock</span>
@@ -2893,6 +3088,13 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                 <em className={`simple-risk-label simple-risk-label--${score < 30 ? 'critical' : score < 60 ? 'high' : score < 80 ? 'medium' : 'secure'}`}>
                   {score < 30 ? t('criticalRisk') : score < 60 ? t('highRisk') : score < 80 ? t('mediumRisk') : t('secureStatus')}
                 </em>
+              </div>
+              <div className="simple-posture-strip__triage" title={i18n.language?.startsWith('ru')
+                ? 'Находка от сканера — это гипотеза, пока её не подтвердили. Непроверенные считаются открытыми, потому что они не разобраны, а не потому что доказаны.'
+                : 'A scanner finding is a hypothesis until someone confirms it. Unreviewed findings count as open because they are unresolved, not because they are proven.'}>
+                <span>{i18n.language?.startsWith('ru') ? 'Подтверждено' : 'Confirmed'}: <strong>{triageCounts.confirmed}</strong></span>
+                <span>{i18n.language?.startsWith('ru') ? 'Требуют проверки' : 'Needs review'}: <strong>{triageCounts.needsReview}</strong></span>
+                <span>{i18n.language?.startsWith('ru') ? 'Подавлено' : 'Suppressed'}: <strong>{triageCounts.suppressed}</strong></span>
               </div>
               <div className="simple-posture-strip__severities" aria-label={i18n.language?.startsWith('ru') ? 'Распределение по критичности' : 'Severity distribution'}>
                 {([
@@ -3858,7 +4060,11 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   <span className="material-symbols-outlined" aria-hidden="true">close</span>
                 </button>
               </div>
-              <div className="simple-drawer__content"><ScanPanel onScanComplete={() => { refreshFindings?.(); refreshMetrics?.(); }} /></div>
+              <div className="simple-drawer__content"><ScanPanel onScanComplete={() => runScanCompletionRefreshers({
+                findings: refreshFindings,
+                metrics: refreshMetrics,
+                products: refreshProducts,
+              })} /></div>
             </aside>
           </div>
         )}

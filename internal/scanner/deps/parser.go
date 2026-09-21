@@ -3,6 +3,7 @@ package deps
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -344,7 +345,15 @@ func parseComposerJSON(f *core.FileInfo, dir string, graph *DependencyGraph) ([]
 	deps = append(deps, rootDep)
 	rootID := rootDep.ID()
 
+	// composer.json holds version constraints ("^7.2"); composer.lock holds the
+	// versions actually installed. Prefer the lockfile so the SBOM and any CVE
+	// matching describe what ships, not what is merely allowed.
+	resolved := parseComposerLock(dir)
+
 	addDep := func(depName, depVer, depType string) {
+		if locked, ok := resolved[depName]; ok && locked != "" {
+			depVer = locked
+		}
 		dep := Dependency{Name: depName, Version: depVer, Type: depType, Ecosystem: "php"}
 		deps = append(deps, dep)
 		graph.Edges[rootID] = append(graph.Edges[rootID], dep.ID())
@@ -357,7 +366,60 @@ func parseComposerJSON(f *core.FileInfo, dir string, graph *DependencyGraph) ([]
 		addDep(n, v, "dev")
 	}
 
+	// Transitive packages appear only in the lockfile. Without them the PHP
+	// inventory would list a handful of direct requirements and miss the tree
+	// that is actually deployed.
+	declared := make(map[string]bool, len(pkg.Require)+len(pkg.RequireDev))
+	for n := range pkg.Require {
+		declared[n] = true
+	}
+	for n := range pkg.RequireDev {
+		declared[n] = true
+	}
+	for depName, depVer := range resolved {
+		if declared[depName] {
+			continue
+		}
+		dep := Dependency{Name: depName, Version: depVer, Type: "transitive", Ecosystem: "php"}
+		deps = append(deps, dep)
+		graph.Edges[rootID] = append(graph.Edges[rootID], dep.ID())
+	}
+
 	return deps, rootID
+}
+
+// parseComposerLock reads the resolved package versions from composer.lock.
+// A missing or unreadable lockfile is not an error here: the caller falls back
+// to the constraints declared in composer.json.
+func parseComposerLock(dir string) map[string]string {
+	content, err := os.ReadFile(filepath.Join(dir, "composer.lock"))
+	if err != nil {
+		return nil
+	}
+
+	var lock struct {
+		Packages    []composerLockPackage `json:"packages"`
+		PackagesDev []composerLockPackage `json:"packages-dev"`
+	}
+	if err := json.Unmarshal(content, &lock); err != nil {
+		return nil
+	}
+
+	resolved := make(map[string]string, len(lock.Packages)+len(lock.PackagesDev))
+	for _, group := range [][]composerLockPackage{lock.Packages, lock.PackagesDev} {
+		for _, entry := range group {
+			if entry.Name == "" {
+				continue
+			}
+			resolved[entry.Name] = strings.TrimPrefix(entry.Version, "v")
+		}
+	}
+	return resolved
+}
+
+type composerLockPackage struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 func parseGemfile(f *core.FileInfo, dir string, graph *DependencyGraph) ([]Dependency, string) {

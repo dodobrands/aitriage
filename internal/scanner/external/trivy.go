@@ -28,9 +28,7 @@ func RunTrivy(ctx context.Context, path, scanType string) ([]UnifiedFinding, err
 		scanType = "fs"
 	}
 	args := []string{scanType, "--format", "json", "--quiet"}
-	for _, excluded := range generatedArtifactPaths(path) {
-		args = append(args, "--skip-dirs", excluded)
-	}
+	args = append(args, TrivySkipDirArgs(path)...)
 	args = append(args, path)
 	result, err := RunTool(ctx, "trivy", args...)
 	if err != nil {

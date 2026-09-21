@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
@@ -38,8 +39,11 @@ func TestComputeHealthCheckHonorsDeployAndNetworkFalsePositives(t *testing.T) {
 	if state.HealthCheck.Breakdown.ActiveFindings != 0 {
 		t.Fatalf("active findings = %d; want 0", state.HealthCheck.Breakdown.ActiveFindings)
 	}
-	if state.HealthCheck.Breakdown.IgnoredFindings != 2 {
-		t.Fatalf("ignored findings = %d; want 2", state.HealthCheck.Breakdown.IgnoredFindings)
+	// Only the deploy finding reaches scoring. A listening port describes the
+	// machine AITriage ran on, not the repository, so it is reported but never
+	// scored — see computeHealthCheck.
+	if state.HealthCheck.Breakdown.IgnoredFindings != 1 {
+		t.Fatalf("ignored findings = %d; want 1 (the deploy finding; network findings are not scored)", state.HealthCheck.Breakdown.IgnoredFindings)
 	}
 	if state.HealthCheck.Score != 100 {
 		t.Fatalf("score = %d; want 100", state.HealthCheck.Score)
@@ -68,5 +72,81 @@ func TestComputeHealthCheckAppliesAgentPolicyToUndisposedFindings(t *testing.T) 
 	}
 	if len(state.HealthCheck.Verdict.BlockingReasons) == 0 {
 		t.Fatal("strict verdict has no blocking reasons")
+	}
+}
+
+// A port that happens to be open on the operator's machine must not change a
+// repository's security score. The pilot saw "Port 8080 open" reported against
+// his codebase; it was AITriage's own dev server.
+func TestNetworkFindingsDoNotAffectTheRepositoryScore(t *testing.T) {
+	withNetwork := &AgentState{
+		NetworkFindings: []network.NetworkFinding{
+			{Port: 8080, Severity: "HIGH", Service: "HTTP (alt)"},
+			{Port: 5432, Severity: "HIGH", Service: "postgres"},
+		},
+	}
+	enrichFindings(withNetwork)
+	computeHealthCheck(withNetwork)
+
+	clean := &AgentState{}
+	enrichFindings(clean)
+	computeHealthCheck(clean)
+
+	if withNetwork.HealthCheck.Score != clean.HealthCheck.Score {
+		t.Errorf("score with open ports = %d, without = %d; the environment must not move the repository score",
+			withNetwork.HealthCheck.Score, clean.HealthCheck.Score)
+	}
+	if withNetwork.HealthCheck.Breakdown.ActiveFindings != 0 {
+		t.Errorf("active findings = %d; network findings must not be scored", withNetwork.HealthCheck.Breakdown.ActiveFindings)
+	}
+}
+
+// The gate used to say "active findings are not allowed" next to "0 true
+// positives", which reads as a contradiction. It must name the unreviewed count.
+func TestGateExplainsItselfWhenNothingIsConfirmed(t *testing.T) {
+	result := healthcheck.Result{
+		Breakdown: healthcheck.Breakdown{
+			ActiveFindings:      25,
+			ConfirmedFindings:   0,
+			NeedsReviewFindings: 25,
+			CountBySeverity:     map[string]int{"MEDIUM": 25},
+		},
+	}
+	policy := healthcheck.Policy{Profile: healthcheck.PolicyBaseline, FailOn: healthcheck.FailOnAny}
+
+	verdict := healthcheck.EvaluatePolicy(result, policy)
+
+	if verdict.Passed {
+		t.Fatal("unreviewed findings must still block a fail-on-any policy")
+	}
+	var message string
+	for _, reason := range verdict.BlockingReasons {
+		if reason.Code == "active_findings" {
+			message = reason.Message
+		}
+	}
+	if message == "" {
+		t.Fatal("no active_findings blocking reason was produced")
+	}
+	if !strings.Contains(message, "not been reviewed") {
+		t.Errorf("blocking reason = %q; it must explain that the findings are unreviewed, not proven", message)
+	}
+}
+
+// Teams that triage on their own schedule can choose a policy where only
+// confirmed findings block.
+func TestFailOnConfirmedLetsUnreviewedFindingsPass(t *testing.T) {
+	result := healthcheck.Result{
+		Breakdown: healthcheck.Breakdown{
+			ActiveFindings:      25,
+			ConfirmedFindings:   0,
+			NeedsReviewFindings: 25,
+			CountBySeverity:     map[string]int{"MEDIUM": 25},
+		},
+	}
+	policy := healthcheck.Policy{Profile: healthcheck.PolicyBaseline, FailOn: healthcheck.FailOnConfirmed}
+
+	if verdict := healthcheck.EvaluatePolicy(result, policy); !verdict.Passed {
+		t.Errorf("fail_on=confirmed blocked with nothing confirmed: %+v", verdict.BlockingReasons)
 	}
 }

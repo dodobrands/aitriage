@@ -475,8 +475,9 @@ func (s *Server) handleSecureCoderScanDirectory(w http.ResponseWriter, r *http.R
 	}
 
 	var req struct {
-		Path     string `json:"path"`
-		External bool   `json:"external,omitempty"`
+		Path         string `json:"path"`
+		External     bool   `json:"external,omitempty"`
+		ProbeNetwork bool   `json:"probe_network,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -497,7 +498,8 @@ func (s *Server) handleSecureCoderScanDirectory(w http.ResponseWriter, r *http.R
 	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
 		ProjectPath: containerPath,
 		RunExternal: req.External,
-		ProbeHost:   "localhost",
+		// No implicit port scan of the host: see requestedProbeHost.
+		ProbeHost: requestedProbeHost(req.ProbeNetwork),
 	})
 
 	var findings []secureCoderFindingResponse

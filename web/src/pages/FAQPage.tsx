@@ -201,7 +201,7 @@ export const FAQPage: React.FC = () => {
                             {idx + 1}
                           </div>
                           <p className="text-xs leading-relaxed text-[#a1a1aa]">
-                            {step.substring(3)}
+                            {step}
                           </p>
                         </div>
                       ))}

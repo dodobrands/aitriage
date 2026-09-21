@@ -52,8 +52,9 @@ func PrintTerminal(report scanner.ScanReport) {
 		fmt.Printf("       [%s]\n", bar)
 	}
 	hb := report.HealthCheck.Breakdown
-	fmt.Printf("       %d active · %d ignored (FP) · %d deduped · penalty %d · bonus %d\n",
-		hb.ActiveFindings, hb.IgnoredFindings, hb.DedupedFindings, hb.Penalty, hb.Bonus)
+	fmt.Printf("       %d active (%d confirmed · %d unreviewed) · %d ignored (FP) · %d deduped · penalty %d · bonus %d\n",
+		hb.ActiveFindings, hb.ConfirmedFindings, hb.NeedsReviewFindings,
+		hb.IgnoredFindings, hb.DedupedFindings, hb.Penalty, hb.Bonus)
 	fmt.Println("----------------------------------------")
 
 	for _, r := range report.Results {

@@ -382,6 +382,72 @@ aitriage-reports/
 
 Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this directory from every scanner and AI context so its own output cannot trigger another audit loop.
 
+## Scope, cost and the gate verdict
+
+### What is in scope
+
+AITriage audits the application you ship, not everything on disk. By default it skips
+files `git` ignores and directories holding third-party or generated code
+(`vendor`, `node_modules`, `dist`, `build`, `.next`, `__pycache__`, `venv`). The same
+rules apply to the bundled Semgrep, Trivy, Gitleaks and Bandit, and to the git-history
+secret scan, so a vendored dependency is never reported as your vulnerability.
+
+| Variable | Effect |
+| :--- | :--- |
+| `AITRIAGE_RESPECT_GITIGNORE=false` | Audit ignored files too. Use when the question is "did a secret ever reach this working tree", not "is my application vulnerable" |
+| `AITRIAGE_SCAN_VENDORED=true` | Audit vendored and generated directories as if they were your own source |
+| `.aitriageignore` | Per-project excludes, same syntax as `.gitignore`, always honoured |
+
+Network port probing is opt-in. It reports on the machine AITriage runs on rather than on
+the repository, so its findings are never counted in the repository's security score.
+
+### Why the gate can fail with nothing confirmed
+
+A scanner finding is a hypothesis until someone confirms it. AITriage reports three states:
+**confirmed**, **needs review** and **suppressed** (false positive, accepted risk, resolved).
+The default policy is fail-closed: unreviewed findings block, because unreviewed is
+unresolved, not proven safe. This matches how Sonar quality gates and GitHub code scanning
+behave — an alert must be triaged or dismissed before it stops blocking.
+
+That default has a known failure mode on an existing codebase: the gate judges years of
+accumulated debt, and the team learns to override it. Choose deliberately:
+
+| Setting | Meaning |
+| :--- | :--- |
+| `fail_on: critical` (default) | Active CRITICAL/HIGH findings block |
+| `fail_on: any` | Any active finding blocks, reviewed or not |
+| `fail_on: confirmed` | Only findings someone confirmed block; unreviewed are reported, not blocking |
+| `fail_on: never` | The gate never blocks; the score is informational |
+| `aitriage baseline create .` | Accept today's findings as the starting line and gate only on regressions |
+
+A baseline is a property of the project, not of the tool that created it. It lives in
+`.aitriage-baseline.json` at the repository root and is available from every surface: the CLI
+(`aitriage baseline`), the Web UI (SecureCoder → Baseline) and an AI IDE (`aitriage_baseline`).
+A baseline created in one is honoured by the others. Under the MCP safe profile only inspection
+is offered, because accepting findings writes to the project.
+
+Today a baseline covers the built-in engine's findings. Results from the bundled Semgrep, Trivy,
+Gitleaks and Bandit are not yet baselined.
+
+For a legacy codebase adopting AITriage, `aitriage baseline create .` is usually the right
+first move: it keeps every finding visible in reports while the gate judges only new work.
+
+### Controlling AI cost
+
+Deterministic scanning, the security score, the gate verdict and every report format cost
+nothing — they need no LLM at all. Only triage, PoC reasoning and the written narrative use
+a provider.
+
+| Lever | Effect |
+| :--- | :--- |
+| Verdict cache (on by default) | A re-run of the same findings reuses stored verdicts. The report prints the reuse percentage |
+| `AITRIAGE_GATING=on` | Send only CRITICAL/HIGH findings to the LLM. The rest get a deterministic `Needs Manual Review` — never an automatic dismissal |
+| `AITRIAGE_BATCH_SIZE` | Findings per request. Larger batches cost fewer round trips and more tokens per call |
+| Provider choice | Triage is classification, not composition. A small fast model is usually the better trade here; reserve a frontier model for narrative quality |
+
+If no provider key is set, Web still scans, scores, applies the policy and generates every
+report format. The AI panels report that they are offline instead of failing the run.
+
 ## Safety contract
 
 - A full run fails closed if Docker or any required scanner cannot run.

@@ -17,7 +17,10 @@ import (
 // Schema v2: generated CS-* IDs (FindingID) are excluded from the disposition
 // hash — fingerprints already identify findings, and derived IDs must not be
 // able to change the key.
-const artifactCacheSchemaVersion = 2
+// v3 adds the output language: the same findings rendered in another language
+// are different artifacts, and reusing an English bundle for a Russian run would
+// silently serve the wrong document.
+const artifactCacheSchemaVersion = 3
 
 type artifactCacheKeyContext struct {
 	SchemaVersion       int      `json:"schema_version"`
@@ -25,6 +28,7 @@ type artifactCacheKeyContext struct {
 	PoCPromptVersion    string   `json:"poc_prompt_version"`
 	ReportPromptVersion string   `json:"report_prompt_version"`
 	FixSpecVersion      string   `json:"fixspec_prompt_version"`
+	Language            string   `json:"language"`
 	FindingFingerprints []string `json:"finding_fingerprints"`
 	DispositionHashes   []string `json:"disposition_hashes"`
 }
@@ -266,6 +270,7 @@ func buildArtifactCacheKey(state *AgentState) (string, string) {
 		PoCPromptVersion:    prompts.PoCPromptVersion,
 		ReportPromptVersion: prompts.ReportPromptVersion,
 		FixSpecVersion:      prompts.FixSpecPromptVersion,
+		Language:            prompts.NormalizeLanguage(state.Language),
 		FindingFingerprints: make([]string, 0, len(state.EnrichedFindings)),
 		DispositionHashes:   make([]string, 0, len(state.FindingDispositions)),
 	}
