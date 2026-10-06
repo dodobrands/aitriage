@@ -90,6 +90,19 @@ Each rule is a YAML object with the following fields:
 | `contains:X` | Alert only if file also contains X |
 | `threshold:N` | Alert if matching lines exceed N% of total lines |
 | `missing` | Alert if the expected file does not exist |
+| `missing_lockfile` | Alert if a project uses a package manager (its manifest is present) but has no lockfile for it; see `ecosystems` below |
+
+### Lockfile Ecosystems (`condition: missing_lockfile`)
+
+```yaml
+  ecosystems:
+    - name: "npm"                          # Shown in the evidence
+      manifests: ["package.json"]          # Any of them proves the project uses the ecosystem
+      lockfiles: ["package-lock.json", "yarn.lock"]  # Any of them pins it
+      workspace_root: true                 # Optional: a lockfile in an ancestor up to the scan root also counts
+```
+
+Set `workspace_root: true` only for package managers that pin a whole workspace with one lockfile at its root (npm/yarn/pnpm/bun workspaces, Cargo and uv workspaces, Mix umbrellas, Deno workspaces). Without it the lockfile must sit next to the manifest, as Go modules and NuGet projects require.
 
 ### Taint Mode (`mode: taint`)
 
