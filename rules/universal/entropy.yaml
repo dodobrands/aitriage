@@ -16,10 +16,8 @@ rules:
     # A lockfile is only required for a package manager the project actually
     # uses. Each entry is checked independently: a PHP project is asked for
     # composer.lock and nothing else.
-    # workspace_root: the package manager pins a whole workspace (npm/yarn/pnpm/bun
-    # workspaces, Cargo and uv workspaces, Mix umbrellas, Deno workspaces) with one
-    # lockfile at its root, so a lockfile in any ancestor up to the scan root counts.
-    # Ecosystems without it keep a lockfile per module (go.sum, packages.lock.json).
+    # workspace_root: one lockfile at the workspace root pins every member, so a
+    # lockfile in an ancestor up to the scan root counts. Go and NuGet lock per module.
     ecosystems:
       - name: "npm"
         manifests: ["package.json"]

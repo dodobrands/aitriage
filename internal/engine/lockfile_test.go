@@ -165,11 +165,6 @@ func TestRelativeScanRootIsSearchedUpToItself(t *testing.T) {
 	}
 }
 
-// The detector turns every directory with a package.json into its own project,
-// so each workspace member was checked for a lockfile next to its own manifest
-// and reported, although the package manager pins the whole workspace with a
-// single lockfile at the workspace root.
-
 func yarnWorkspace(t *testing.T, withRootLockfile bool) (root, member string) {
 	t.Helper()
 	root = t.TempDir()

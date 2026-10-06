@@ -819,9 +819,6 @@ func missingLockEcosystems(rule Rule, rootPath, scanRoot string) []string {
 	return missing
 }
 
-// hasLockfile looks for the ecosystem's lockfile in the project directory and,
-// for package managers that pin a whole workspace from its root, in every
-// ancestor up to the scan root. It never looks above the scan root.
 func hasLockfile(eco models.Ecosystem, rootPath, scanRoot string) bool {
 	dir := rootPath
 	for {
