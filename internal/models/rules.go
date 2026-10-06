@@ -8,11 +8,14 @@ import (
 )
 
 // Ecosystem describes one package manager: the manifest that proves the project
-// uses it, and the lockfiles that pin it.
+// uses it, and the lockfiles that pin it. WorkspaceRoot marks package managers
+// that pin a whole workspace with one lockfile at its root, so a member
+// project is also pinned by a lockfile in an ancestor directory.
 type Ecosystem struct {
-	Name      string   `yaml:"name" json:"name"`
-	Manifests []string `yaml:"manifests" json:"manifests"`
-	Lockfiles []string `yaml:"lockfiles" json:"lockfiles"`
+	Name          string   `yaml:"name" json:"name"`
+	Manifests     []string `yaml:"manifests" json:"manifests"`
+	Lockfiles     []string `yaml:"lockfiles" json:"lockfiles"`
+	WorkspaceRoot bool     `yaml:"workspace_root" json:"workspace_root"`
 }
 
 type Rule struct {

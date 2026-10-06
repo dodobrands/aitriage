@@ -252,6 +252,9 @@ func (w *Workspace) Close() {
 // with its own subset of files.
 type ProjectContext struct {
 	RootPath string
+	// ScanRoot is the workspace being scanned. A project never looks above it,
+	// for example for a lockfile shared by a package-manager workspace.
+	ScanRoot string
 	Files    []*FileInfo
 	Stack    string
 	Config   *config.Config
