@@ -1,36 +1,37 @@
-import React, { useEffect, useState } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import confetti from 'canvas-confetti';
+import { useSearchParams } from 'react-router-dom';
+import { FindingEvidence } from '../components/findings/FindingEvidence';
+import React, { useEffect, useRef, useState } from 'react';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import go from 'react-syntax-highlighter/dist/esm/languages/prism/go';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
+import rust from 'react-syntax-highlighter/dist/esm/languages/prism/rust';
+import csharp from 'react-syntax-highlighter/dist/esm/languages/prism/csharp';
+import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
+import php from 'react-syntax-highlighter/dist/esm/languages/prism/php';
+import ruby from 'react-syntax-highlighter/dist/esm/languages/prism/ruby';
+import docker from 'react-syntax-highlighter/dist/esm/languages/prism/docker';
+import vscDarkPlus from 'react-syntax-highlighter/dist/esm/styles/prism/vsc-dark-plus';
+import { isActive, isResolved } from '../lib/findingStatus';
 import { useTranslation } from 'react-i18next';
 import { useFindings } from '../hooks/useFindings';
 import { useTitle } from '../hooks/useTitle';
 import { useCopilotStore } from '../store/CopilotStore';
 
-interface Finding {
-  id: number;
-  rule_id?: string;
-  title: string;
-  severity: string;
-  stack: string;
-  status: string;
-  file_path?: string;
-  file?: string;
-  line_number?: number;
-  cwe_id?: string;
-  cve_id?: string;
-  description?: string;
-  code_snippet?: string;
-  fix_suggestion?: string;
-  suggestion?: string;
-  agent_prompt?: string;
-  agent_prompt_generated_at?: string;
-  verification_status?: string;
-  verification_summary?: string;
-  verification_last_run_at?: string;
-  is_verified?: boolean;
-  verified_at?: string;
-}
+for (const [name, grammar] of Object.entries({ javascript, typescript, tsx, json, python, go, bash, yaml, rust, csharp, java, php, ruby, docker })) SyntaxHighlighter.registerLanguage(name, grammar);
+const codeLanguage = (path = '', stack = '') => {
+  const extension = path.split('.').pop()?.toLowerCase() || '';
+  const languages: Record<string, string> = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'tsx', py: 'python', go: 'go', sh: 'bash', json: 'json', yml: 'yaml', yaml: 'yaml', rs: 'rust', cs: 'csharp', java: 'java', php: 'php', rb: 'ruby' };
+  if (/dockerfile$/i.test(path)) return 'docker';
+  return languages[extension] || (['javascript', 'typescript', 'tsx', 'python', 'go', 'bash', 'json', 'yaml', 'rust', 'csharp', 'java', 'php', 'ruby'].includes(stack.toLowerCase()) ? stack.toLowerCase() : 'text');
+};
+
+import type { Finding } from '../types';
 
 const SEV_COLORS: Record<string, { dot: string; text: string; badge: string }> = {
   CRITICAL: { dot: 'bg-error', text: 'text-error', badge: 'border-error bg-error/10 text-error pulse-glow-critical' },
@@ -55,12 +56,7 @@ const getSev = (sev: string) => SEV_COLORS[sev?.toUpperCase()] ?? SEV_COLORS.LOW
 
 export const FindingsPage: React.FC = () => {
   const { t } = useTranslation('pages');
-  const { findings, loading, error, refresh } = useFindings() as {
-    findings: Finding[];
-    loading: boolean;
-    error: string | null;
-    refresh: (options?: { silent?: boolean }) => void;
-  };
+  const { findings, loading, error, refresh } = useFindings();
 
   const getSeverityLabel = (severity: string) => {
     const s = severity?.toUpperCase();
@@ -78,6 +74,7 @@ export const FindingsPage: React.FC = () => {
     if (s === 'verification_failed') return t('status_verification_failed');
     if (s === 'resolved' || s === 'fixed') return t('status_fixed');
     if (s === 'triage') return t('status_triage');
+    if (s === 'confirmed') return t('review.confirmed');
     if (s === 'false_positive') return t('status_false_positive');
     if (s === 'risk_accepted' || s === 'accepted_risk') return t('status_accepted_risk');
     return t('status_open');
@@ -94,8 +91,18 @@ export const FindingsPage: React.FC = () => {
 
   useTitle(t('findings_title'));
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [search, setSearch] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const search = searchParams.get('q') || '';
+  const setSearch = (value: string) => setSearchParams(previous => { const next = new URLSearchParams(previous); if (value) next.set('q', value); else next.delete('q'); return next; }, { replace: true });
   const [selectedSeverity, setSelectedSeverity] = useState('ALL_SEVERITIES');
+  const [findingStateFilter, setFindingStateFilter] = useState('active');
+  const [actionError, setActionError] = useState('');
+  const [aiAvailable, setAiAvailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/health', { signal: controller.signal }).then(response => response.json()).then(data => { if (!controller.signal.aborted) setAiAvailable(data.ai_available === true); }).catch(() => { /* Optional AI availability. */ });
+    return () => controller.abort();
+  }, []);
   const [triageStatus, setTriageStatus] = useState<Record<number, 'IDLE' | 'PROCESSING'>>({});
   const [agentPrompt, setAgentPrompt] = useState('');
   const [agentPromptStatus, setAgentPromptStatus] = useState<Record<number, 'IDLE' | 'PROCESSING'>>({});
@@ -112,6 +119,8 @@ export const FindingsPage: React.FC = () => {
 
   const filtered = findings
     .filter((f: Finding) => {
+      if (findingStateFilter === 'active' && !isActive(f)) return false;
+      if (findingStateFilter === 'resolved' && !isResolved(f)) return false;
       const matchesSearch =
         !search ||
         f.title?.toLowerCase().includes(search.toLowerCase()) ||
@@ -137,53 +146,32 @@ export const FindingsPage: React.FC = () => {
   const selectedFinding =
     filtered.find((f: Finding) => f.id === selectedId) ??
     (filtered.length > 0 ? filtered[0] : null);
-  const showSelectedVerificationStatus =
-    selectedFinding?.verification_status &&
-    (selectedFinding.status?.toLowerCase() || 'open') === 'open';
 
+  const selectedFindingId = useRef<number | undefined>(undefined);
   useEffect(() => {
+    selectedFindingId.current = selectedFinding?.id;
     setAgentPrompt(selectedFinding?.agent_prompt ?? '');
     const status = selectedFinding?.status?.toLowerCase();
-    const canShowVerificationResult = status === 'verification_failed' || status === 'resolved' || status === 'fixed';
+    const canShowVerificationResult = selectedFinding?.verification_status === 'error' || status === 'verification_failed' || status === 'resolved' || status === 'fixed';
     setVerificationResult(canShowVerificationResult ? selectedFinding?.verification_summary ?? null : null);
-  }, [selectedFinding?.id, selectedFinding?.agent_prompt, selectedFinding?.verification_summary, selectedFinding?.status]);
+  }, [selectedFinding?.id, selectedFinding?.agent_prompt, selectedFinding?.verification_summary, selectedFinding?.verification_status, selectedFinding?.status]);
 
   const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
-  const triageFinding = async (id: number, action: 'FIX' | 'IGNORE' | 'TRIAGE') => {
-    setTriageStatus((prev) => ({ ...prev, [id]: 'PROCESSING' }));
+  const triageFinding = async (id: number, action: 'IGNORE' | 'CONFIRM' | 'ACCEPT' | 'OPEN' | 'TRIAGE') => {
+    setActionError('');
+    setTriageStatus(previous => ({ ...previous, [id]: 'PROCESSING' }));
     try {
-      const res = await fetch('/api/triage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: String(id),
-          project: selectedFinding?.file_path || '.',
-          file: selectedFinding?.file_path || '',
-          action: action,
-        }),
+      const status = { IGNORE: 'false_positive', CONFIRM: 'confirmed', ACCEPT: 'risk_accepted', OPEN: 'open', TRIAGE: 'triage' }[action];
+      const res = await fetch(`/api/findings/${id}${action === 'TRIAGE' ? '/ai-triage' : ''}`, {
+        method: action === 'TRIAGE' ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' },
+        ...(action === 'TRIAGE' ? {} : { body: JSON.stringify({ action: 'status', status }) }),
       });
       const data = await res.json();
-      if (data.ok) {
-        if (action === 'TRIAGE') {
-          const { setContext, setIsOpen } = useCopilotStore.getState();
-          setContext(selectedFinding);
-          setIsOpen(true);
-        } else if (action === 'FIX') {
-          confetti({
-            particleCount: 150,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ['#ffffff', '#4caf50', '#38BDF8'],
-          });
-        }
-        refresh();
-      }
-    } catch (err) {
-      console.error('Triage failed', err);
-    } finally {
-      setTriageStatus((prev) => ({ ...prev, [id]: 'IDLE' }));
-    }
+      if (!res.ok || !data.ok) throw new Error(data.error || t('review.actionFailed'));
+      refresh({ silent: true });
+    } catch (error) { setActionError(error instanceof Error ? error.message : t('review.actionFailed')); }
+    finally { setTriageStatus(previous => ({ ...previous, [id]: 'IDLE' })); }
   };
 
   const generateAgentPrompt = async () => {
@@ -196,18 +184,19 @@ export const FindingsPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
       });
       const data = await res.json();
-      if (!data.ok) {
+      if (!res.ok || !data.ok) {
         throw new Error(data.error || 'Failed to generate prompt');
       }
+      if (selectedFindingId.current !== id) return;
       setAgentPrompt(data.prompt || '');
       setVerificationResult(null);
       try {
         await navigator.clipboard.writeText(data.prompt || '');
-      } catch {}
+      } catch { /* Prompt remains available for manual copy. */ }
       refresh({ silent: true });
     } catch (err) {
       console.error('Agent prompt generation failed', err);
-      setVerificationResult(err instanceof Error ? err.message : 'Prompt generation failed');
+      if (selectedFindingId.current === id) setActionError(err instanceof Error ? err.message : t('review.actionFailed'));
     } finally {
       setAgentPromptStatus((prev) => ({ ...prev, [id]: 'IDLE' }));
     }
@@ -216,6 +205,7 @@ export const FindingsPage: React.FC = () => {
   const verifyFinding = async () => {
     if (!selectedFinding) return;
     const id = selectedFinding.id;
+    setActionError('');
     setVerificationStatus((prev) => ({ ...prev, [id]: 'PROCESSING' }));
     setVerificationResult(t('verification_running'));
     try {
@@ -225,35 +215,39 @@ export const FindingsPage: React.FC = () => {
         body: JSON.stringify({}),
       });
       const data = await res.json();
-      if (!data.ok) {
+      if (!res.ok || !data.ok) {
         throw new Error(data.error || 'Verification failed');
       }
-      setVerificationResult(data.summary || '');
+      if (selectedFindingId.current === id) setVerificationResult(data.summary || '');
       refresh({ silent: true });
     } catch (err) {
       console.error('Verification failed', err);
-      setVerificationResult(err instanceof Error ? err.message : 'Verification failed');
+      if (selectedFindingId.current === id) {
+        setActionError(err instanceof Error ? err.message : t('review.actionFailed'));
+        setVerificationResult(null);
+      }
     } finally {
       setVerificationStatus((prev) => ({ ...prev, [id]: 'IDLE' }));
     }
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="findings-page flex flex-col h-full overflow-hidden">
+      {actionError && <p role="alert" className="review-error">{actionError}</p>}
       {/* Page Header */}
-      <div className="px-4 py-2 flex justify-between items-center flex-shrink-0 cyber-header-premium border-b border-outline-variant/30">
+      <div className="findings-page__header px-4 py-2 flex flex-wrap gap-3 justify-between items-center flex-shrink-0 cyber-header-premium border-b border-outline-variant/30">
         <div>
           <p className="text-[9px] font-bold tracking-widest text-on-surface-variant mb-0.5">
             {t('sec_findings')}
           </p>
           <h1 className="text-title-lg font-bold tracking-tight text-primary uppercase">
-            {t('vul_audit')}
+            {t('review.title')}
           </h1>
         </div>
         <div className="flex items-center gap-3">
           {/* Stack Filter */}
           <select
-            className="bg-surface-container-lowest border border-outline-variant rounded-lg text-label-xs text-on-surface-variant h-8 px-2 focus:border-primary focus:ring-1 focus:ring-primary/25 outline-none cursor-pointer uppercase tracking-widest transition-all duration-300"
+            aria-label={t('all_stacks')} className="bg-surface-container-lowest border border-outline-variant rounded-lg text-label-xs text-on-surface-variant h-8 px-2 focus:border-primary focus:ring-1 focus:ring-primary/25 outline-none cursor-pointer uppercase tracking-widest transition-all duration-300"
             value={selectedStack}
             onChange={(e) => setSelectedStack(e.target.value)}
           >
@@ -265,8 +259,11 @@ export const FindingsPage: React.FC = () => {
             ))}
           </select>
 
+          <select aria-label={t('review.statusFilter')} className="cyber-input p-2 text-xs" value={findingStateFilter} onChange={event => setFindingStateFilter(event.target.value)}>
+            <option value="active">{t('review.active')}</option><option value="resolved">{t('status_fixed')}</option><option value="all">{t('statusAll')}</option>
+          </select>
           {/* Severity Filter */}
-          <select
+          <select aria-label={t('all_severities')}
             className="bg-surface-container-lowest border border-outline-variant rounded-lg text-label-xs text-on-surface-variant h-8 px-2 focus:border-primary focus:ring-1 focus:ring-primary/25 outline-none cursor-pointer uppercase tracking-widest transition-all duration-300"
             value={selectedSeverity}
             onChange={(e) => setSelectedSeverity(e.target.value)}
@@ -288,7 +285,7 @@ export const FindingsPage: React.FC = () => {
             </span>
             <input
               className="bg-transparent border-none focus:ring-0 focus:outline-none text-xs text-primary placeholder:text-on-surface-variant/50 w-full"
-              placeholder={t('filter_findings')}
+              placeholder={t('filter_findings')} aria-label={t('filter_findings')}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -297,13 +294,13 @@ export const FindingsPage: React.FC = () => {
       </div>
 
       {/* Split Layout */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="findings-page__split flex-1 flex min-h-0 overflow-hidden">
         {/* Master List */}
-        <div className="w-1/2 flex flex-col border-r border-outline-variant overflow-hidden">
+        <div className="findings-page__list w-1/2 min-w-0 flex flex-col border-r border-outline-variant overflow-hidden">
           {/* Table Header */}
           <div className="cyber-grid-header flex items-center text-label-xs text-on-surface-variant tracking-widest shrink-0">
-            <div className="w-10 py-3 px-3 text-center shrink-0">{t('sts')}</div>
-            <div
+            <div className="w-10 py-3 px-3 text-center shrink-0" aria-hidden="true">●</div>
+            <button type="button" aria-label={t('review.sortId')}
               className="w-24 py-3 px-3 shrink-0 cursor-pointer hover:text-primary transition-none flex items-center gap-1"
               onClick={() => {
                 setSortField('id');
@@ -311,9 +308,9 @@ export const FindingsPage: React.FC = () => {
               }}
             >
               {t('id')} {sortField === 'id' && (sortDir === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="flex-1 py-3 px-3 min-w-0">{t('finding')}</div>
-            <div
+            </button>
+            <div className="flex-1 py-3 px-3 min-w-0">{t('review.findingName')}</div>
+            <button type="button" aria-label={t('review.sortStack')}
               className="w-24 py-3 px-3 shrink-0 text-center cursor-pointer hover:text-primary transition-none flex items-center justify-center gap-1"
               onClick={() => {
                 setSortField('stack');
@@ -321,8 +318,8 @@ export const FindingsPage: React.FC = () => {
               }}
             >
               {t('stack')} {sortField === 'stack' && (sortDir === 'asc' ? '↑' : '↓')}
-            </div>
-            <div
+            </button>
+            <button type="button" aria-label={t('review.sortSeverity')}
               className="w-24 py-3 px-3 shrink-0 text-right cursor-pointer hover:text-primary transition-none flex items-center justify-end gap-1"
               onClick={() => {
                 setSortField('severity');
@@ -330,7 +327,7 @@ export const FindingsPage: React.FC = () => {
               }}
             >
               {t('severity')} {sortField === 'severity' && (sortDir === 'asc' ? '↑' : '↓')}
-            </div>
+            </button>
           </div>
 
           {/* Rows */}
@@ -366,7 +363,8 @@ export const FindingsPage: React.FC = () => {
                 return (
                   <div
                     key={f.id}
-                    onClick={() => setSelectedId(f.id)}
+                    onClick={() => setSelectedId(f.id)} role="button" tabIndex={0} aria-pressed={isSelected}
+                    onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedId(f.id); } }}
                     className={`cyber-grid-row flex items-center cursor-pointer transition-all duration-250 ease-out ${
                       isSelected
                         ? 'bg-surface-bright text-primary border-l-2 border-l-primary shadow-[inset_4px_0_12px_rgba(139,92,246,0.1)]'
@@ -407,7 +405,7 @@ export const FindingsPage: React.FC = () => {
         </div>
 
         {/* Detail Panel */}
-        <div className="w-1/2 flex flex-col overflow-y-auto cyber-scrollbar bg-surface-container-lowest">
+        <div className="findings-page__detail w-1/2 min-w-0 flex flex-col overflow-y-auto cyber-scrollbar bg-surface-container-lowest">
           {selectedFinding ? (
             <div className="p-6 flex flex-col gap-6 animate-in fade-in slide-in-from-right-4 ">
               {/* Finding header */}
@@ -416,7 +414,7 @@ export const FindingsPage: React.FC = () => {
                   <div className="text-label-xs text-on-surface-variant tracking-widest mb-1">
                     {t('finding_uppercase')} #{selectedFinding.id}
                   </div>
-                  <h2 className="text-headline-sm text-primary uppercase tracking-tight">
+                  <h2 className="text-headline-sm text-primary tracking-tight break-words">
                     {selectedFinding.title}
                   </h2>
                 </div>
@@ -426,22 +424,7 @@ export const FindingsPage: React.FC = () => {
                   >
                     {getSeverityLabel(selectedFinding.severity).toUpperCase()}
                   </span>
-                  <button
-                    onClick={() => {
-                      const { setContext, setIsOpen } = useCopilotStore.getState();
-                      setContext(selectedFinding);
-                      setIsOpen(true);
-                    }}
-                    className="flex items-center gap-1.5 text-label-xs text-primary hover:underline group"
-                  >
-                    <span
-                      className="material-symbols-outlined group-hover:rotate-12 transition-none"
-                      style={{ fontSize: '14px' }}
-                    >
-                      smart_toy
-                    </span>
-                    {t('ask_copilot')}
-                  </button>
+
                 </div>
               </div>
 
@@ -449,7 +432,7 @@ export const FindingsPage: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div className="cyber-widget p-3 border-l-2 border-l-primary/30">
                   <span className="text-label-xs text-on-surface-variant block mb-2 tracking-widest">
-                    {t('status_report')}
+                    {t('review.statusFilter')}
                   </span>
                   <span
                     className={`text-mono-data font-bold ${getStatusTone(selectedFinding.status)}`}
@@ -459,27 +442,35 @@ export const FindingsPage: React.FC = () => {
                 </div>
                 <div className="cyber-widget p-3 border-l-2 border-l-primary/30">
                   <span className="text-label-xs text-on-surface-variant block mb-2 tracking-widest">
-                    {t('affected_asset')}
+                    {t('review.fileFilter')}
                   </span>
-                  <span className="text-mono-data text-on-surface truncate block text-xs underline decoration-outline-variant">
+                  <span className="text-mono-data text-on-surface break-all block text-xs underline decoration-outline-variant">
                     {selectedFinding.file_path ?? selectedFinding.file ?? '—'}
                   </span>
                 </div>
               </div>
 
+              <div className="finding-rule-meta">
+                {selectedFinding.rule_id && <span>{t('review.rule')}: {selectedFinding.rule_id}</span>}
+                {selectedFinding.stack && <span>{t('review.scanner')}: {selectedFinding.stack}</span>}
+                {selectedFinding.cwe_id && <span>{selectedFinding.cwe_id}</span>}
+                {selectedFinding.cve_id && <span>{selectedFinding.cve_id}</span>}
+              </div>
               {/* Description */}
               <div>
                 <div className="text-label-xs text-on-surface-variant tracking-widest mb-3 flex items-center gap-2">
                   <span className="material-symbols-outlined text-[14px] text-primary">
                     description
                   </span>
-                  {t('system_intelligence')}
+                  {t('review.why')}
                 </div>
                 <div className="cyber-widget p-4 text-body-sm text-on-surface leading-relaxed border-outline-variant/30">
                   {selectedFinding.description ?? t('no_description')}
                 </div>
               </div>
 
+              {selectedFinding.impact && <section><h3 className="review-heading">{t('review.impact')}</h3><p className="review-help">{selectedFinding.impact}</p></section>}
+              {!selectedFinding.code_snippet && <FindingEvidence finding={selectedFinding} />}
               {/* Code snippet with Syntax Highlighting */}
               {selectedFinding.code_snippet && (
                 <div>
@@ -489,7 +480,7 @@ export const FindingsPage: React.FC = () => {
                   </div>
                   <div className="cyber-widget border-outline-variant/30 overflow-hidden">
                     <SyntaxHighlighter
-                      language={selectedFinding.stack?.toLowerCase() || 'javascript'}
+                      language={codeLanguage(selectedFinding.file_path || selectedFinding.file, selectedFinding.stack)}
                       style={vscDarkPlus}
                       customStyle={{
                         margin: 0,
@@ -510,143 +501,41 @@ export const FindingsPage: React.FC = () => {
                   <span className="material-symbols-outlined text-[14px] text-primary">
                     auto_fix_high
                   </span>
-                  {t('remediation_protocol')}
+                  {t('review.remediation')}
                 </div>
-                <div className="border-l-2 border-primary pl-4 py-1 text-body-sm text-on-surface leading-relaxed italic opacity-80">
+                <div className="border-l-2 border-primary pl-4 py-1 text-body-sm text-on-surface leading-relaxed">
                   {selectedFinding.fix_suggestion ??
                     selectedFinding.suggestion ??
                     t('follow_standard')}
                 </div>
               </div>
 
-              {/* Agent handoff */}
-              <div>
-                <div className="text-label-xs text-on-surface-variant tracking-widest mb-3 flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[14px] text-primary">
-                    smart_toy
-                  </span>
-                  {t('agent_handoff')}
-                </div>
-                <div className="cyber-widget p-4 border-outline-variant/30 flex flex-col gap-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className={`text-label-xs px-2.5 py-1 border border-outline-variant tracking-widest font-bold ${getStatusTone(selectedFinding.status)}`}
-                      >
-                        {getStatusLabel(selectedFinding.status).toUpperCase()}
-                      </span>
-                      {showSelectedVerificationStatus && (
-                        <span className="text-[10px] text-on-surface-variant uppercase tracking-widest truncate">
-                          {selectedFinding.verification_status}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={generateAgentPrompt}
-                        className="btn-primary px-3 py-2 rounded-lg text-label-xs flex items-center justify-center gap-2 hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-300 ease-out cursor-pointer"
-                        disabled={agentPromptStatus[selectedFinding.id] === 'PROCESSING'}
-                      >
-                        {agentPromptStatus[selectedFinding.id] === 'PROCESSING' ? (
-                          <div className="flex gap-0.5 items-center">
-                            {[0, 1, 2].map((i) => (
-                              <div
-                                key={i}
-                                className="w-0.5 h-2.5 bg-current animate-pulse"
-                                style={{ animationDelay: `${i * 0.15}s` }}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="material-symbols-outlined text-[14px]">content_paste</span>
-                        )}
-                        {t('agent_prompt')}
-                      </button>
-                      <button
-                        onClick={verifyFinding}
-                        className="btn-mechanical px-3 py-2 rounded-lg text-label-xs flex items-center justify-center gap-2 hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-300 ease-out cursor-pointer"
-                        disabled={verificationStatus[selectedFinding.id] === 'PROCESSING'}
-                      >
-                        {verificationStatus[selectedFinding.id] === 'PROCESSING' ? (
-                          <div className="flex gap-0.5 items-center">
-                            {[0, 1, 2].map((i) => (
-                              <div
-                                key={i}
-                                className="w-0.5 h-2.5 bg-current animate-pulse"
-                                style={{ animationDelay: `${i * 0.15}s` }}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <span className="material-symbols-outlined text-[14px]">fact_check</span>
-                        )}
-                        {verificationStatus[selectedFinding.id] === 'PROCESSING'
-                          ? t('verification_running_short')
-                          : t('verify_fix')}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="text-xs text-on-surface-variant leading-relaxed border-l border-success/20 pl-3">
-                    {t('verification_rescan_hint')}
-                  </div>
-                  {agentPrompt && (
-                    <textarea
-                      readOnly
-                      value={agentPrompt}
-                      className="w-full min-h-40 resize-y bg-surface-container-lowest border border-outline-variant/70 rounded-lg p-3 text-xs leading-relaxed text-on-surface font-mono outline-none focus:border-primary cyber-scrollbar"
-                    />
-                  )}
-                  {verificationResult && (verificationStatus[selectedFinding.id] === 'PROCESSING' || ['verification_failed', 'resolved', 'fixed'].includes(selectedFinding.status.toLowerCase())) && (
-                    <div
-                      className={`border-l-2 pl-3 py-2 text-body-sm leading-relaxed ${
-                        selectedFinding.status === 'verification_failed'
-                          ? 'border-error text-error'
-                          : 'border-primary text-on-surface'
-                      }`}
-                    >
-                      {verificationResult}
-                    </div>
-                  )}
-                </div>
+              <div className="review-actions">
+                <button type="button" className="review-primary" onClick={verifyFinding} disabled={verificationStatus[selectedFinding.id] === 'PROCESSING'}>{verificationStatus[selectedFinding.id] === 'PROCESSING' ? t('verification_running_short') : t('review.rescan')}</button>
+                {isActive(selectedFinding) ? <>
+                  <button type="button" disabled={selectedFinding.status === 'confirmed' || triageStatus[selectedFinding.id] === 'PROCESSING'} onClick={() => triageFinding(selectedFinding.id, 'CONFIRM')}>{t('review.confirm')}</button>
+                  <button type="button" disabled={triageStatus[selectedFinding.id] === 'PROCESSING'} onClick={() => triageFinding(selectedFinding.id, 'IGNORE')}>{t('review.falsePositive')}</button>
+                  <button type="button" disabled={triageStatus[selectedFinding.id] === 'PROCESSING'} onClick={() => triageFinding(selectedFinding.id, 'ACCEPT')}>{t('review.acceptRisk')}</button>
+                </> : <button type="button" disabled={triageStatus[selectedFinding.id] === 'PROCESSING'} onClick={() => triageFinding(selectedFinding.id, 'OPEN')}>{t('review.reopen')}</button>}
               </div>
-
-              {/* Actions */}
-              <div className="border-t border-outline-variant pt-5 flex gap-3">
-                <button
-                  onClick={() => triageFinding(selectedFinding.id, 'TRIAGE')}
-                  className="btn-primary flex-1 py-3 rounded-lg text-label-xs flex items-center justify-center gap-2 hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-300 ease-out cursor-pointer"
-                  disabled={triageStatus[selectedFinding.id] === 'PROCESSING'}
-                >
-                  {triageStatus[selectedFinding.id] === 'PROCESSING' ? (
-                     <div className="flex gap-0.5 items-center">
-                      {[0, 1, 2].map((i) => (
-                        <div
-                          key={i}
-                          className="w-0.5 h-2.5 bg-current animate-pulse"
-                          style={{ animationDelay: `${i * 0.15}s` }}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    <span className="material-symbols-outlined text-[14px]">psychology</span>
-                  )}
-                  {t('triage_finding')}
-                </button>
-                <button
-                  onClick={() => triageFinding(selectedFinding.id, 'IGNORE')}
-                  className="btn-mechanical-error flex-1 py-3 rounded-lg text-label-xs flex items-center justify-center gap-2 hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-300 ease-out cursor-pointer"
-                  disabled={triageStatus[selectedFinding.id] === 'PROCESSING'}
-                >
-                  <span className="material-symbols-outlined text-[14px]">block</span>
-                  {t('mark_false_positive')}
-                </button>
-              </div>
+              <p className="text-sm text-on-surface-variant leading-relaxed">{t('verification_rescan_hint')}</p>
+              {verificationResult && <p role="status" className="review-result">{verificationResult}</p>}
+              <details className="finding-ai-tools">
+                <summary>{t('review.aiTools')}</summary>
+                <div className="review-actions">
+                  <button type="button" onClick={generateAgentPrompt} disabled={agentPromptStatus[selectedFinding.id] === 'PROCESSING'}>{t('agent_prompt')}</button>
+                  <button type="button" disabled={!aiAvailable || triageStatus[selectedFinding.id] === 'PROCESSING'} onClick={() => triageFinding(selectedFinding.id, 'TRIAGE')}>{t('review.aiTriage')}</button>
+                  <button type="button" disabled={!aiAvailable} onClick={() => { const { setContext, setIsOpen } = useCopilotStore.getState(); setContext(selectedFinding); setIsOpen(true); }}>{t('review.askAi')}</button>
+                </div>
+                {!aiAvailable && <p className="review-help">{t('review.aiUnavailable')}</p>}
+                {agentPrompt && <textarea aria-label={t('agent_prompt')} className="review-prompt" readOnly value={agentPrompt} />}
+              </details>
             </div>
           ) : (
             <div className="flex-1 flex items-center justify-center p-8">
-              <div className="text-center opacity-20">
+              <div className="text-center text-on-surface-variant">
                 <span className="material-symbols-outlined text-6xl mb-4">shield_with_heart</span>
-                <p className="text-label-caps">{t('system_secure')}</p>
+                <p className="text-label-caps">{t('review.noMatches')}</p>
               </div>
             </div>
           )}

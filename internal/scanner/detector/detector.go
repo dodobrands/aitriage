@@ -124,6 +124,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 		if topScore >= 80 {
 			projects = append(projects, &core.ProjectContext{
 				RootPath: dir,
+				ScanRoot: ws.RootPath,
 				Stack:    string(topStack),
 				Config:   ws.Config,
 			})
@@ -131,6 +132,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 			// If it's just a generic project, we still mark it
 			projects = append(projects, &core.ProjectContext{
 				RootPath: dir,
+				ScanRoot: ws.RootPath,
 				Stack:    string(UnknownStack),
 				Config:   ws.Config,
 			})
@@ -141,6 +143,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 	if len(projects) == 0 {
 		projects = append(projects, &core.ProjectContext{
 			RootPath: ws.RootPath,
+			ScanRoot: ws.RootPath,
 			Stack:    string(UnknownStack),
 			Config:   ws.Config,
 		})

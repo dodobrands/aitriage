@@ -359,7 +359,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 	if rule.Condition == "missing_lockfile" {
 		// Only ecosystems the project actually uses are considered. A PHP
 		// project must have composer.lock; it must not be asked for go.sum.
-		missing := missingLockEcosystems(rule, ctx.RootPath)
+		missing := missingLockEcosystems(rule, ctx.RootPath, ctx.ScanRoot)
 		hasLock := len(missing) == 0
 
 		if !hasLock {
@@ -784,7 +784,7 @@ func containsSuppression(line, directive string) bool {
 // demonstrably uses (their manifest is present) but has not pinned with a
 // lockfile. A project using no known ecosystem returns nothing: there is no
 // dependency set to pin, so there is nothing to report.
-func missingLockEcosystems(rule Rule, rootPath string) []string {
+func missingLockEcosystems(rule Rule, rootPath, scanRoot string) []string {
 	ecosystems := rule.Ecosystems
 	if len(ecosystems) == 0 {
 		// Legacy rule shape: a flat list of lockfiles, any one of which counts.
@@ -812,18 +812,37 @@ func missingLockEcosystems(rule Rule, rootPath string) []string {
 			continue // the project does not use this ecosystem
 		}
 
-		locked := false
-		for _, lockFile := range eco.Lockfiles {
-			if fileExistsAt(rootPath, lockFile) {
-				locked = true
-				break
-			}
-		}
-		if !locked {
+		if !hasLockfile(eco, rootPath, scanRoot) {
 			missing = append(missing, eco.Name)
 		}
 	}
 	return missing
+}
+
+func hasLockfile(eco models.Ecosystem, rootPath, scanRoot string) bool {
+	dir := rootPath
+	for {
+		for _, lockFile := range eco.Lockfiles {
+			if fileExistsAt(dir, lockFile) && (dir == rootPath || npmWorkspaceContains(dir, rootPath)) {
+				return true
+			}
+		}
+		if !eco.WorkspaceRoot || !isStrictlyInside(dir, scanRoot) {
+			return false
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func isStrictlyInside(dir, root string) bool {
+	if root == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func fileExistsAt(rootPath, name string) bool {

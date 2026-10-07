@@ -47,7 +47,7 @@
   "unpin_sidebar": "Открепить боковую панель",
   "pin_sidebar": "Закрепить боковую панель",
   "nav_command_center": "Командный центр",
-  "nav_ai_triage_hub": "AI Triage Hub",
+  "nav_ai_triage_hub": "Разбор находок",
   "nav_findings": "Уязвимости",
   "nav_topology": "Топология",
   "nav_products": "Продукты",
@@ -526,50 +526,6 @@
     "processing": "Обработка SecureCoder...",
     "resultsTitle": "РЕЗУЛЬТАТЫ МОДЕЛИ УГРОЗ"
   },
-  "findingDetailModal": {
-    "errorLoadingFile": "// Ошибка загрузки содержимого файла",
-    "tabs": {
-      "details": "Детали уязвимости",
-      "code": "Просмотр кода",
-      "ai": "ИИ Исправление"
-    },
-    "sections": {
-      "description": "Описание",
-      "impact": "Влияние",
-      "fileLocation": "Расположение файла",
-      "triageActions": "Действия",
-      "metadata": "Метаданные",
-      "assignment": "Назначение"
-    },
-    "noDescription": "Описание не предоставлено.",
-    "impactPending": "Анализ влияния в ожидании.",
-    "openInExplorer": "ОТКРЫТЬ В ПРОВОДНИКЕ",
-    "actions": {
-      "markInProgress": "ВЗЯТЬ В РАБОТУ",
-      "markAsTriage": "ТРИАЖ",
-      "falsePositive": "ЛОЖНОЕ СРАБАТЫВАНИЕ"
-    },
-    "metadata": {
-      "stack": "Стек",
-      "cwe": "CWE",
-      "owasp": "OWASP",
-      "agnostic": "АГНОСТИК"
-    },
-    "assignment": {
-      "autoAssigned": "АВТОНАЗНАЧЕНИЕ:BOT_01",
-      "secOps": "SecOps_Orchestrator_Default"
-    },
-    "ai": {
-      "requestRemediation": "Запросить ИИ-исправление",
-      "description": "Наша модель проанализирует фрагмент кода, контекст уязвимости и предоставит безопасное предложение по исправлению с шагами по внедрению.",
-      "generateFixPlan": "СГЕНЕРИРОВАТЬ ПЛАН ИСПРАВЛЕНИЯ",
-      "analyzing": "ИИ_АНАЛИЗИРУЕТ..."
-    },
-    "footer": {
-      "entityId": "ID сущности AITriage",
-      "close": "ЗАКРЫТЬ ПРОСМОТР"
-    }
-  },
   "brand": {
     "subtitle": "Forensic_Engine"
   },
@@ -652,5 +608,10 @@
         "prompt": "You are a security test engineer. Generate a comprehensive security test suite for this codebase.\n\nUse the project existing test framework. If none exists, use the most appropriate framework for the language.\n\n## 1. Input Validation Tests\n- SQL injection payloads: OR 1=1--, UNION SELECT, blind injection timing attacks\n- XSS payloads: script tags, onerror handlers, javascript: URIs, SVG/onload, polyglot payloads\n- Path traversal: ../, ..\\, %2e%2e/, null bytes, URL encoding bypass\n- Command injection: semicolons, pipes, subshells, backtick execution\n- Integer overflow: MAX_INT+1, negative values, zero-division\n- Encoding attacks: UTF-8 overlong encoding, Unicode normalization bypass\n\n## 2. Authentication Tests\n- Invalid credentials return generic error (no user enumeration)\n- Session expires after configured timeout\n- JWT tampering: alg=none, key confusion, expired token reuse\n- Brute force protection: account lockout or rate limiting after N failures\n- Concurrent session limits enforced\n- Password reset tokens: single-use, time-limited, sufficient entropy\n\n## 3. Authorization Tests\n- Horizontal privilege escalation: access another user resources by changing ID\n- Vertical privilege escalation: regular user accessing admin endpoints\n- IDOR: manipulate object IDs in URLs, request bodies, headers\n- Missing function-level access control: direct access to admin functions\n\n## 4. Business Logic Tests\n- Race conditions: concurrent requests to avoid limits (double-spend, etc.)\n- State manipulation: skip steps in multi-step workflows\n- Replay attacks: resubmit captured requests\n- Mass assignment: send unexpected fields in request body\n\n## 5. Error Handling Tests\n- No stack traces in response bodies\n- No database errors or SQL fragments exposed\n- Malformed input returns 400, not 500\n- Resource exhaustion: very large payloads, deeply nested JSON\n\nEach test MUST:\n- Have a descriptive name: test_[vulnerability]_[attack_vector]\n- Include both positive (attack blocked) and negative (normal flow works) cases\n- Assert specific security behaviors, not just status codes\n- Be independent and idempotent"
       }
     }
-  }
+  },
+  "session_error": "Не удалось проверить сессию. Повторите загрузку.",
+  "retry": "Повторить",
+  "skip_to_content": "К содержимому",
+  "main_navigation": "Основная навигация",
+  "close": "Закрыть"
 }

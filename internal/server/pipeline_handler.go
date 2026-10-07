@@ -19,7 +19,7 @@ import (
 // the advanced Web view. The scan keeps running if the browser disconnects;
 // its durable session and artifacts can still be opened from Runway History.
 func (s *Server) handlePipeline(w http.ResponseWriter, r *http.Request) {
-	if s.llmClient == nil {
+	if s.getLLMClient() == nil {
 		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
 		return
 	}

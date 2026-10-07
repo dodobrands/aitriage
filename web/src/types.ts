@@ -73,7 +73,7 @@ export interface Finding {
   ai_triage_summary?: string;
   agent_prompt?: string;
   agent_prompt_generated_at?: string;
-  verification_status?: 'running' | 'fixed' | 'not_fixed';
+  verification_status?: 'running' | 'fixed' | 'not_fixed' | 'error';
   verification_summary?: string;
   verification_last_run_at?: string;
   // Legacy properties

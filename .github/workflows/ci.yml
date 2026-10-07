@@ -41,7 +41,11 @@ jobs:
         run: |
           npm ci
           npm audit --audit-level=high
+          npm test
           npm run build
+
+      - name: Stage Web UI for Go embedding
+        run: node -e "const fs=require('fs'); fs.rmSync('internal/server/ui/dist',{recursive:true,force:true}); fs.cpSync('web/dist','internal/server/ui/dist',{recursive:true})"
 
       - name: Download dependencies
         run: go mod download

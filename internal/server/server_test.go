@@ -110,8 +110,8 @@ func TestNewServer(t *testing.T) {
 	rrUnknown := httptest.NewRecorder()
 	s.ServeHTTP(rrUnknown, reqUnknown)
 
-	if rrUnknown.Code != http.StatusOK {
-		t.Errorf("expected unknown route to return 200 OK (fallback), got %d", rrUnknown.Code)
+	if rrUnknown.Code != http.StatusNotFound {
+		t.Errorf("expected unknown API route to return 404, got %d", rrUnknown.Code)
 	}
 }
 
@@ -651,7 +651,7 @@ func seedFindingForRemediation(t *testing.T, s *Server, scanPath string) int64 {
 	return findingID
 }
 
-func TestFindingAgentPromptMarksSentToAgent(t *testing.T) {
+func TestFindingAgentPromptPreservesLifecycle(t *testing.T) {
 	s := setupTestServer(t)
 	tempDir := t.TempDir()
 	srcDir := filepath.Join(tempDir, "src")
@@ -699,7 +699,7 @@ func TestFindingAgentPromptMarksSentToAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finding.Status != "sent_to_agent" || finding.KanbanColumn != "in_progress" {
+	if finding.Status != "open" || finding.KanbanColumn != "backlog" {
 		t.Fatalf("unexpected finding lifecycle: status=%q kanban=%q", finding.Status, finding.KanbanColumn)
 	}
 	if finding.AgentPrompt == nil || !strings.Contains(*finding.AgentPrompt, "Required Workflow") {

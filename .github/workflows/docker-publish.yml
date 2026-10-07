@@ -130,7 +130,26 @@ jobs:
       - name: Run full scanner process E2E
         env:
           AITRIAGE_IMAGE: aitriage:publish-candidate
-        run: go test ./cmd/aitriage -run '^TestE2E_ContainerRunFullScannerBundle$' -count=1 -v
+        run: |
+          set -euo pipefail
+          go test ./cmd/aitriage \
+            -run '^TestE2E_(ContainerRunFullScannerBundle|DefaultWebUsesFullContainerBundle|DefaultAgentUsesFullContainerBundle)$' \
+            -count=1 -json | tee container-process-e2e.json
+          for test in \
+            TestE2E_ContainerRunFullScannerBundle \
+            TestE2E_DefaultWebUsesFullContainerBundle \
+            TestE2E_DefaultAgentUsesFullContainerBundle; do
+            jq -se --arg test "$test" \
+              '[.[] | select(.Test == $test and .Action == "pass")] | length == 1' \
+              container-process-e2e.json >/dev/null
+          done
+
+      - name: Upload container process E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-process-e2e-${{ github.sha }}
+          path: container-process-e2e.json
 
       - name: Scan publish candidate for fixable vulnerabilities
         run: |

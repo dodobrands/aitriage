@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/dodobrands/aitriage/internal/models"
 )
@@ -45,16 +46,25 @@ func scanFinding(scanner findingScanner) (models.Finding, error) {
 		&f.AITriageSummary, &f.AgentPrompt, &f.AgentPromptAt, &f.VerificationStatus,
 		&f.VerificationSummary, &f.VerificationLastRunAt,
 	)
+	f.Status = models.FindingStatus(&f)
 	return f, err
 }
 
 func (r *FindingRepository) getIgnoredStatus(ctx context.Context, codeSnippet *string, defaultStatus string) string {
+	return ignoredFindingStatus(ctx, r.db, codeSnippet, defaultStatus)
+}
+
+type findingQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func ignoredFindingStatus(ctx context.Context, db findingQueryer, codeSnippet *string, defaultStatus string) string {
 	if codeSnippet == nil || *codeSnippet == "" {
 		return defaultStatus
 	}
 	hash := ContentHash(*codeSnippet)
 	var reason string
-	err := r.db.QueryRowContext(ctx, "SELECT reason FROM ignored_findings WHERE content_hash = ? LIMIT 1", hash).Scan(&reason)
+	err := db.QueryRowContext(ctx, "SELECT reason FROM ignored_findings WHERE content_hash = ? LIMIT 1", hash).Scan(&reason)
 	if err == nil {
 		switch reason {
 		case "False Positive":
@@ -105,7 +115,7 @@ func (r *FindingRepository) BulkCreate(ctx context.Context, findings []models.Fi
 		if f.Status == "" {
 			f.Status = "open"
 		}
-		status := r.getIgnoredStatus(ctx, f.CodeSnippet, f.Status)
+		status := ignoredFindingStatus(ctx, tx, f.CodeSnippet, f.Status)
 		_, err := stmt.ExecContext(ctx, f.EngagementID, f.ProductID, f.RuleID, f.Title, f.Severity, f.CVSSScore, f.CVEID, f.CWEID, f.FilePath, f.LineNumber, f.ColNumber, f.CodeSnippet, f.Description, f.Impact, f.FixSuggestion, f.References, f.HashCode, status, f.KanbanColumn, f.Stack)
 		if err != nil {
 			return err
@@ -177,7 +187,7 @@ func (r *FindingRepository) List(ctx context.Context, engagementID int64) ([]mod
 			findings[i].Status = "open"
 		}
 	}
-	return findings, nil
+	return findings, rows.Err()
 }
 
 func (r *FindingRepository) ListByProductID(ctx context.Context, productID int64) ([]models.Finding, error) {
@@ -205,7 +215,7 @@ func (r *FindingRepository) ListByProductID(ctx context.Context, productID int64
 			findings[i].Status = "open"
 		}
 	}
-	return findings, nil
+	return findings, rows.Err()
 }
 
 func (r *FindingRepository) ListAll(ctx context.Context) ([]models.Finding, error) {
@@ -233,7 +243,7 @@ func (r *FindingRepository) ListAll(ctx context.Context) ([]models.Finding, erro
 			findings[i].Status = "open"
 		}
 	}
-	return findings, nil
+	return findings, rows.Err()
 }
 
 // EnsureSLA evaluates Findings and marks those past deadline as sla_breached
@@ -242,28 +252,56 @@ func (r *FindingRepository) EnsureSLA(ctx context.Context) error {
 		UPDATE findings 
 		SET sla_breached = 1 
 		WHERE sla_deadline IS NOT NULL 
-		AND status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive') 
+		AND COALESCE(LOWER(status), 'open') NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
 		AND CURRENT_TIMESTAMP > sla_deadline
 	`)
 	return err
 }
 
 func (r *FindingRepository) UpdateKanbanColumn(ctx context.Context, id int64, column string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE findings SET kanban_column = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, column, id)
-	return err
+	switch column {
+	case "backlog", "todo", "in_progress", "review", "done":
+	default:
+		return fmt.Errorf("invalid kanban column")
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE findings SET kanban_column = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, column, id)
+	return findingUpdateResult(res, err)
 }
 
 func (r *FindingRepository) UpdateStatus(ctx context.Context, id int64, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE findings SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, id)
-	return err
+	status, valid := models.NormalizeFindingStatus(status)
+	if !valid {
+		return fmt.Errorf("invalid finding status")
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE findings SET status = ?,
+ resolved_at = CASE WHEN ? IN ('resolved', 'closed', 'mitigated') THEN COALESCE(resolved_at, CURRENT_TIMESTAMP) ELSE NULL END,
+ verification_status = NULL, verification_summary = NULL,
+ is_verified = 0, verified_at = NULL, verified_by = NULL,
+ is_false_positive = (? = 'false_positive'), risk_accepted = (? = 'risk_accepted'),
+ kanban_column = CASE WHEN ? IN ('resolved', 'closed', 'mitigated', 'false_positive', 'risk_accepted') THEN 'done'
+ WHEN kanban_column = 'done' THEN 'backlog' ELSE kanban_column END,
+ updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, status, status, status, status, id)
+	return findingUpdateResult(res, err)
+}
+
+func findingUpdateResult(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (r *FindingRepository) MarkAgentPromptGenerated(ctx context.Context, id int64, prompt string) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE findings
-		SET status = 'sent_to_agent',
-		    kanban_column = 'in_progress',
-		    agent_prompt = ?,
+		SET agent_prompt = ?,
 		    agent_prompt_generated_at = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
@@ -297,6 +335,7 @@ func (r *FindingRepository) MarkVerificationResult(ctx context.Context, id int64
 			    verification_status = 'fixed',
 			    verification_summary = ?,
 			    verification_last_run_at = CURRENT_TIMESTAMP,
+			    verification_last_success_at = CURRENT_TIMESTAMP,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
 		`, summary, id)
@@ -313,6 +352,7 @@ func (r *FindingRepository) MarkVerificationResult(ctx context.Context, id int64
 		    verification_status = 'not_fixed',
 		    verification_summary = ?,
 		    verification_last_run_at = CURRENT_TIMESTAMP,
+		    verification_last_success_at = CURRENT_TIMESTAMP,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, summary, id)
@@ -321,5 +361,16 @@ func (r *FindingRepository) MarkVerificationResult(ctx context.Context, id int64
 
 func (r *FindingRepository) UpdateAITriage(ctx context.Context, id int64, status, summary string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE findings SET ai_triage_status = ?, ai_triage_summary = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, status, summary, id)
+	return err
+}
+
+// A failed scanner says nothing about whether the original finding was fixed.
+func (r *FindingRepository) MarkVerificationError(ctx context.Context, id int64, previousStatus, summary string) error {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE findings SET status = ?, verification_status = 'error', verification_summary = ?, verification_last_run_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, previousStatus, summary, id)
 	return err
 }

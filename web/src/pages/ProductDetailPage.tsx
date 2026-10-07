@@ -23,7 +23,7 @@ const PageHeader = ({
 }) => {
   const { t } = useTranslation('pages');
   return (
-    <div className="px-4 py-2 border-b border-outline-variant flex justify-between items-center flex-shrink-0">
+    <div className="px-4 py-2 border-b border-outline-variant flex flex-wrap gap-3 justify-between items-center flex-shrink-0">
       <div>
         <p className="text-[9px] font-bold tracking-widest text-on-surface-variant mb-0.5">
           {t('assets.detail.breadcrumb')}
@@ -169,7 +169,7 @@ export const ProductDetailPage: React.FC = () => {
       />
 
       {/* Tab Bar */}
-      <div className="flex border-b border-outline-variant shrink-0">
+      <div className="flex overflow-x-auto whitespace-nowrap border-b border-outline-variant shrink-0">
         {tabs.map((tab) => (
           <button
             key={tab}
@@ -185,10 +185,10 @@ export const ProductDetailPage: React.FC = () => {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto cyber-scrollbar p-8">
+      <div className="flex-1 overflow-y-auto cyber-scrollbar p-4 md:p-8">
         {activeTab === 'OVERVIEW' && (
-          <div className="grid grid-cols-3 gap-8">
-            <div className="col-span-2 border border-outline-variant p-6 bg-surface-container-lowest relative group">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div className="lg:col-span-2 min-w-0 overflow-hidden border border-outline-variant p-6 bg-surface-container-lowest relative group">
               <div className="absolute top-0 left-0 w-1 h-1 bg-primary" />
               <div className="absolute top-0 right-0 w-1 h-1 bg-primary" />
               <div className="absolute bottom-0 left-0 w-1 h-1 bg-primary" />
@@ -198,7 +198,7 @@ export const ProductDetailPage: React.FC = () => {
                 {t('assets.detail.specifications')}
               </h2>
 
-              <div className="grid grid-cols-2 gap-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div>
                   <h3 className="text-label-xs text-on-surface-variant mb-2 opacity-50">
                     {t('assets.detail.descriptionLabel')}
@@ -240,7 +240,7 @@ export const ProductDetailPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="border border-outline-variant p-6 bg-surface-container-lowest relative">
+            <div className="min-w-0 overflow-hidden border border-outline-variant p-6 bg-surface-container-lowest relative">
               <h3 className="text-label-xs text-on-surface-variant mb-6 opacity-50">
                 {t('assets.detail.slaThresholds')}
               </h3>
@@ -260,7 +260,7 @@ export const ProductDetailPage: React.FC = () => {
                   </div>
                 ))}
               </div>
-              <div className="mt-8 pt-4 border-t border-outline-variant/30 italic text-[10px] text-on-surface-variant opacity-40">
+              <div className="mt-8 pt-4 border-t border-outline-variant/30 break-words italic text-[10px] text-on-surface-variant opacity-40">
                 {t('assets.detail.autoEnforced')}
               </div>
             </div>
@@ -321,7 +321,7 @@ export const ProductDetailPage: React.FC = () => {
                         </td>
                         <td className="px-6 py-4">
                           <span className="text-[10px] px-2 py-0.5 border border-outline-variant bg-surface-container-high text-on-surface-variant uppercase font-bold">
-                            {f.audit_status || t('assets.detail.findings.open')}
+                            {f.status || f.audit_status || t('assets.detail.findings.open')}
                           </span>
                         </td>
                         <td className="px-6 py-4 text-mono-data opacity-40 group-hover:opacity-100 transition-none">
@@ -435,7 +435,7 @@ export const ProductDetailPage: React.FC = () => {
         )}
 
         {activeTab === 'SETTINGS' && (
-          <div className="grid grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             <div className="border border-outline-variant bg-surface-container-low p-6 space-y-8 relative">
               <div className="absolute top-0 right-0 p-4 opacity-10">
                 <span className="material-symbols-outlined" style={{ fontSize: '48px' }}>

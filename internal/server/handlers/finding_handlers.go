@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,29 +22,25 @@ func NewFindingHandler(repo *repositories.FindingRepository) *FindingHandler {
 }
 
 func (h *FindingHandler) HandleListFindings(w http.ResponseWriter, r *http.Request) {
-	engagementIDStr := r.URL.Query().Get("engagement_id")
-
-	w.Header().Set("Content-Type", "application/json")
-	if engagementIDStr == "" {
-		findings, err := h.repo.ListAll(r.Context())
-		if err != nil {
-			utils.JSONError(w, err.Error(), http.StatusInternalServerError)
+	var findings []models.Finding
+	var err error
+	if value := r.URL.Query().Get("engagement_id"); value != "" {
+		id, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || id <= 0 {
+			utils.JSONError(w, "invalid engagement_id", http.StatusBadRequest)
 			return
 		}
-		if findings == nil {
-			findings = []models.Finding{}
+		findings, err = h.repo.List(r.Context(), id)
+	} else if value := r.URL.Query().Get("product_id"); value != "" {
+		id, parseErr := strconv.ParseInt(value, 10, 64)
+		if parseErr != nil || id <= 0 {
+			utils.JSONError(w, "invalid product_id", http.StatusBadRequest)
+			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"findings": findings, "ok": true})
-		return
+		findings, err = h.repo.ListByProductID(r.Context(), id)
+	} else {
+		findings, err = h.repo.ListAll(r.Context())
 	}
-
-	engagementID, err := strconv.ParseInt(engagementIDStr, 10, 64)
-	if err != nil {
-		utils.JSONError(w, "invalid engagement_id", http.StatusBadRequest)
-		return
-	}
-
-	findings, err := h.repo.List(r.Context(), engagementID)
 	if err != nil {
 		utils.JSONError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -50,17 +48,17 @@ func (h *FindingHandler) HandleListFindings(w http.ResponseWriter, r *http.Reque
 	if findings == nil {
 		findings = []models.Finding{}
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"findings": findings, "ok": true})
+	utils.JSONResponse(w, map[string]any{"findings": findings, "ok": true})
 }
 
 func (h *FindingHandler) HandleUpdateFinding(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/findings/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
+	if len(parts) != 1 || parts[0] == "" {
 		utils.JSONError(w, "missing finding id", http.StatusBadRequest)
 		return
 	}
 	findingID, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
+	if err != nil || findingID <= 0 {
 		utils.JSONError(w, "invalid finding id", http.StatusBadRequest)
 		return
 	}
@@ -70,24 +68,38 @@ func (h *FindingHandler) HandleUpdateFinding(w http.ResponseWriter, r *http.Requ
 		Status       string `json:"status"`        // e.g. "open", "in_progress", "fixed"
 		KanbanColumn string `json:"kanban_column"` // e.g. "backlog", "todo", "in_progress", "done"
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&req); err != nil {
 		utils.JSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	var updateErr error
 	switch req.Action {
 	case "status":
-		if err := h.repo.UpdateStatus(r.Context(), findingID, req.Status); err != nil {
-			utils.JSONError(w, err.Error(), http.StatusInternalServerError)
+		status, valid := models.NormalizeFindingStatus(req.Status)
+		if !valid {
+			utils.JSONError(w, "invalid finding status", http.StatusBadRequest)
 			return
 		}
+		updateErr = h.repo.UpdateStatus(r.Context(), findingID, status)
 	case "kanban":
-		if err := h.repo.UpdateKanbanColumn(r.Context(), findingID, req.KanbanColumn); err != nil {
-			utils.JSONError(w, err.Error(), http.StatusInternalServerError)
+		switch req.KanbanColumn {
+		case "backlog", "todo", "in_progress", "review", "done":
+		default:
+			utils.JSONError(w, "invalid kanban column", http.StatusBadRequest)
 			return
 		}
+		updateErr = h.repo.UpdateKanbanColumn(r.Context(), findingID, req.KanbanColumn)
 	default:
 		utils.JSONError(w, "invalid action", http.StatusBadRequest)
+		return
+	}
+	if errors.Is(updateErr, sql.ErrNoRows) {
+		utils.JSONError(w, "finding not found", http.StatusNotFound)
+		return
+	}
+	if updateErr != nil {
+		utils.JSONError(w, "failed to update finding", http.StatusInternalServerError)
 		return
 	}
 

@@ -116,3 +116,38 @@ health_check:
 		t.Fatalf("verdict failed despite fail_on=never: %+v", report.HealthCheck.Verdict)
 	}
 }
+
+func TestCoreScannerSettingsAffectScan(t *testing.T) {
+	root := t.TempDir()
+	generated := filepath.Join(root, "generated")
+	if err := os.MkdirAll(generated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "package.json"), []byte(`{"name":"app","dependencies":{"react":"*"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := scanner.Scan(context.Background(), root, scanner.ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range report.Results {
+		if r.ID == "ENTR-02" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("control scan must report missing lockfile")
+	}
+	for _, opts := range []scanner.ScanOptions{{MinSeverity: "CRITICAL"}, {ExcludePaths: []string{"generated/**"}}} {
+		report, err := scanner.Scan(context.Background(), root, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range report.Results {
+			if r.ID == "ENTR-02" {
+				t.Fatalf("settings were ignored: %+v", opts)
+			}
+		}
+	}
+}

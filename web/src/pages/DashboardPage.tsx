@@ -1,3 +1,5 @@
+import { FindingEvidence } from '../components/findings/FindingEvidence';
+import { isActive, terminalStatuses } from '../lib/findingStatus';
 import React, { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useFindings } from '../hooks/useFindings';
@@ -14,8 +16,8 @@ import { AIPromptsPanel } from '../components/AIPromptsPanel';
 export const DashboardPage: React.FC = () => {
   const { t } = useTranslation('pages');
   useTitle(t('dashboard.title'));
-  const { findings, loading: findingsLoading } = useFindings() as any;
-  const { metrics, loading: metricsLoading } = useMetrics();
+  const { findings, loading: findingsLoading } = useFindings();
+  const { metrics, loading: metricsLoading, error: metricsError } = useMetrics();
   const { templates: PROMPT_TEMPLATES, loading: promptsLoading } = usePrompts();
   const { setIsOpen, setContext } = useCopilotStore();
 
@@ -26,9 +28,9 @@ export const DashboardPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [isPromptsPanelOpen, setIsPromptsPanelOpen] = useState(() => {
     try {
-      return localStorage.getItem('ai_prompts_panel_open') !== 'false';
+      return localStorage.getItem('ai_prompts_panel_open') === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
   const [filterSev, setFilterSev] = useState<string | null>(null);
@@ -37,8 +39,8 @@ export const DashboardPage: React.FC = () => {
   const selectedFinding: Finding | null =
     findings?.find((f: Finding) => f.id === selectedFindingId) || null;
 
-  const scoreValue = metrics?.security_score ?? 100;
-  const closedStatuses = ['resolved', 'closed', 'false_positive', 'risk_accepted'];
+  const scoreValue = metrics?.security_score ?? 0;
+  const closedStatuses = terminalStatuses;
   const totalOpenValue = useMemo(() => {
     if (!findings) return 0;
     return findings.filter((f: Finding) => {
@@ -56,7 +58,7 @@ export const DashboardPage: React.FC = () => {
         f.title?.toLowerCase().includes(search.toLowerCase()) ||
         String(f.id).includes(search);
       const matchesSev = !filterSev || f.severity?.toUpperCase() === filterSev;
-      return matchesSearch && matchesSev;
+      return isActive(f) && matchesSearch && matchesSev;
     });
   }, [findings, search, filterSev]);
 
@@ -112,7 +114,7 @@ export const DashboardPage: React.FC = () => {
       const next = !prev;
       try {
         localStorage.setItem('ai_prompts_panel_open', String(next));
-      } catch {}
+      } catch { /* Storage is optional. */ }
       return next;
     });
   }, []);
@@ -139,9 +141,9 @@ export const DashboardPage: React.FC = () => {
   }
 
   return (
-    <div className="flex h-full overflow-hidden bg-v2-bg relative">
+    <div className="advanced-review flex h-full overflow-hidden bg-v2-bg relative">
       {/* ═══ LEFT PANEL: Browse Findings ═══ */}
-      <div className="w-[340px] shrink-0 border-r border-v2-border-soft flex flex-col h-full bg-v2-surface overflow-hidden font-sans">
+      <div className="advanced-review__list w-[340px] shrink-0 border-r border-v2-border-soft flex flex-col h-full bg-v2-surface overflow-hidden font-sans">
         {/* Posture Header */}
         {stats && (
           <div className="p-4 border-b border-v2-border-soft bg-v2-surface-2 shrink-0">
@@ -163,10 +165,10 @@ export const DashboardPage: React.FC = () => {
                 />
                 <div>
                   <div className="text-[9px] text-on-surface-variant tracking-widest uppercase mb-1 font-mono">
-                    {t('dashboard.score')} &bull; {metrics?.security_grade || 'A'}
+                    {t('dashboard.score')} &bull; {metrics?.security_grade || '—'}
                   </div>
                   <div className="text-mono-data text-on-surface font-bold">
-                    <CountUp end={scoreValue} />/100
+                    {metricsError || !metrics ? t('review.scoreUnavailable') : <><CountUp end={scoreValue} />/100</>}
                   </div>
                 </div>
               </div>
@@ -290,7 +292,7 @@ export const DashboardPage: React.FC = () => {
       </div>
 
       {/* ═══ CENTER PANEL: Triage prompt framework ═══ */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden bg-v2-bg">
+      <div className="advanced-review__detail flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-v2-bg">
         {selectedFinding ? (
           <>
             {/* Detailed Header panel */}
@@ -347,8 +349,9 @@ export const DashboardPage: React.FC = () => {
               )}
             </div>
 
+            <div className="shrink-0 px-6 pb-4 max-h-64 overflow-y-auto"><FindingEvidence finding={selectedFinding} /></div>
             {/* Prompt Template selectors */}
-            <div className="shrink-0 px-6 py-3 border-b border-v2-border-soft bg-v2-surface flex items-center gap-2 overflow-x-auto">
+            <div className="shrink-0 px-6 py-3 border-b border-v2-border-soft bg-v2-surface flex flex-wrap items-center gap-2">
               <span className="text-[10px] text-v2-muted tracking-widest font-bold mr-2 shrink-0">
                 {t('dashboard.templates')}
               </span>
@@ -358,14 +361,14 @@ export const DashboardPage: React.FC = () => {
                   <button
                     key={tmpl.id}
                     onClick={() => handleAction(tmpl.id)}
-                    className={`v2-tag cursor-pointer transition-all duration-200 ease-out hover:-translate-y-[2px] hover:shadow-[0_4px_12px_rgba(139,92,246,0.15)] ${
+                    className={`v2-tag inline-flex items-center gap-2 shrink-0 cursor-pointer transition-all duration-200 ease-out hover:-translate-y-[2px] hover:shadow-[0_4px_12px_rgba(139,92,246,0.15)] ${
                       isActive
                         ? 'bg-v2-red-soft border-v2-red-line text-v2-red'
                         : 'hover:bg-v2-surface-2'
                     }`}
                   >
                     <span
-                      className="material-symbols-outlined text-[13px]"
+                      aria-hidden="true" className="material-symbols-outlined text-[13px]"
                       style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}
                     >
                       {tmpl.icon}
@@ -389,7 +392,7 @@ export const DashboardPage: React.FC = () => {
                       onClick={handleCopy}
                       className="v2-btn v2-btn-ghost px-3 py-1.5 h-8 text-[11px]"
                     >
-                      <span className="material-symbols-outlined text-[13px]">
+                      <span aria-hidden="true" className="material-symbols-outlined text-[13px]">
                         {copied ? 'check' : 'content_copy'}
                       </span>
                       {copied ? t('dashboard.copied') : t('dashboard.copy')}
@@ -398,7 +401,7 @@ export const DashboardPage: React.FC = () => {
                       onClick={handleSendToCopilot}
                       className="v2-btn v2-btn-red px-3.5 py-1.5 h-8 text-[11px]"
                     >
-                      <span className="material-symbols-outlined text-[13px]">smart_toy</span>
+                      <span aria-hidden="true" className="material-symbols-outlined text-[13px]">smart_toy</span>
                       {t('dashboard.sendToCopilot')}
                     </button>
                   </div>

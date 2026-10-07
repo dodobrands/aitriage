@@ -53,14 +53,16 @@ type DashboardMetrics struct {
 	MTTR              map[string]string  `json:"mttr"`
 
 	// Extended metrics
-	TotalFindings    int               `json:"total_findings"`
-	ResolvedFindings int               `json:"resolved_findings"`
-	TopFiles         []TopFile         `json:"top_files"`
-	StatusBreakdown  []StatusBreakdown `json:"status_breakdown"`
-	StackBreakdown   []StackBreakdown  `json:"stack_breakdown"`
-	SecurityScore    int               `json:"security_score"`
-	SecurityGrade    string            `json:"security_grade"`
-	TotalEngagements int               `json:"total_engagements"`
+	TotalFindings                int               `json:"total_findings"`
+	ResolvedFindings             int               `json:"resolved_findings"`
+	TopFiles                     []TopFile         `json:"top_files"`
+	StatusBreakdown              []StatusBreakdown `json:"status_breakdown"`
+	StackBreakdown               []StackBreakdown  `json:"stack_breakdown"`
+	SecurityScore                int               `json:"security_score"`
+	SecurityGrade                string            `json:"security_grade"`
+	TotalEngagements             int               `json:"total_engagements"`
+	LastSuccessfulScanAt         *string           `json:"last_successful_scan_at"`
+	LastSuccessfulVerificationAt *string           `json:"last_successful_verification_at"`
 }
 
 func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*DashboardMetrics, error) {
@@ -89,16 +91,16 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 		return nil, err
 	}
 
-	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')`).Scan(&metrics.OpenFindings)
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')`).Scan(&metrics.OpenFindings)
 	if err != nil {
 		return nil, err
 	}
 
 	// Total and resolved findings
 	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings`).Scan(&metrics.TotalFindings)
-	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE status IN ('resolved', 'closed')`).Scan(&metrics.ResolvedFindings)
+	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE LOWER(status) END) IN ('resolved', 'fixed', 'closed', 'mitigated')`).Scan(&metrics.ResolvedFindings)
 
-	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE sla_breached = 1 AND status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')`).Scan(&metrics.SLABreached)
+	err = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE sla_breached = 1 AND (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')`).Scan(&metrics.SLABreached)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +109,7 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT severity, COUNT(*) 
 		FROM findings 
-		WHERE status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')
+		WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
 		GROUP BY severity
 	`)
 	if err != nil {
@@ -127,9 +129,9 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 	// Compute security score using healthcheck
 	hcInput := healthcheck.Input{}
 	hcRows, err := r.db.QueryContext(ctx, `
-		SELECT COALESCE(source, 'unknown'), COALESCE(rule_id, 'unknown'), COALESCE(severity, 'INFO'), COALESCE(file_path, ''), COALESCE(line_number, 0), COALESCE(status, 'open')
+		SELECT COALESCE(stack, 'unknown'), COALESCE(rule_id, 'unknown'), COALESCE(severity, 'INFO'), COALESCE(file_path, ''), COALESCE(line_number, 0), COALESCE(LOWER(status), 'open')
 		FROM findings
-		WHERE status NOT IN ('resolved', 'closed')
+		WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated')
 	`)
 	if err == nil {
 		defer func() { _ = hcRows.Close() }()
@@ -137,7 +139,7 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 			var src, class, sev, file, status string
 			var line int
 			if err := hcRows.Scan(&src, &class, &sev, &file, &line, &status); err == nil {
-				ignored := (status == "false_positive" || status == "risk_accepted")
+				ignored := (status == "false_positive" || status == "risk_accepted" || status == "accepted_risk")
 				hcInput.Findings = append(hcInput.Findings, healthcheck.Finding{
 					Source:   src,
 					Class:    class,
@@ -152,15 +154,14 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 		metrics.SecurityScore = res.Score
 		metrics.SecurityGrade = res.Grade
 	} else {
-		metrics.SecurityScore = 100
-		metrics.SecurityGrade = "A+"
+		return nil, err
 	}
 
 	// Top risky products — products with highest open finding count
 	riskyRows, err := r.db.QueryContext(ctx, `
 		SELECT p.name, COUNT(f.id) as finding_count
 		FROM products p
-		LEFT JOIN findings f ON f.product_id = p.id AND f.status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')
+		LEFT JOIN findings f ON f.product_id = p.id AND (CASE WHEN COALESCE(LOWER(f.status), 'open') IN ('open', '') AND f.verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(f.status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
 		GROUP BY p.id, p.name
 		HAVING COUNT(f.id) > 0
 		ORDER BY finding_count DESC
@@ -230,7 +231,7 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 	fileRows, err := r.db.QueryContext(ctx, `
 		SELECT COALESCE(file_path, 'unknown'), COUNT(*) as cnt
 		FROM findings
-		WHERE status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')
+		WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
 		AND file_path IS NOT NULL AND file_path != ''
 		GROUP BY file_path
 		ORDER BY cnt DESC
@@ -249,9 +250,12 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 
 	// Status breakdown
 	statusRows, err := r.db.QueryContext(ctx, `
-		SELECT COALESCE(status, 'unknown'), COUNT(*)
+		SELECT CASE
+ WHEN LOWER(status) = 'fixed' OR (COALESCE(status,'open') IN ('open','') AND verification_status = 'fixed') THEN 'resolved'
+ WHEN LOWER(status) = 'accepted_risk' THEN 'risk_accepted'
+ ELSE COALESCE(NULLIF(LOWER(status),''), 'open') END AS normalized_status, COUNT(*)
 		FROM findings
-		GROUP BY status
+		GROUP BY normalized_status
 		ORDER BY COUNT(*) DESC
 	`)
 	if err == nil {
@@ -269,7 +273,7 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 	stackRows, err := r.db.QueryContext(ctx, `
 		SELECT COALESCE(stack, 'core'), COUNT(*)
 		FROM findings
-		WHERE status NOT IN ('resolved', 'closed', 'risk_accepted', 'false_positive')
+		WHERE (CASE WHEN COALESCE(LOWER(status), 'open') IN ('open', '') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(LOWER(status), 'open') END) NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
 		GROUP BY stack
 		ORDER BY COUNT(*) DESC
 	`)
@@ -284,5 +288,8 @@ func (r *MetricsRepository) GetDashboardMetrics(ctx context.Context) (*Dashboard
 		}
 	}
 
+	if err := r.populateFreshness(ctx, &metrics, 0); err != nil {
+		return nil, err
+	}
 	return &metrics, nil
 }

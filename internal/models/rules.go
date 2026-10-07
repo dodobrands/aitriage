@@ -10,9 +10,10 @@ import (
 // Ecosystem describes one package manager: the manifest that proves the project
 // uses it, and the lockfiles that pin it.
 type Ecosystem struct {
-	Name      string   `yaml:"name" json:"name"`
-	Manifests []string `yaml:"manifests" json:"manifests"`
-	Lockfiles []string `yaml:"lockfiles" json:"lockfiles"`
+	Name          string   `yaml:"name" json:"name"`
+	Manifests     []string `yaml:"manifests" json:"manifests"`
+	Lockfiles     []string `yaml:"lockfiles" json:"lockfiles"`
+	WorkspaceRoot bool     `yaml:"workspace_root" json:"workspace_root"`
 }
 
 type Rule struct {

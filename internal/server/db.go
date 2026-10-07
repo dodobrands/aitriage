@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS findings (
   agent_prompt_generated_at DATETIME,
   verification_status TEXT,
   verification_summary TEXT,
-  verification_last_run_at DATETIME
+  verification_last_run_at DATETIME,
+  verification_last_success_at DATETIME
 );
 
 CREATE TABLE IF NOT EXISTS finding_notes (
@@ -319,6 +320,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec("ALTER TABLE findings ADD COLUMN verification_status TEXT")
 	_, _ = db.Exec("ALTER TABLE findings ADD COLUMN verification_summary TEXT")
 	_, _ = db.Exec("ALTER TABLE findings ADD COLUMN verification_last_run_at DATETIME")
+	if err := migrateVerificationFreshness(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate verification freshness: %w", err)
+	}
 	_, _ = db.Exec("ALTER TABLE runway_sessions ADD COLUMN progress_message TEXT")
 
 	// 2b. Patch old engine_llm_model to gemini-2.5-flash
@@ -341,6 +346,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 
 func RunMigrations(db *sql.DB) error {
 	_, err := db.Exec(schema)
+	return err
+}
+
+func migrateVerificationFreshness(db *sql.DB) error {
+	var exists int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('findings') WHERE name = 'verification_last_success_at'").Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		if _, err := db.Exec("ALTER TABLE findings ADD COLUMN verification_last_success_at DATETIME"); err != nil {
+			return err
+		}
+	}
+	_, err := db.Exec("UPDATE findings SET verification_last_success_at = verification_last_run_at WHERE verification_last_success_at IS NULL AND verification_status IN ('fixed', 'not_fixed')")
 	return err
 }
 

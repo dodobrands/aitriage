@@ -1,3 +1,4 @@
+import { isResolved } from '../lib/findingStatus';
 import React, { useState, useMemo } from 'react';
 import { useFindings } from '../hooks/useFindings';
 import { useProducts } from '../hooks/useProducts';
@@ -5,10 +6,11 @@ import type { Finding, Product } from '../types';
 import { useTranslation } from 'react-i18next';
 import { motion, AnimatePresence } from 'framer-motion';
 
-type TriageStatus = 'triage' | 'false_positive' | 'risk_accepted';
+type TriageStatus = 'resolved' | 'triage' | 'false_positive' | 'risk_accepted';
 type TabFilter = 'all' | TriageStatus;
 
 const statusConfig: Record<TriageStatus, { labelKey: string; icon: string; color: string; bg: string }> = {
+  resolved: { labelKey: 'status_fixed', icon: 'check_circle', color: '#22c55e', bg: 'rgba(34,197,94,0.08)' },
   triage: { labelKey: 'triage', icon: 'psychology', color: '#38bdf8', bg: 'rgba(56,189,248,0.08)' },
   false_positive: { labelKey: 'false_positive', icon: 'block', color: '#71717a', bg: 'rgba(255,255,255,0.04)' },
   risk_accepted: { labelKey: 'accepted_risk', icon: 'verified_user', color: '#f59e0b', bg: 'rgba(245,158,11,0.08)' },
@@ -54,19 +56,20 @@ export const TriagedPage: React.FC = () => {
   const triagedFindings = useMemo(() => {
     if (!findings) return [];
     let filtered = findings.filter((f: Finding) =>
-      f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted'
+      isResolved(f) || f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted'
     );
-    if (tab !== 'all') filtered = filtered.filter((f: Finding) => f.status === tab);
+    if (tab !== 'all') filtered = filtered.filter((f: Finding) => (tab === 'resolved' ? isResolved(f) : f.status === tab));
     if (productFilter !== null) filtered = filtered.filter((f: Finding) => f.product_id === productFilter);
     return filtered;
   }, [findings, tab, productFilter]);
 
   const counts = useMemo(() => {
-    if (!findings) return { triage: 0, false_positive: 0, risk_accepted: 0, total: 0 };
+    if (!findings) return { resolved: 0, triage: 0, false_positive: 0, risk_accepted: 0, total: 0 };
     const triaged = findings.filter((f: Finding) =>
-      f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted'
+      isResolved(f) || f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted'
     );
     return {
+      resolved: triaged.filter(isResolved).length,
       triage: triaged.filter((f: Finding) => f.status === 'triage').length,
       false_positive: triaged.filter((f: Finding) => f.status === 'false_positive').length,
       risk_accepted: triaged.filter((f: Finding) => f.status === 'risk_accepted').length,
@@ -77,7 +80,7 @@ export const TriagedPage: React.FC = () => {
   const activeProducts = useMemo(() => {
     if (!findings || !products) return [];
     const ids = new Set<number>();
-    findings.filter((f: Finding) => f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted')
+    findings.filter((f: Finding) => isResolved(f) || f.status === 'triage' || f.status === 'false_positive' || f.status === 'risk_accepted')
       .forEach((f: Finding) => { if (f.product_id) ids.add(f.product_id); });
     return products.filter((p: Product) => ids.has(p.id));
   }, [findings, products]);
@@ -105,9 +108,10 @@ export const TriagedPage: React.FC = () => {
       >
 
         {/* Summary cards */}
-        <motion.div variants={itemVariants} className="grid grid-cols-4 gap-3">
+        <motion.div variants={itemVariants} className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
             { label: t('total_triaged'), value: counts.total, icon: 'task_alt', color: '#a1a1aa' },
+            { label: t('status_fixed'), value: counts.resolved, icon: 'check_circle', color: '#22c55e' },
             { label: t('triage'), value: counts.triage, icon: 'psychology', color: '#38bdf8' },
             { label: t('false_positive'), value: counts.false_positive, icon: 'block', color: '#71717a' },
             { label: t('accepted_risk'), value: counts.risk_accepted, icon: 'verified_user', color: '#f59e0b' },
@@ -159,7 +163,7 @@ export const TriagedPage: React.FC = () => {
           <motion.div variants={itemVariants} className="border border-[rgba(255,255,255,0.06)] rounded-lg overflow-hidden divide-y divide-[rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.01)]">
             {triagedFindings.map((f: Finding) => {
               const isExpanded = expandedId === f.id;
-              const sc = statusConfig[f.status as TriageStatus];
+              const sc = statusConfig[(isResolved(f) ? 'resolved' : f.status) as TriageStatus];
               return (
                 <div key={f.id}>
                   <button onClick={() => setExpandedId(isExpanded ? null : f.id)}

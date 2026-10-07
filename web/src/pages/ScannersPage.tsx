@@ -1,9 +1,11 @@
+import { ModalDialog } from '../ui/ModalDialog';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTitle } from '../hooks/useTitle';
 import { securityService } from '../services/securityService';
 import { FileBrowser } from '../components/FileBrowser';
 import { useCopilotStore } from '../store/CopilotStore';
+import api from '../services/api';
 import { ProgressRing } from '../ui/ProgressRing';
 
 interface ScannerInfo {
@@ -23,15 +25,43 @@ export const ScannersPage: React.FC = () => {
   const [showBrowser, setShowBrowser] = useState(false);
   const [selectedScanner, setSelectedScanner] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const [scanResult, setScanResult] = useState('');
 
   useEffect(() => {
     securityService
       .getHealth()
-      .then((res) => setTools(res.tools))
+      .then((res) => setTools(res.tools || {})).catch(() => setScanError(t('review.healthError')))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   const [configScanner, setConfigScanner] = useState<ScannerInfo | null>(null);
+
+  const [minSeverity, setMinSeverity] = useState('INFO');
+  const [exclusionPatterns, setExclusionPatterns] = useState('');
+  const [configLoading, setConfigLoading] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configError, setConfigError] = useState('');
+  const [configReady, setConfigReady] = useState(false);
+  const [configAttempt, setConfigAttempt] = useState(0);
+  useEffect(() => {
+    if (!configScanner) return;
+    const controller = new AbortController();
+    api.get('/scanner-config/core', { signal: controller.signal }).then(({ data }) => {
+      setConfigReady(true); setMinSeverity(data.min_severity || 'INFO'); setExclusionPatterns((data.exclude_paths || []).join(', '));
+    }).catch(error => { if (!controller.signal.aborted) setConfigError(error.message); }).finally(() => { if (!controller.signal.aborted) setConfigLoading(false); });
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setConfigScanner(null); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => { controller.abort(); window.removeEventListener('keydown', closeOnEscape); };
+  }, [configScanner, configAttempt]);
+  const saveScannerConfig = async () => {
+    setSavingConfig(true); setConfigError('');
+    try {
+      await api.put('/scanner-config/core', { min_severity: minSeverity, exclude_paths: exclusionPatterns.split(',').map(p => p.trim()).filter(Boolean) });
+      setConfigScanner(null);
+    } catch (error) { setConfigError(error instanceof Error ? error.message : 'Failed to save'); }
+    finally { setSavingConfig(false); }
+  };
 
   const handleRunNow = (scannerId: string) => {
     setSelectedScanner(scannerId);
@@ -40,11 +70,13 @@ export const ScannersPage: React.FC = () => {
 
   const handleStartScan = async (path: string) => {
     setShowBrowser(false);
-    setScanning(true);
+    setScanning(true); setScanError(''); setScanResult('');
     try {
-      await securityService.startScan(path, selectedScanner || undefined);
+      const { data } = await api.post('/scan', { path, external: ['semgrep', 'trivy', 'bandit', 'gitleaks'].includes(selectedScanner || '') });
+      if (!data.ok) throw new Error(data.error || t('review.actionFailed'));
+      setScanResult(t('review.scanDone', { count: data.findings?.length || 0 }));
     } catch (err) {
-      console.error('Scan failed', err);
+      setScanError(err instanceof Error ? err.message : t('review.actionFailed'));
     } finally {
       setScanning(false);
       setSelectedScanner(null);
@@ -119,13 +151,15 @@ export const ScannersPage: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full overflow-hidden relative">
+      {scanError && <p role="alert" className="review-error">{scanError}</p>}
+      {scanResult && <p role="status" className="p-4 text-on-surface">{scanResult}</p>}
       {showBrowser && (
         <FileBrowser onSelect={handleStartScan} onCancel={() => setShowBrowser(false)} />
       )}
 
       {configScanner && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 animate-in fade-in ">
-          <div className="cyber-modal w-full max-w-lg">
+        <ModalDialog onClose={() => setConfigScanner(null)} label={t('scanners.engineConfig')} className="scanner-dialog">
+          <div className="cyber-modal w-full">
             <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-white/5">
               <div className="flex flex-col">
                 <span className="text-label-caps text-on-surface-variant mb-1 opacity-70">
@@ -137,6 +171,7 @@ export const ScannersPage: React.FC = () => {
               </div>
               <button
                 onClick={() => setConfigScanner(null)}
+                aria-label={t('scanners.cancel')}
                 className="text-on-surface-variant hover:text-white transition-none"
               >
                 <span className="material-symbols-outlined">close</span>
@@ -148,11 +183,12 @@ export const ScannersPage: React.FC = () => {
                   <label className="text-label-caps text-on-surface-variant">
                     {t('scanners.minSeverityLevel')}
                   </label>
-                  <select className="cyber-input w-full p-2 text-mono-data uppercase">
+                  <select aria-label={t('scanners.minSeverityLevel')} disabled={configLoading} value={minSeverity} onChange={e => setMinSeverity(e.target.value)} className="cyber-input w-full p-2 text-mono-data uppercase">
                     <option>INFO</option>
                     <option value="LOW">LOW</option>
                     <option>MEDIUM</option>
                     <option>HIGH</option>
+                    <option>CRITICAL</option>
                   </select>
                 </div>
                 <div className="flex flex-col gap-2">
@@ -162,28 +198,21 @@ export const ScannersPage: React.FC = () => {
                   <textarea
                     className="cyber-input w-full p-2 text-mono-data h-20 resize-none"
                     placeholder="**/vendor/*, **/tests/*, *.md"
-                    defaultValue="**/vendor/*, **/node_modules/*, **/dist/*"
+                    disabled={configLoading} aria-label={t('scanners.exclusionPatterns')} value={exclusionPatterns} onChange={e => setExclusionPatterns(e.target.value)}
                   />
                   <span className="text-label-caps text-on-surface-variant opacity-40 lowercase">
                     {t('scanners.exclusionDesc')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between pt-2">
-                  <div className="flex flex-col">
-                    <span className="text-label-caps opacity-60">{t('scanners.incrementalScanning')}</span>
-                    <span className="text-label-caps opacity-40 lowercase">
-                      {t('scanners.incrementalDesc')}
-                    </span>
-                  </div>
-                  <button className="w-10 h-5 border border-primary relative bg-primary">
-                    <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-on-primary" />
-                  </button>
-                </div>
+                <p className="text-xs text-on-surface-variant">{t('scanners.incrementalCli')}</p>
               </div>
 
+              {configError && <p role="alert" className="text-error">{configError}</p>}
+              {!configReady && !configLoading && <button type="button" onClick={() => { setConfigLoading(true); setConfigError(''); setConfigAttempt(value => value + 1); }}>{t('review.retry')}</button>}
               <div className="pt-4 flex gap-4">
                 <button
-                  onClick={() => setConfigScanner(null)}
+                  onClick={saveScannerConfig}
+                  disabled={savingConfig || configLoading || !configReady}
                   className="btn-primary flex-1 py-3 text-label-caps"
                 >
                   {t('scanners.saveParameters')}
@@ -197,7 +226,7 @@ export const ScannersPage: React.FC = () => {
               </div>
             </div>
           </div>
-        </div>
+        </ModalDialog>
       )}
 
       {scanning && (
@@ -205,7 +234,7 @@ export const ScannersPage: React.FC = () => {
           <div className="flex flex-col items-center gap-6">
             <ProgressRing size={80} strokeWidth={3} indeterminate />
             <span className="text-[12px] font-semibold text-primary tracking-[0.2em] uppercase font-mono animate-pulse">
-              {selectedScanner ? t('scanners.auditInProgress', { type: selectedScanner.toUpperCase() }) : t('scanners.auditInProgress', { type: t('scanners.fullSystemAudit') })}
+              {t('review.scanRunning')}
             </span>
           </div>
         </div>
@@ -254,7 +283,7 @@ export const ScannersPage: React.FC = () => {
               setLoading(true);
               securityService
                 .getHealth()
-                .then((res) => setTools(res.tools))
+                .then((res) => setTools(res.tools || {})).catch(() => setScanError(t('review.healthError')))
                 .finally(() => setLoading(false));
             }}
           >
@@ -293,7 +322,7 @@ export const ScannersPage: React.FC = () => {
                           : 'var(--color-on-surface-variant)',
                     }}
                   >
-                    {t('scanners.status.' + scanner.status.toLowerCase())}
+                    {t('scanners.states.' + scanner.status.toLowerCase())}
                   </span>
                 </div>
               </div>
@@ -315,17 +344,18 @@ export const ScannersPage: React.FC = () => {
                 <div className="flex gap-2">
                   <button
                     className="btn-secondary flex-1 py-1.5 text-label-caps"
-                    disabled={scanner.status !== 'ACTIVE'}
-                    onClick={() => setConfigScanner(scanner)}
+                    disabled={scanner.id !== 'core'}
+                    title={scanner.id !== 'core' ? t('scanners.externalConfig') : undefined}
+                    onClick={() => { setConfigReady(false); setConfigLoading(true); setConfigError(''); setConfigScanner(scanner); }}
                   >
                     {t('scanners.configure')}
                   </button>
                   <button
                     className="btn-primary flex-1 py-1.5 text-label-caps"
-                    disabled={scanner.status !== 'ACTIVE'}
+                    disabled={scanner.status !== 'ACTIVE' || scanner.id === 'network'} title={scanner.id === 'network' ? t('review.networkScope') : t('review.scanScope')}
                     onClick={() => handleRunNow(scanner.id)}
                   >
-                    {t('scanners.runNow')}
+                    {t('review.startScan')}
                   </button>
                 </div>
               </div>

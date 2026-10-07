@@ -24,6 +24,8 @@ import (
 
 // Options configuration for the scan engine.
 type Options struct {
+	MinSeverity  string
+	ExcludePaths []string
 	ProjectPath  string
 	ProbeHost    string
 	ForceStack   string
@@ -71,7 +73,9 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 		defer wg.Done()
 		start := time.Now()
 		r, err := scanner.Scan(ctx, opts.ProjectPath, scanner.ScanOptions{
-			ForceStack: opts.ForceStack,
+			ForceStack:   opts.ForceStack,
+			MinSeverity:  opts.MinSeverity,
+			ExcludePaths: opts.ExcludePaths,
 		})
 		mu.Lock()
 		defer mu.Unlock()
@@ -194,6 +198,13 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	go func() {
 		defer wg.Done()
 		nfrFindings, err := nfr.CheckNFR(opts.ProjectPath)
+		mu.Lock()
+		status := external.StatusCompleted
+		if err != nil {
+			status = external.StatusFailed
+		}
+		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "nfr", Status: status, Error: redactScannerError(err)})
+		mu.Unlock()
 		if err == nil {
 			if nfrFindings == nil {
 				nfrFindings = []nfr.NFRFinding{}
@@ -209,6 +220,13 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	go func() {
 		defer wg.Done()
 		findings, err := deployaudit.AuditDeployFiles(opts.ProjectPath)
+		mu.Lock()
+		status := external.StatusCompleted
+		if err != nil {
+			status = external.StatusFailed
+		}
+		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "deploy", Status: status, Error: redactScannerError(err)})
+		mu.Unlock()
 		if err == nil {
 			mu.Lock()
 			result.Deploy = findings
@@ -221,7 +239,17 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	go func() {
 		defer wg.Done()
 		critFiles := entropy.FindCriticalFiles(opts.ProjectPath)
-		historyLeaks := entropy.ScanGitHistory(opts.ProjectPath)
+		historyLeaks, historyErr := entropy.ScanGitHistoryWithContext(ctx, opts.ProjectPath)
+		mu.Lock()
+		status := external.StatusCompleted
+		if historyErr != nil {
+			status = external.StatusFailed
+			if os.IsNotExist(historyErr) {
+				status = external.StatusNotApplicable
+			}
+		}
+		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "git-history", Status: status, Error: redactScannerError(historyErr)})
+		mu.Unlock()
 
 		// Git history is scanned with the same scope rules as everything else:
 		// a secret inside a vendored dependency is that dependency's problem,

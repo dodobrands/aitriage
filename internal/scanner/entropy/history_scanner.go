@@ -45,19 +45,25 @@ var redactRe = regexp.MustCompile(`[A-Za-z0-9+/=_-]{12,}`)
 // ScanGitHistory searches git commit history for leaked secrets.
 // Scans added lines (diff patches) across all commits.
 func ScanGitHistory(projectPath string) []HistoryLeak {
+	leaks, _ := ScanGitHistoryWithContext(context.Background(), projectPath)
+	return leaks
+}
+
+// ScanGitHistoryWithContext distinguishes an empty history from a failed scan.
+func ScanGitHistoryWithContext(parent context.Context, projectPath string) ([]HistoryLeak, error) {
 	// Check prerequisites
 	if _, err := exec.LookPath("git"); err != nil {
-		return nil
+		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(projectPath, ".git")); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Stat(filepath.Join(projectPath, ".git")); err != nil {
+		return nil, err
 	}
 
 	var leaks []HistoryLeak
 
 	// Get compact diff log: only added lines with commit metadata
 	// Limit to last 50 commits and 30s timeout for performance
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "log", "-50", "--all",
 		"--pretty=format:COMMIT:%H|%ae|%aI",
@@ -69,7 +75,7 @@ func ScanGitHistory(projectPath string) []HistoryLeak {
 	cmd.Dir = projectPath
 	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	var currentCommit, currentAuthor string
@@ -135,7 +141,7 @@ func ScanGitHistory(projectPath string) []HistoryLeak {
 		deduped = deduped[:50]
 	}
 
-	return deduped
+	return deduped, nil
 }
 
 // redactLine truncates and partially redacts a line for safe display.

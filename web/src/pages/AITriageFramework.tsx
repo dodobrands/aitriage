@@ -1,3 +1,5 @@
+import { isActive } from '../lib/findingStatus';
+import { FindingEvidence } from '../components/findings/FindingEvidence';
 import React, { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useFindings } from '../hooks/useFindings';
@@ -70,7 +72,7 @@ export const AITriageFramework: React.FC = () => {
     const issueCounts: Record<string, number> = {};
     const fileCounts: Record<string, number> = {};
 
-    findings.forEach((f: Finding) => {
+    findings.filter(isActive).forEach((f: Finding) => {
       sevCounts[f.severity?.toUpperCase()] = (sevCounts[f.severity?.toUpperCase()] || 0) + 1;
       const stack = f.stack || 'core';
       stackCounts[stack] = (stackCounts[stack] || 0) + 1;
@@ -94,8 +96,7 @@ export const AITriageFramework: React.FC = () => {
   /* ── Filtered findings ──────────────────────────────────────────────── */
   const filteredFindings = useMemo(() => {
     if (!findings) return [];
-    if (!filterSev) return findings;
-    return findings.filter((f: Finding) => f.severity?.toUpperCase() === filterSev);
+    return findings.filter((f: Finding) => isActive(f) && (!filterSev || f.severity?.toUpperCase() === filterSev));
   }, [findings, filterSev]);
 
   /* ── Select finding ─────────────────────────────────────────────────── */
@@ -364,6 +365,7 @@ export const AITriageFramework: React.FC = () => {
               )}
             </div>
 
+            {selectedFinding && <div className="px-6 pb-3"><FindingEvidence finding={selectedFinding} /></div>}
             {/* ── Action Bar ─────────────────────────────────────────── */}
             <div className="shrink-0 px-6 py-3 border-b border-outline-variant/20 bg-surface-container-lowest flex items-center gap-2 overflow-x-auto">
               <span className="text-[9px] text-on-surface-variant/30 tracking-widest font-bold mr-2 shrink-0">

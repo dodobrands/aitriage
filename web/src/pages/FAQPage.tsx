@@ -49,9 +49,9 @@ export const FAQPage: React.FC = () => {
       </div>
 
       {/* Main Workspace Grid */}
-      <div className="flex-1 flex overflow-hidden z-10 relative">
+      <div className="faq-workspace flex-1 min-h-0 flex overflow-hidden z-10 relative">
         {/* Left inner navigation sidebar */}
-        <div className="w-64 border-r border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.15)] p-4 flex flex-col gap-1 shrink-0 overflow-y-auto cyber-scrollbar">
+        <div className="faq-workspace__nav w-64 border-r border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.15)] p-4 flex flex-col gap-1 shrink-0 overflow-y-auto cyber-scrollbar">
           {navItems.map((item) => {
             const isActive = activeSection === item.id;
             return (
@@ -74,7 +74,7 @@ export const FAQPage: React.FC = () => {
         </div>
 
         {/* Right content view area */}
-        <div className="flex-1 p-8 overflow-y-auto cyber-scrollbar bg-[#09090b]/40 relative">
+        <div className="faq-workspace__content flex-1 min-w-0 p-8 overflow-y-auto cyber-scrollbar bg-[#09090b]/40 relative">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeSection}
@@ -97,7 +97,7 @@ export const FAQPage: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="border border-[rgba(255,255,255,0.04)] rounded-xl p-5 bg-[rgba(255,255,255,0.005)] hover:border-[var(--accent-color-line)] hover:bg-[var(--accent-color-soft)] transition-all duration-300 group space-y-2">
                       <span className="material-symbols-outlined text-lg transition-transform duration-300 group-hover:scale-110" style={{ color: 'var(--accent-color)', textShadow: '0 0 10px var(--accent-color-line)' }}>hub</span>
                       <h3 className="text-xs font-bold text-white uppercase tracking-wider">Orchestration</h3>

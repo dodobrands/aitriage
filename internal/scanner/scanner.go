@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	gitignore "github.com/sabhiram/go-gitignore"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dodobrands/aitriage/internal/config"
@@ -19,6 +21,8 @@ import (
 )
 
 type ScanOptions struct {
+	MinSeverity   string
+	ExcludePaths  []string
 	ForceStack    string
 	UniversalOnly bool
 	FileFilter    []string // If non-empty, scan ONLY these files (absolute paths)
@@ -85,6 +89,17 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 		return empty, fmt.Errorf("failed to create workspace: %w", err)
 	}
 
+	if len(opts.ExcludePaths) > 0 {
+		ignored := gitignore.CompileIgnoreLines(opts.ExcludePaths...)
+		kept := ws.Files[:0]
+		for _, file := range ws.Files {
+			rel, err := filepath.Rel(projectPath, file.Path)
+			if err != nil || !ignored.MatchesPath(filepath.ToSlash(rel)) {
+				kept = append(kept, file)
+			}
+		}
+		ws.Files = kept
+	}
 	projects := detector.DetectProjects(ws)
 	ws.Projects = projects
 
@@ -150,6 +165,17 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 		results = append(results, res...)
 	}
 
+	if opts.MinSeverity != "" {
+		rank := map[string]int{"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+		minimum := rank[strings.ToUpper(opts.MinSeverity)]
+		kept := results[:0]
+		for _, result := range results {
+			if rank[strings.ToUpper(result.Severity)] >= minimum {
+				kept = append(kept, result)
+			}
+		}
+		results = kept
+	}
 	// Deduplicate: project-level rules (no file) — keep one per ID
 	// File-level rules — keep one per ID+File+Line combination
 	seen := make(map[string]bool)

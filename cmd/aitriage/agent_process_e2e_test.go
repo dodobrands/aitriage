@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -59,11 +60,21 @@ func TestE2E_DefaultAgentUsesFullContainerBundle(t *testing.T) {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close() })
 
+	llmHost := "host.docker.internal"
+	if runtime.GOOS == "linux" {
+		// Docker Engine does not provide Docker Desktop's host alias. The
+		// launcher uses the default bridge, whose gateway reaches this fixture.
+		gateway, err := exec.Command("docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}").Output()
+		if err != nil || net.ParseIP(strings.TrimSpace(string(gateway))) == nil {
+			t.Fatalf("resolve Docker bridge gateway for the LLM fixture: %v (%q)", err, gateway)
+		}
+		llmHost = strings.TrimSpace(string(gateway))
+	}
 	cmd := exec.Command(bin, "agent", project, "--no-chat", "--fail-on", "never")
 	cmd.Env = append(os.Environ(),
 		"AITRIAGE_IMAGE="+rt.ResolveImage(Version),
 		"AITRIAGE_LLM_PROVIDER=ollama",
-		fmt.Sprintf("AITRIAGE_LLM_BASE_URL=http://host.docker.internal:%d/v1/", port),
+		fmt.Sprintf("AITRIAGE_LLM_BASE_URL=http://%s:%d/v1/", llmHost, port),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

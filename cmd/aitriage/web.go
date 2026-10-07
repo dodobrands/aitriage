@@ -36,7 +36,7 @@ Native mode is intended only for AITriage development.`,
 			return webInContainer(cmd.Context())
 		}
 
-		addr := fmt.Sprintf("0.0.0.0:%d", webPort)
+		addr := webListenAddress(webPort, os.Getenv("AITRIAGE_RUNTIME"))
 		fmt.Printf("\n  AITriage Web UI\n")
 		fmt.Printf("  ──────────────────────────────────────\n")
 		fmt.Printf("  Open → http://localhost:%d\n", webPort)
@@ -89,6 +89,15 @@ Native mode is intended only for AITriage development.`,
 		srv := server.NewServer(prefix, db)
 		return srv.Listen(addr)
 	},
+}
+
+// The container's port is published on loopback by the managed launcher. Native
+// mode has no enforced auth and must never publish the dashboard to the LAN.
+func webListenAddress(port int, runtime string) string {
+	if runtime == "container" {
+		return fmt.Sprintf("0.0.0.0:%d", port)
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 func init() {

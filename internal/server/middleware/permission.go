@@ -54,11 +54,17 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 // RateLimiter is a placeholder for per-IP rate limiting (currently using global limiter).
 type RateLimiter struct{}
 
-var globalLimiter = rate.NewLimiter(rate.Every(time.Second/10), 50) // 50 requests per second
+var globalLimiter = rate.NewLimiter(rate.Every(time.Second/10), 50) // 10 requests per second, burst of 50
 
 // RateLimitMiddleware enforces global rate limiting
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Page loads need many JS/CSS chunks. They must remain available even
+		// when the API budget is exhausted, including the UI used to show errors.
+		if r.URL.Path != "/api" && !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !globalLimiter.Allow() {
 			utils.JSONError(w, "Too many requests", http.StatusTooManyRequests)
 			return

@@ -1,20 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
+import { Outlet, useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
+import { RouteLoading } from '../ui/RouteLoading';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { useAuthStore } from '../store/AuthStore';
 import api from '../services/api';
 import { useCopilotStore } from '../store/CopilotStore';
 import { useViewModeStore } from '../store/ViewModeStore';
-import { AICopilot } from './AICopilot';
-import { SimpleDashboardPage } from '../pages/SimpleDashboardPage';
-import { SimpleAIChatPage } from '../pages/SimpleAIChatPage';
-import { RepositoriesPage } from '../pages/RepositoriesPage';
-import { TriagedPage } from '../pages/TriagedPage';
-import { RunwayReportsPage } from '../pages/RunwayReportsPage';
-import { FAQPage } from '../pages/FAQPage';
+const AICopilot = lazy(() => import('./AICopilot').then(module => ({ default: module.AICopilot })));
+const SimpleDashboardPage = lazy(() => import('../pages/SimpleDashboardPage').then(module => ({ default: module.SimpleDashboardPage })));
+const SimpleAIChatPage = lazy(() => import('../pages/SimpleAIChatPage').then(module => ({ default: module.SimpleAIChatPage })));
+const RepositoriesPage = lazy(() => import('../pages/RepositoriesPage').then(module => ({ default: module.RepositoriesPage })));
+const TriagedPage = lazy(() => import('../pages/TriagedPage').then(module => ({ default: module.TriagedPage })));
+const RunwayReportsPage = lazy(() => import('../pages/RunwayReportsPage').then(module => ({ default: module.RunwayReportsPage })));
+const FAQPage = lazy(() => import('../pages/FAQPage').then(module => ({ default: module.FAQPage })));
 import type { Finding } from '../types';
 
 type SimpleTab = 'overview' | 'repositories' | 'triaged' | 'reports' | 'chat' | 'faq';
@@ -29,7 +30,13 @@ export const Layout: React.FC = () => {
   const isCopilotPinned = useCopilotStore((state) => state.isPinned);
   const reduceMotion = useReducedMotion();
 
-  const [simpleTab, setSimpleTab] = useState<SimpleTab>('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const simpleTab: SimpleTab = ['repositories', 'triaged', 'reports', 'chat', 'faq'].includes(requestedTab || '') ? requestedTab as SimpleTab : 'overview';
+  const setSimpleTab = (tab: SimpleTab) => {
+    setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('tab', tab); return next; });
+  };
+  const [sessionError, setSessionError] = useState(false);
   const [requestedReportId, setRequestedReportId] = useState<number | null>(null);
 
   const [chatContextFinding, setChatContextFinding] = useState<Finding | null>(null);
@@ -82,21 +89,10 @@ export const Layout: React.FC = () => {
     api
       .get('/me')
       .then((res) => {
-        if (res.data.ok) {
-          setUser(res.data);
-        } else {
-          setUser({
-            ok: true,
-            id: 1,
-            username: 'admin',
-            global_role: 'superadmin',
-            is_admin: true,
-          });
-        }
+        if (res.data.ok) { setUser(res.data); setSessionError(false); }
+        else setSessionError(true);
       })
-      .catch(() => {
-        setUser({ ok: true, id: 1, username: 'admin', global_role: 'superadmin', is_admin: true });
-      });
+      .catch(() => setSessionError(true));
   }, [setUser]);
 
   const handleLogout = () => {
@@ -104,6 +100,8 @@ export const Layout: React.FC = () => {
     logout();
     navigate('/login');
   };
+
+  if (sessionError) return <div className="session-error" role="alert"><p>{t('session_error', 'Could not verify your session. Please retry.')}</p><button type="button" onClick={() => window.location.reload()}>{t('retry', 'Retry')}</button></div>;
 
   if (!user) {
     return (
@@ -142,20 +140,22 @@ export const Layout: React.FC = () => {
         </div>
       )}
 
+      <a className="skip-link" href="#main-content">{t('skip_to_content', 'Skip to content')}</a>
       <Header />
 
       {/* Simple Mode Tab Bar */}
       <div
-        className={`relative z-20 border-b border-[rgba(255,255,255,0.06)] bg-background overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+        className={`relative z-20 border-b border-[rgba(255,255,255,0.06)] bg-background overflow-hidden shrink-0 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
           viewMode === 'simple'
             ? 'max-h-14 opacity-100 translate-y-0'
             : 'max-h-0 opacity-0 -translate-y-2 pointer-events-none'
         }`}
+        inert={viewMode !== 'simple'}
       >
-        <div role="tablist" aria-label={t('simple_navigation')} className="flex min-w-max items-center gap-0 px-6 overflow-x-auto">
+        <div role="tablist" aria-label={t('simple_navigation')} className="simple-tablist flex w-full items-center gap-0 px-3 sm:px-6 overflow-x-auto">
           {([
             { id: 'overview' as SimpleTab, label: t('tab_overview'), icon: 'dashboard' },
-            { id: 'reports' as SimpleTab, label: t('tab_reports'), icon: 'description', primary: true },
+            { id: 'reports' as SimpleTab, label: t('tab_reports'), icon: 'description' },
             { id: 'repositories' as SimpleTab, label: t('tab_repositories'), icon: 'folder' },
             { id: 'triaged' as SimpleTab, label: t('tab_triaged'), icon: 'task_alt' },
             { id: 'chat' as SimpleTab, label: t('tab_ai_assistant'), icon: 'smart_toy' },
@@ -164,16 +164,23 @@ export const Layout: React.FC = () => {
             <button
               type="button"
               role="tab"
+              id={`simple-tab-${tab.id}`}
+              aria-controls={`simple-panel-${tab.id}`}
+              tabIndex={simpleTab === tab.id ? 0 : -1}
+              onKeyDown={event => {
+                const tabs = Array.from(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') || []);
+                const index = tabs.indexOf(event.currentTarget);
+                const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+                if (next !== null) { event.preventDefault(); tabs[next].focus(); tabs[next].click(); tabs[next].scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+              }}
               key={tab.id}
               onClick={() => setSimpleTab(tab.id)}
               aria-selected={simpleTab === tab.id}
               aria-current={simpleTab === tab.id ? 'page' : undefined}
-              className={`relative flex items-center gap-1.5 px-4 py-2.5 rounded-md text-[13px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--accent-color-line)] ${
+              className={`relative shrink-0 flex items-center gap-1.5 px-4 py-2.5 rounded-md text-[13px] outline-none transition-colors focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--accent-color-line)] ${
                 simpleTab === tab.id
                   ? 'text-[#f4f4f5] font-semibold'
-                  : tab.primary
-                    ? 'text-[var(--accent-color)] font-semibold hover:text-[var(--accent-color-hover)]'
-                    : 'text-[#71717a] font-medium hover:text-[#c4c4cc]'
+                  : 'text-[#a1a1aa] font-medium hover:text-[#c4c4cc]'
               }`}
             >
               {tab.icon && <span className="material-symbols-outlined text-[16px]" aria-hidden="true">{tab.icon}</span>}
@@ -203,18 +210,18 @@ export const Layout: React.FC = () => {
  `}
             style={isSidebarPinned && !isCopilotPinned ? { left: '256px' } : undefined}
           >
-            <AICopilot
+            <Suspense fallback={<RouteLoading />}><AICopilot
               onClose={() => useCopilotStore.getState().setIsOpen(false)}
               isPinned={isCopilotPinned}
               onTogglePin={() =>
                 useCopilotStore.getState().setIsPinned(!useCopilotStore.getState().isPinned)
               }
-            />
+            /></Suspense>
           </aside>
         )}
 
         <div className="flex-1 min-w-0 flex overflow-hidden relative">
-          <main className="flex-1 h-full bg-transparent relative overflow-hidden">
+          <main id="main-content" tabIndex={-1} className="flex-1 h-full bg-transparent relative overflow-hidden"><Suspense fallback={<RouteLoading />}>
             <AnimatePresence mode="wait">
               {viewMode === 'advanced' ? (
                 <motion.div
@@ -222,13 +229,14 @@ export const Layout: React.FC = () => {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}
+                  transition={{ duration: reduceMotion ? 0 : 0.2 }}
                   className="h-full"
                 >
                   <Outlet />
                 </motion.div>
               ) : (
                 <motion.div
+                  role="tabpanel" id={`simple-panel-${simpleTab}`} aria-labelledby={`simple-tab-${simpleTab}`}
                   key={`simple-${simpleTab}`}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
@@ -266,7 +274,7 @@ export const Layout: React.FC = () => {
                 </motion.div>
               )}
             </AnimatePresence>
-          </main>
+          </Suspense></main>
         </div>
 
 

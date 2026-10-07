@@ -1,3 +1,9 @@
+import { useDashboardQuery } from '../hooks/useDashboardQuery';
+import { DashboardFilters } from '../components/findings/DashboardFilters';
+import { formatResultTime } from '../lib/resultTime';
+import { ModalDialog } from '../ui/ModalDialog';
+import { isActive, isResolved, isSuppressed, terminalStatuses } from '../lib/findingStatus';
+import { FindingEvidence } from '../components/findings/FindingEvidence';
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import Markdown from 'react-markdown';
@@ -87,14 +93,14 @@ const PathInput: React.FC<{ value: string; onChange: (p: string) => void }> = ({
           <input
             value={value}
             onChange={e => onChange(e.target.value)}
-            placeholder="/host/Desktop/my-project"
+            aria-label={t('review.scanPath')} placeholder="/host/Desktop/my-project"
             className="w-full bg-surface-bright border border-[rgba(255,255,255,0.06)] rounded-lg pl-8 pr-3 py-2 text-[12px] text-[#f4f4f5] font-mono placeholder:text-[#3f3f46] outline-none focus:border-[rgba(255,255,255,0.12)] transition-colors"
           />
         </div>
         <button
           onClick={openBrowser}
           className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-[rgba(255,255,255,0.06)] text-[#52525b] hover:text-[#a1a1aa] hover:bg-[rgba(255,255,255,0.03)] transition-colors"
-          title="Browse folders"
+          title={t('review.browse')} aria-label={t('review.browse')}
         >
           <span className="material-symbols-outlined text-[16px]">folder_open</span>
         </button>
@@ -160,7 +166,7 @@ const PathInput: React.FC<{ value: string; onChange: (p: string) => void }> = ({
             <span className="text-[10px] text-[#3f3f46] font-mono truncate flex-1">{displayPath(browsePath)}</span>
             <button onClick={() => setBrowsing(false)} className="text-[11px] text-[#52525b] hover:text-[#a1a1aa] px-2 py-1">{t('SimpleDashboardPage.cancel')}</button>
             <button onClick={confirmBrowse} className="text-[11px] text-[#f4f4f5] bg-surface-container-high hover:bg-surface-container-highest border border-outline hover:border-[var(--accent-color-line)] px-3 py-1 rounded transition-colors">
-              Select
+              {t('review.select')}
             </button>
           </div>
         </div>
@@ -188,7 +194,7 @@ interface ScanPanelProps {
 
 const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
   const { t } = useTranslation('pages');
-  const [external,  ] = useState(true);
+  const [external, setExternal] = useState(true);
   const [scanPath, setScanPath] = useState('.');
   const [projects, setProjects] = useState<BrowserEntry[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -199,7 +205,6 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
   const [totalScans, setTotalScans] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [scanningProject, setScanningProject] = useState<string | null>(null);
-  const [tools, setTools] = useState({ semgrep: true, gitleaks: true, trivy: true, bandit: true });
   const [toolStatus, setToolStatus] = useState<Record<string, boolean>>({});
 
   const [currentPath, setCurrentPath] = useState('.');
@@ -229,38 +234,15 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
     fetch('/api/health').then(r => r.json()).then(d => { if (d.ok && d.tools) setToolStatus(d.tools); }).catch(() => {});
   }, []);
 
-  // Scan phase simulation
-  const [scanPhase, setScanPhase] = useState(0);
-  const [scanLogs, setScanLogs] = useState<string[]>([]);
-  const phases = [
-    { name: 'Core', desc: 'AST parsing & pattern matching', icon: 'memory' },
-    { name: 'Semgrep', desc: 'SAST rules & taint analysis', icon: 'shield' },
-    { name: 'Gitleaks', desc: 'Secrets & credential detection', icon: 'key' },
-    { name: 'Trivy', desc: 'CVE & dependency vulnerabilities', icon: 'inventory_2' },
-    { name: 'Bandit', desc: 'Python-specific security checks', icon: 'bug_report' },
-  ];
-  const logMessages = [
-    'Indexing source files...', 'Building AST...', 'Running pattern rules...',
-    'Checking injection patterns...', 'Scanning for SQL injection...', 'Analyzing auth flows...',
-    'Detecting hardcoded secrets...', 'Checking API keys...', 'Scanning .env files...',
-    'Resolving dependencies...', 'Checking CVE database...', 'Analyzing lock files...',
-    'Scanning Python imports...', 'Checking subprocess calls...', 'Detecting unsafe deserialization...',
-    'Analyzing template injection...', 'Checking XSS vectors...', 'Scanning CSRF protections...',
-  ];
-
-  // Elapsed timer + phase cycling during scan
+  // Elapsed time is real; scanner stages are reported only after completion.
   useEffect(() => {
-    if (!scanningProject) { setElapsed(0); setScanPhase(0); setScanLogs([]); return; }
-    const t = setInterval(() => setElapsed(e => e + 1), 1000);
-    const p = setInterval(() => setScanPhase(ph => (ph + 1) % phases.length), 4000);
-    const l = setInterval(() => {
-      const msg = logMessages[Math.floor(Math.random() * logMessages.length)];
-      setScanLogs(prev => [...prev.slice(-4), msg]);
-    }, 1200);
-    return () => { clearInterval(t); clearInterval(p); clearInterval(l); };
+    if (!scanningProject) return;
+    const timer = setInterval(() => setElapsed(value => value + 1), 1000);
+    return () => clearInterval(timer);
   }, [scanningProject]);
 
   const runScan = async (path: string): Promise<boolean> => {
+    setElapsed(0);
     setScanningProject(path);
     setScanStatuses(prev => ({ ...prev, [path]: { state: 'scanning' } }));
     try {
@@ -294,14 +276,14 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
     }
     // A finished scan must be reflected by refetching state, never by reloading
     // the page: a reload drops scan results the user is still looking at.
-    setTimeout(() => onScanComplete?.(), 2000);
+    onScanComplete?.();
   };
 
   const scanOne = async (path: string) => {
     setTotalScans(1);
     setActiveScans(1);
     await runScan(path);
-    setTimeout(() => onScanComplete?.(), 1500);
+    onScanComplete?.();
   };
 
   const isAnyScanRunning = !!scanningProject;
@@ -328,7 +310,7 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
               setCurrentPath(parent === '/' ? '/host' : parent);
             }}
             className="w-5 h-5 flex items-center justify-center rounded border border-[rgba(255,255,255,0.06)] text-[#71717a] hover:text-[#a1a1aa] hover:bg-[rgba(255,255,255,0.02)] transition-colors cursor-pointer mr-0.5 shrink-0"
-            title="Go back"
+            title={t('review.goBack')}
           >
             <span className="material-symbols-outlined text-[13px]">arrow_back</span>
           </button>
@@ -355,20 +337,7 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
               </div>
               <span className="text-[10px] text-[#52525b] tabular-nums">{t('SimpleDashboardPage.elapsed', { seconds: elapsed })}</span>
             </div>
-            {/* Phase indicator */}
-            <div className="flex items-center gap-1.5 mt-1.5">
-              <span className="material-symbols-outlined text-[12px] text-[#22c55e]">{phases[scanPhase].icon}</span>
-              <span className="text-[10px] text-[#a1a1aa] font-medium">{phases[scanPhase].name}</span>
-              <span className="text-[10px] text-[#3f3f46]">— {t(`SimpleDashboardPage.phases.${scanPhase}.desc`, { defaultValue: phases[scanPhase].desc })}</span>
-            </div>
-            {/* Phase progress dots */}
-            <div className="flex gap-1 mt-2">
-              {phases.map((ph, i) => (
-                <div key={ph.name} className={`flex-1 h-1 rounded-full transition-all duration-500 ${
-                  i < scanPhase ? 'bg-[#22c55e]' : i === scanPhase ? 'bg-[#22c55e] animate-pulse' : 'bg-surface-bright'
-                }`} />
-              ))}
-            </div>
+            <p className="review-help">{t('review.scanRunning')}</p>
             {/* Batch progress */}
             {totalScans > 1 && (
               <div className="flex items-center justify-between mt-2">
@@ -378,14 +347,6 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
                 </div>
               </div>
             )}
-          </div>
-          {/* Mini log */}
-          <div className="px-4 py-1.5 border-t border-[rgba(255,255,255,0.04)] bg-background/40 font-mono">
-            {scanLogs.slice(-3).map((log, i) => (
-              <div key={i} className={`text-[9px] leading-relaxed transition-opacity duration-300 ${i === scanLogs.slice(-3).length - 1 ? 'text-[#52525b]' : 'text-[#27272a]'}`}>
-                <span className="text-[#3f3f46] mr-1">$</span>{log}
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -487,9 +448,9 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
             className="w-full flex items-center justify-between text-[10px] text-[#3f3f46] hover:text-[#52525b] transition-colors">
             <span className="flex items-center gap-1">
               <span className="material-symbols-outlined text-[12px]">{showScanners ? 'expand_less' : 'expand_more'}</span>
-              Scanners
+              {t('review.scanners')}
             </span>
-            <span>{Object.values(tools).filter(Boolean).length}/{Object.keys(tools).length} {t('SimpleDashboardPage.active')}</span>
+            <span>{Object.values(toolStatus).filter(Boolean).length}/{toolList.length} {t('SimpleDashboardPage.active')}</span>
           </button>
           <AnimatePresence initial={false}>
             {showScanners && (
@@ -502,20 +463,14 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
                 className="overflow-hidden"
               >
                 <div className="mt-2 space-y-0.5">
-                  {toolList.map(t => {
-                    const installed = toolStatus[t.key];
-                    const enabled = (tools as any)[t.key];
-                    return (
-                      <div key={t.key} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-surface-bright/40">
-                        <button onClick={() => setTools(prev => ({ ...prev, [t.key]: !enabled }))}
-                          className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors ${enabled ? 'bg-[#f4f4f5] border-[#f4f4f5]' : 'border-[#3f3f46]'}`}>
-                          {enabled && <span className="material-symbols-outlined text-[10px] text-[var(--bg-color)]">check</span>}
-                        </button>
-                        <span className="text-[11px] text-[#a1a1aa] flex-1">{t.label}</span>
-                        {installed !== undefined && <span className={`w-1.5 h-1.5 rounded-full ${installed ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} />}
-                      </div>
-                    );
-                  })}
+                  <label className="flex items-center gap-3 py-2 text-sm text-on-surface">
+                    <input type="checkbox" checked={external} disabled={isAnyScanRunning} onChange={event => setExternal(event.target.checked)} />
+                    {t('review.externalScanners')}
+                  </label>
+                  {toolList.map(tool => <div key={tool.key} className="flex items-center justify-between gap-2 px-2 py-2 text-xs text-on-surface-variant">
+                    <span>{tool.label}</span><span>{toolStatus[tool.key] ? t('review.available') : t('review.unavailable')}</span>
+                  </div>)}
+
                 </div>
               </motion.div>
             )}
@@ -539,7 +494,7 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
             if (selectedPath) return scanOne(selectedPath);
             return scanAll();
           }}
-          disabled={isAnyScanRunning}
+          disabled={isAnyScanRunning || (showCustomPath ? !scanPath.trim() : !selectedPath && projects.length === 0)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--accent-color)] text-[var(--accent-color-on-text)] text-[13px] font-medium hover:bg-[var(--accent-color-hover)] disabled:opacity-40 transition-all shadow-[0_0_14px_var(--accent-color-soft)]"
         >
           {isAnyScanRunning ? (
@@ -564,8 +519,6 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
 };
 
 /* ── Main Dashboard ── */
-type GroupBy = 'none' | 'severity' | 'title' | 'file' | 'scanner' | 'product';
-type SortBy = 'severity' | 'title' | 'file';
 const PAGE_SIZE = 25;
 
 
@@ -2188,14 +2141,14 @@ const FindingRow: React.FC<{
   onToggle: () => void;
   productMap: Map<number, Product>;
   setProductFilter: (id: number) => void;
-  setPage: (p: number) => void;
   handleTriage: (f: Finding, action: string) => void;
   onNavigateToChat?: (f: Finding) => void;
   onRefresh?: (options?: { silent?: boolean }) => void;
   isSelected?: boolean;
   onToggleSelect?: (e: React.MouseEvent | React.ChangeEvent) => void;
   isTriaging?: boolean;
-}> = ({ f, isExpanded, onToggle, productMap, setProductFilter, setPage, handleTriage, onNavigateToChat, onRefresh, isSelected, onToggleSelect, isTriaging }) => {
+  aiAvailable?: boolean;
+}> = ({ f, isExpanded, onToggle, productMap, setProductFilter, handleTriage, onNavigateToChat, onRefresh, isSelected, onToggleSelect, isTriaging, aiAvailable }) => {
   const { t, i18n } = useTranslation('pages');
   const reduceMotion = useReducedMotion();
   const [agentPrompt, setAgentPrompt] = useState(f.agent_prompt ?? '');
@@ -2203,6 +2156,7 @@ const FindingRow: React.FC<{
   const [agentPromptLoading, setAgentPromptLoading] = useState(false);
   const [verificationLoading, setVerificationLoading] = useState(false);
   const [copiedContext, setCopiedContext] = useState(false);
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
     setAgentPrompt(f.agent_prompt ?? '');
@@ -2220,15 +2174,16 @@ const FindingRow: React.FC<{
           : currentStatus;
   const shouldShowVerificationSummary =
     Boolean(verificationSummary) &&
-    (verificationLoading || ['verification_failed', 'resolved', 'fixed'].includes(lifecycleStatus.toLowerCase()));
-  const handoffStatus = verificationLoading ? 'pending_verification' : lifecycleStatus;
+    (verificationLoading || f.verification_status === 'error' || ['verification_failed', 'resolved', 'fixed'].includes(lifecycleStatus.toLowerCase()));
 
   const statusLabel = (status: string) => {
     const s = status.toLowerCase();
     if (s === 'sent_to_agent') return t('status_sent_to_agent');
     if (s === 'pending_verification') return t('status_pending_verification');
     if (s === 'verification_failed') return t('status_verification_failed');
-    if (s === 'resolved' || s === 'fixed') return t('status_fixed');
+    if (['resolved', 'fixed', 'closed', 'mitigated'].includes(s)) return t('status_fixed');
+    if (['verified', 'confirmed', 'true_positive'].includes(s)) return t('review.confirmed');
+    if (s === 'in_progress') return t('review.inProgress');
     if (s === 'triage') return t('statusTriage');
     if (s === 'false_positive') return t('statusFalsePositive');
     if (s === 'risk_accepted' || s === 'accepted_risk') return t('statusAccepted');
@@ -2237,7 +2192,7 @@ const FindingRow: React.FC<{
 
   const statusClass = (status: string) => {
     const s = status.toLowerCase();
-    if (s === 'resolved' || s === 'fixed') return 'text-[#22c55e] bg-[rgba(34,197,94,0.08)] border-[rgba(34,197,94,0.18)]';
+    if (['resolved', 'fixed', 'closed', 'mitigated'].includes(s)) return 'text-[#22c55e] bg-[rgba(34,197,94,0.08)] border-[rgba(34,197,94,0.18)]';
     if (s === 'verification_failed') return 'text-[#ef4444] bg-[rgba(239,68,68,0.08)] border-[rgba(239,68,68,0.18)]';
     if (s === 'pending_verification') return 'text-[#eab308] bg-[rgba(234,179,8,0.08)] border-[rgba(234,179,8,0.18)]';
     if (s === 'sent_to_agent' || s === 'triage') return 'text-[#38bdf8] bg-[rgba(56,189,248,0.08)] border-[rgba(56,189,248,0.18)]';
@@ -2261,6 +2216,7 @@ const FindingRow: React.FC<{
   const generateAgentPrompt = async (event: React.MouseEvent) => {
     event.stopPropagation();
     if (agentPromptLoading) return;
+    setActionError('');
     setAgentPromptLoading(true);
     try {
       const res = await fetch(`/api/findings/${f.id}/agent-prompt`, {
@@ -2280,7 +2236,7 @@ const FindingRow: React.FC<{
       onRefresh?.({ silent: true });
     } catch (err) {
       console.error(err);
-      alert(err instanceof Error ? err.message : 'Failed to generate agent prompt');
+      setActionError(err instanceof Error ? err.message : t('review.actionFailed'));
     } finally {
       setAgentPromptLoading(false);
     }
@@ -2289,6 +2245,7 @@ const FindingRow: React.FC<{
   const verifyFinding = async (event: React.MouseEvent) => {
     event.stopPropagation();
     if (verificationLoading) return;
+    setActionError('');
     setVerificationLoading(true);
     setVerificationSummary(t('verification_running'));
     try {
@@ -2302,7 +2259,8 @@ const FindingRow: React.FC<{
       onRefresh?.({ silent: true });
     } catch (err) {
       console.error(err);
-      alert(err instanceof Error ? err.message : 'Failed to verify finding');
+      setActionError(err instanceof Error ? err.message : t('review.actionFailed'));
+      setVerificationSummary('');
     } finally {
       setVerificationLoading(false);
     }
@@ -2312,17 +2270,7 @@ const FindingRow: React.FC<{
     <article className={`simple-finding ${isExpanded ? 'simple-finding--expanded' : ''}`}>
       <div
         className="simple-finding-row"
-        role="button"
-        tabIndex={0}
-        aria-expanded={isExpanded}
         onClick={onToggle}
-        onKeyDown={(event) => {
-          if (event.target !== event.currentTarget) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onToggle();
-          }
-        }}
       >
         {onToggleSelect && (
           <input
@@ -2346,7 +2294,7 @@ const FindingRow: React.FC<{
 
         <div className="simple-finding-row__product">
           {project ? (
-            <button onClick={(event) => { event.stopPropagation(); setProductFilter(project.id); setPage(0); }} title={`${t('groupProject')}: ${project.name}`}>{project.name}</button>
+            <button onClick={(event) => { event.stopPropagation(); setProductFilter(project.id); }} title={`${t('groupProject')}: ${project.name}`}>{project.name}</button>
           ) : (
             <span>{t('allProjects')}</span>
           )}
@@ -2398,165 +2346,58 @@ const FindingRow: React.FC<{
                 {f.file_path && <span className="text-[10px] font-mono truncate">{f.file_path}{f.line_number ? `:${f.line_number}` : ''}</span>}
               </div>
               
+              <div className="finding-rule-meta"><span>{t('review.rule')}: <code>{f.rule_id || '—'}</code></span><span>{t('review.scanner')}: {f.stack || 'core'}</span>{f.cwe_id && <span>{f.cwe_id}</span>}{f.cve_id && <span>{f.cve_id}</span>}</div>
               {f.description && (
-                <p className="simple-finding-details__description text-[12px] leading-relaxed select-text">
+                <div><h4 className="review-heading">{t('review.why')}</h4><p className="simple-finding-details__description text-[12px] leading-relaxed select-text">
                   {f.description}
-                </p>
+                </p></div>
               )}
               
+              {f.impact && <div><h4 className="review-heading">{t('review.impact')}</h4><p className="review-help">{f.impact}</p></div>}
+              {f.verification_last_run_at && <p className="finding-verification-time">
+                {t('review.verificationAttempt')}: <time dateTime={f.verification_last_run_at}>{formatResultTime(f.verification_last_run_at, i18n.language) || t('review.noTimestamp')}</time>
+                {f.verification_status && <span>{t(({ fixed: 'review.verificationFixed', not_fixed: 'review.verificationPresent', error: 'review.verificationError', running: 'review.verificationRunning' } as Record<string, string>)[f.verification_status] || 'review.verificationAttempt')}</span>}
+              </p>}
+              <FindingEvidence finding={f} />
               {(f.fix_suggestion || f.suggestion) && (
                 <div className="simple-finding-details__guidance text-[12px] leading-relaxed pl-3 my-2 select-text font-mono p-3 rounded-r-md">
-                  <span className="text-[9px] text-[#52525b] uppercase tracking-wider block mb-1 font-bold">Remediation Guidance</span>
+                  <span className="text-[9px] text-[#52525b] uppercase tracking-wider block mb-1 font-bold">{t('review.remediation')}</span>
                   {f.fix_suggestion || f.suggestion}
                 </div>
               )}
 
-              {f.ai_triage_summary && (
-                <div className="text-[12px] text-[#a1a1aa] leading-relaxed border-l-2 pl-3 my-2.5 select-text p-2.5 rounded-r-md"
-                  style={{
-                    borderColor: f.ai_triage_status === 'true_positive' ? '#ef4444' : f.ai_triage_status === 'false_positive' ? '#22c55e' : '#eab308',
-                    backgroundColor: f.ai_triage_status === 'true_positive' ? 'rgba(239,68,68,0.02)' : f.ai_triage_status === 'false_positive' ? 'rgba(34,197,94,0.02)' : 'rgba(234,179,8,0.02)'
-                  }}
-                >
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span className="material-symbols-outlined text-[14px]" style={{ color: f.ai_triage_status === 'true_positive' ? '#ef4444' : f.ai_triage_status === 'false_positive' ? '#22c55e' : '#eab308' }}>psychology</span>
-                    <span className="text-[9px] uppercase tracking-wider font-bold" style={{ color: f.ai_triage_status === 'true_positive' ? '#ef4444' : f.ai_triage_status === 'false_positive' ? '#22c55e' : '#eab308' }}>
-                      AI Triage Conclusion: {f.ai_triage_status?.replace('_', ' ').toUpperCase()}
-                    </span>
-                  </div>
-                  <p className="text-[#e4e4e7] text-[14px] font-sans leading-relaxed">
-                    {f.ai_triage_summary}
-                  </p>
-                </div>
-              )}
-
-              <div className="simple-finding-handoff rounded-lg p-3 space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="material-symbols-outlined text-[13px] text-[var(--accent-color)]">smart_toy</span>
-                    <span className="text-[9px] text-[#a1a1aa] uppercase tracking-wider font-bold font-mono truncate">
-                      {t('agent_handoff')}
-                    </span>
-                  </div>
-                  <span className={`shrink-0 whitespace-nowrap text-[9px] px-1.5 py-0.5 rounded font-mono uppercase tracking-wider border ${statusClass(handoffStatus)}`}>
-                    {statusLabel(handoffStatus)}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <button
-                    onClick={generateAgentPrompt}
-                    disabled={agentPromptLoading}
-                    className="text-[10px] text-[var(--accent-color)] border border-[rgba(139,92,246,0.15)] hover:bg-[rgba(139,92,246,0.06)] px-2.5 py-1 rounded-md flex items-center gap-1 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {agentPromptLoading ? (
-                      <div className="w-3 h-3 border-2 border-t-[var(--accent-color)] border-[rgba(255,255,255,0.1)] rounded-full animate-spin shrink-0" />
-                    ) : (
-                      <span className="material-symbols-outlined text-[12px]">content_paste</span>
-                    )}
-                    {t('agent_prompt')}
-                  </button>
-                  <button
-                    onClick={verifyFinding}
-                    disabled={verificationLoading}
-                    className="text-[10px] text-[#22c55e] border border-[rgba(34,197,94,0.15)] hover:bg-[rgba(34,197,94,0.06)] px-2.5 py-1 rounded-md flex items-center gap-1 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {verificationLoading ? (
-                      <div className="w-3 h-3 border-2 border-t-[#22c55e] border-[rgba(255,255,255,0.1)] rounded-full animate-spin shrink-0" />
-                    ) : (
-                      <span className="material-symbols-outlined text-[12px]">fact_check</span>
-                    )}
-                    {verificationLoading ? t('verification_running_short') : t('verify_fix')}
-                  </button>
-                </div>
-                <div className="text-[10px] text-[#71717a] leading-relaxed border-l border-[rgba(34,197,94,0.16)] pl-2">
-                  {t('verification_rescan_hint')}
-                </div>
-                {agentPrompt && (
-                  <textarea
-                    value={agentPrompt}
-                    readOnly
-                    className="w-full min-h-[140px] resize-y rounded-md border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.25)] p-2 text-[10px] leading-relaxed text-[#d4d4d8] font-mono outline-none"
-                  />
-                )}
-                {shouldShowVerificationSummary && (
-                  <div className="text-[11px] text-[#d4d4d8] leading-relaxed border-l border-[rgba(255,255,255,0.08)] pl-2 py-1 bg-[rgba(255,255,255,0.01)] rounded-r-md">
-                    {verificationSummary}
-                  </div>
-                )}
+              <div className="review-actions">
+                <button type="button" className="review-primary" onClick={verifyFinding} disabled={verificationLoading || isTriaging}>
+                  <span className="material-symbols-outlined" aria-hidden="true">fact_check</span>
+                  {verificationLoading ? t('verification_running_short') : t('review.rescan')}
+                </button>
+                {isActive(f) ? <>
+                  <button type="button" disabled={isTriaging || verificationLoading || ['confirmed', 'verified', 'true_positive'].includes(f.status)} onClick={() => handleTriage(f, 'confirmed')}>{t('review.confirm')}</button>
+                  <button type="button" disabled={isTriaging || verificationLoading} onClick={() => handleTriage(f, 'false_positive')}>{t('review.falsePositive')}</button>
+                  <button type="button" disabled={isTriaging || verificationLoading} onClick={() => handleTriage(f, 'risk_accepted')}>{t('review.acceptRisk')}</button>
+                </> : <button type="button" disabled={isTriaging || verificationLoading} onClick={() => handleTriage(f, 'open')}>{t('review.reopen')}</button>}
+                <button type="button" onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText([f.title, f.rule_id, f.severity, `${findingPath || ''}:${f.line_number || ''}`, f.description, f.impact, f.fix_suggestion || f.suggestion, f.code_snippet].filter(Boolean).join('\n'));
+                    setCopiedContext(true);
+                    setTimeout(() => setCopiedContext(false), 1500);
+                  } catch { setActionError(t('review.copyFailed')); }
+                }}>{copiedContext ? t('review.copied') : t('review.copy')}</button>
               </div>
-              
-              <div className="simple-finding-actions flex items-center gap-1.5 pt-1.5 flex-wrap">
-                <button 
-                  onClick={e => { 
-                    e.stopPropagation(); 
-                    if (isTriaging) return;
-                    handleTriage(f, 'triage'); 
-                  }} 
-                  disabled={isTriaging || f.status === 'false_positive'}
-                  className="text-[10px] text-[#38bdf8] border border-[rgba(56,189,248,0.15)] hover:bg-[rgba(56,189,248,0.06)] px-2.5 py-1 rounded-md flex items-center gap-1 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isTriaging ? (
-                    <>
-                      <div className="w-3 h-3 border-2 border-t-[#38bdf8] border-[rgba(255,255,255,0.1)] rounded-full animate-spin shrink-0" />
-                      <span>Analyzing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="material-symbols-outlined text-[12px]">psychology</span>Triage
-                    </>
-                  )}
-                </button>
-                <button 
-                  onClick={e => { e.stopPropagation(); handleTriage(f, 'false_positive'); }} 
-                  className="text-[10px] text-[#71717a] border border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.03)] px-2.5 py-1 rounded-md flex items-center gap-1 transition-colors font-medium"
-                >
-                  <span className="material-symbols-outlined text-[12px]">block</span>False Positive
-                </button>
-                <button 
-                  onClick={e => { e.stopPropagation(); handleTriage(f, 'risk_accepted'); }} 
-                  className="text-[10px] text-[#f59e0b] border border-[rgba(245,158,11,0.15)] hover:bg-[rgba(245,158,11,0.06)] px-2.5 py-1 rounded-md flex items-center gap-1 transition-colors font-medium"
-                >
-                  <span className="material-symbols-outlined text-[12px]">verified_user</span>Accept Risk
-                </button>
-                
-                <div className="w-px h-3.5 bg-[rgba(255,255,255,0.06)] mx-1" />
-                
-                {onNavigateToChat && (
-                  <button
-                    type="button"
-                    onClick={e => { e.stopPropagation(); onNavigateToChat(f); }} 
-                    title="Ask AI about this finding"
-                    aria-label={`Ask AI about ${f.title}`}
-                    className="group/ask h-8 text-[10px] text-[#d9f99d] border border-transparent ring-1 ring-[rgba(132,204,22,0.26)] bg-[linear-gradient(135deg,rgba(132,204,22,0.14),rgba(6,182,212,0.07))] hover:ring-[rgba(132,204,22,0.55)] hover:bg-[linear-gradient(135deg,rgba(132,204,22,0.2),rgba(6,182,212,0.1))] hover:shadow-[0_0_18px_rgba(132,204,22,0.14)] px-3 rounded-md flex items-center gap-1.5 transition-all duration-200 font-semibold focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#84cc16]/60"
-                  >
-                    <span className="material-symbols-outlined text-[15px] text-[#84cc16] group-hover/ask:scale-110 transition-transform duration-200">smart_toy</span>
-                    <span>Ask AI</span>
-                  </button>
-                )}
-                
-                <button
-                  type="button"
-                  title="Copy finding context"
-                  aria-label={`Copy context for ${f.title}`}
-                  onClick={async e => {
-                    e.stopPropagation();
-                    try {
-                      await navigator.clipboard.writeText(`${f.title}\n${f.severity}\n${f.description || ''}\n${f.fix_suggestion || ''}`);
-                      setCopiedContext(true);
-                      setTimeout(() => setCopiedContext(false), 1500);
-                    } catch (err) {
-                      console.error('Failed to copy finding context', err);
-                    }
-                  }} 
-                  className={`h-8 w-8 rounded-md border flex items-center justify-center transition-all duration-200 shrink-0 focus-visible:outline-none focus-visible:ring-1 ${
-                    copiedContext
-                      ? 'text-[#22c55e] border-[rgba(34,197,94,0.35)] bg-[rgba(34,197,94,0.08)] focus-visible:ring-[#22c55e]/60'
-                      : 'text-[#71717a] border-[rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.015)] hover:text-[#d4d4d8] hover:border-[rgba(255,255,255,0.14)] hover:bg-[rgba(255,255,255,0.04)] focus-visible:ring-[#a1a1aa]/50'
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[14px]">{copiedContext ? 'check' : 'content_copy'}</span>
-                </button>
-              </div>
+              <p className="review-help">{t('verification_rescan_hint')}</p>
+              {actionError && <p role="alert" className="review-error">{actionError}</p>}
+              {shouldShowVerificationSummary && <p role="status" className="review-result">{verificationSummary}</p>}
+              <details className="finding-ai-tools">
+                <summary>{t('review.aiTools')}</summary>
+                {f.ai_triage_summary && <div><h4 className="review-heading">{t('review.aiConclusion')}</h4><p className="review-help">{f.ai_triage_summary}</p></div>}
+                <div className="review-actions">
+                  <button type="button" onClick={generateAgentPrompt} disabled={agentPromptLoading}>{agentPromptLoading ? t('review.preparing') : t('agent_prompt')}</button>
+                  <button type="button" disabled={!aiAvailable || isTriaging} onClick={() => handleTriage(f, 'triage')}>{isTriaging ? t('review.analyzing') : t('review.aiTriage')}</button>
+                  {onNavigateToChat && <button type="button" disabled={!aiAvailable} onClick={() => onNavigateToChat(f)}>{t('review.askAi')}</button>}
+                </div>
+                {!aiAvailable && <p className="review-help">{t('review.aiUnavailable')}</p>}
+                {agentPrompt && <textarea aria-label={t('agent_prompt')} className="review-prompt" value={agentPrompt} readOnly />}
+              </details>
             </div>
           </motion.div>
         )}
@@ -2566,93 +2407,22 @@ const FindingRow: React.FC<{
 };
 
 export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavigateToChat, onNavigateToReports }) => {
+  const dashboardQuery = useDashboardQuery();
+  const { productFilter, setProductFilter, expandedIds, setExpandedIds, activeFilter, statusFilter, searchQuery, groupBy, sortBy, requestedPage, setPage, scopeType, activeFilePath, clearFilters, showHistory } = dashboardQuery;
   const { t, i18n } = useTranslation('pages');
   const reduceMotion = useReducedMotion();
-  const { findings, loading: findingsLoading, error: findingsError, refresh: refreshFindings } = useFindings() as any;
-  const { metrics, loading: metricsLoading, error: metricsError, refresh: refreshMetrics } = useMetrics();
+  const { findings, loading: findingsLoading, error: findingsError, refresh: refreshFindings } = useFindings();
+  const { metrics, loading: metricsLoading, error: metricsError, refresh: refreshMetrics } = useMetrics(productFilter ?? undefined);
   const { products, loading: productsLoading, error: productsError, refresh: refreshProducts } = useProducts();
 
-  const [globalScanning, setGlobalScanning] = useState(false);
-  const [globalScanPath, setGlobalScanPath] = useState('/host');
-  void setGlobalScanPath;
-  const [globalScanLogs, setGlobalScanLogs] = useState<string[]>([]);
-  const [globalScanPhase, setGlobalScanPhase] = useState(0);
-  const [globalScanElapsed, setGlobalScanElapsed] = useState(0);
-  
-  // AI query state
-
-  const scanPhases = [
-    { name: 'Core', desc: 'AST parsing & pattern matching', icon: 'memory' },
-    { name: 'Semgrep', desc: 'SAST rules & taint analysis', icon: 'shield' },
-    { name: 'Gitleaks', desc: 'Secrets & credential detection', icon: 'key' },
-    { name: 'Trivy', desc: 'CVE & dependency vulnerabilities', icon: 'inventory_2' },
-    { name: 'Bandit', desc: 'Python-specific security checks', icon: 'bug_report' },
-  ];
-  
-  const scanLogMessages = [
-    'Indexing source files...', 'Building AST...', 'Running pattern rules...',
-    'Checking injection patterns...', 'Scanning for SQL injection...', 'Analyzing auth flows...',
-    'Detecting hardcoded secrets...', 'Checking API keys...', 'Scanning .env files...',
-    'Resolving dependencies...', 'Checking CVE database...', 'Analyzing lock files...',
-    'Scanning Python imports...', 'Checking subprocess calls...', 'Detecting unsafe deserialization...',
-    'Analyzing template injection...', 'Checking XSS vectors...', 'Scanning CSRF protections...',
-  ];
-
-  const handleGlobalScan = async (path: string) => {
-    setGlobalScanning(true);
-    setGlobalScanLogs(['Initializing in-place scan...']);
-    setGlobalScanPhase(0);
-    setGlobalScanElapsed(0);
-
-    const tTimer = setInterval(() => setGlobalScanElapsed(e => e + 1), 1000);
-    const pTimer = setInterval(() => setGlobalScanPhase(ph => (ph + 1) % scanPhases.length), 3000);
-    const lTimer = setInterval(() => {
-      const msg = scanLogMessages[Math.floor(Math.random() * scanLogMessages.length)];
-      setGlobalScanLogs(prev => [...prev.slice(-10), msg]);
-    }, 700);
-
-    try {
-      const res = await fetch('/api/scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, external: true }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        runScanCompletionRefreshers({
-          findings: refreshFindings,
-          metrics: refreshMetrics,
-          products: refreshProducts,
-        });
-      } else {
-        alert(data.error || 'Scan failed');
-      }
-    } catch (err: any) {
-      alert(err.message || 'Connection error during scan');
-    } finally {
-      clearInterval(tTimer);
-      clearInterval(pTimer);
-      clearInterval(lTimer);
-      setGlobalScanning(false);
-    }
-  };
-  void handleGlobalScan;
-
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
-  const [activeFilter, setActiveFilter] = useState<string | null>(null);
-  const [productFilter, setProductFilter] = useState<number | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [groupBy, setGroupBy] = useState<GroupBy>('none');
-  const [sortBy, setSortBy] = useState<SortBy>('severity');
-  const [page, setPage] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [aiSummary, setAiSummary] = useState<string>('');
   const [aiSummaryLoading, setAiSummaryLoading] = useState(false);
   const [aiSummaryProjectId, setAiSummaryProjectId] = useState<number | null>(null);
-  const [aiSummaryLang, setAiSummaryLang] = useState<'en' | 'ru'>('ru');
+  const [aiSummaryLang, setAiSummaryLang] = useState<'en' | 'ru'>(i18n.language.startsWith('ru') ? 'ru' : 'en');
+  const [aiSummaryLocale, setAiSummaryLocale] = useState<'en' | 'ru'>(aiSummaryLang);
   const [isAiSummaryExpanded, setIsAiSummaryExpanded] = useState(false);
-  const [toolStatus, setToolStatus] = useState<Record<string, boolean>>({});
+  const [, setToolStatus] = useState<Record<string, boolean>>({});
   // Scanning, scoring, the gate and every report format work without a provider.
   // Only triage and the written narrative need one, so the UI says which half is
   // available instead of letting the user find out by pressing a button.
@@ -2667,78 +2437,70 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
 
   // SecureCoder Bulk Selection & Active File Scope State
   const [selectedFindings, setSelectedFindings] = useState<Set<number>>(new Set());
-  const [configAutostartFixes, setConfigAutostartFixes] = useState(true);
   const [bulkIgnoreModalOpen, setBulkIgnoreModalOpen] = useState(false);
   const [bulkIgnoreReason, setBulkIgnoreReason] = useState('False Positive');
   const [bulkIgnoring, setBulkIgnoring] = useState(false);
   const [bulkFixCopied, setBulkFixCopied] = useState(false);
-  const [scopeType, setScopeType] = useState<'all' | 'activeFile'>('all');
-  const [activeFilePath, setActiveFilePath] = useState<string>('');
-
-  useEffect(() => {
-    fetch('/api/securecoder/config')
-      .then(r => r.json())
-      .then(data => {
-        if (data.autostartFixes !== undefined) setConfigAutostartFixes(data.autostartFixes);
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleSaveConfig = async (overrideSettings?: any) => {
+  const [bulkVerifying, setBulkVerifying] = useState(false);
+  const [bulkVerificationResult, setBulkVerificationResult] = useState('');
+  const handleBulkVerify = async () => {
+    if (bulkVerifying || bulkIgnoring) return;
+    const selected = findings.filter(finding => selectedFindings.has(finding.id));
+    setBulkVerifying(true); setBulkVerificationResult('');
+    const processed = new Set<number>();
+    const failedIds = new Set<number>();
+    let fixed = 0, present = 0;
     try {
-      await fetch('/api/securecoder/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          autostartFixes: overrideSettings?.autostartFixes ?? configAutostartFixes
-        })
-      });
-    } catch (e) {
-      console.error(e);
+      for (let offset = 0; offset < selected.length; offset += 100) {
+        const batch = selected.slice(offset, offset + 100);
+        const response = await fetch('/api/findings/verify-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: batch.map(finding => finding.id) }) });
+        const data = await response.json();
+        if (!response.ok || !data.ok || !Array.isArray(data.results)) throw new Error(data.error || t('review.actionFailed'));
+        const results = new Map<number, { id: number; error?: string; fixed: boolean }>(data.results.map((result: { id: number; error?: string; fixed: boolean }) => [result.id, result]));
+        for (const finding of batch) {
+          const result = results.get(finding.id);
+          processed.add(finding.id);
+          if (!result || result.error) failedIds.add(finding.id);
+          else if (result.fixed) fixed++;
+          else present++;
+        }
+        setBulkVerificationResult(`${processed.size}/${selected.length}`);
+      }
+    } catch {
+      for (const finding of selected) if (!processed.has(finding.id)) failedIds.add(finding.id);
     }
+    setBulkVerificationResult(i18n.language?.startsWith('ru')
+      ? `Исправлено: ${fixed}; осталось: ${present}; ошибок: ${failedIds.size}`
+      : `Fixed: ${fixed}; still present: ${present}; errors: ${failedIds.size}`);
+    await Promise.all([refreshFindings({ silent: true }), refreshMetrics({ silent: true })]);
+    setBulkVerifying(false);
+    setSelectedFindings(previous => { const next = new Set(previous); for (const finding of selected) if (!failedIds.has(finding.id)) next.delete(finding.id); return next; });
   };
 
   const handleBulkIgnore = async () => {
     setBulkIgnoring(true);
-    try {
-      const selectedObjects = findings.filter((f: any) => selectedFindings.has(f.id));
-      for (const f of selectedObjects) {
-        await fetch(`/api/findings/${f.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'status', status: bulkIgnoreReason === 'False Positive' ? 'false_positive' : 'risk_accepted' })
-        });
-        
-        await fetch('/api/securecoder/ignore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filePath: f.file_path || '',
-            ruleId: f.rule_id || '',
-            codeSnippet: f.code_snippet || '',
-            lineNumber: f.line_number || 0,
-            vulnerabilityClass: f.title || '',
-            reason: bulkIgnoreReason
-          })
-        });
-      }
-      setSelectedFindings(new Set());
-      setBulkIgnoreModalOpen(false);
-      refreshFindings?.();
-      refreshMetrics?.();
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setBulkIgnoring(false);
+    setStatusActionError('');
+    const failed = new Set<number>();
+    for (const finding of findings.filter(finding => selectedFindings.has(finding.id))) {
+      try {
+        const response = await fetch(`/api/findings/${finding.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status', status: bulkIgnoreReason === 'False Positive' ? 'false_positive' : 'risk_accepted' }) });
+        const data = await response.json();
+        if (!response.ok || !data.ok) failed.add(finding.id);
+      } catch { failed.add(finding.id); }
     }
+    setSelectedFindings(failed);
+    setBulkIgnoreModalOpen(false);
+    if (failed.size) setStatusActionError(t('review.bulkFailed', { count: failed.size }));
+    refreshFindings({ silent: true }); refreshMetrics({ silent: true });
+    setBulkIgnoring(false);
   };
 
-  const handleBulkFix = () => {
-    const selectedObjects = findings.filter((f: any) => selectedFindings.has(f.id));
+  const handleBulkFix = async () => {
+    const selectedObjects = findings.filter(f => selectedFindings.has(f.id));
     if (selectedObjects.length === 0) return;
 
     let prompt = `Fix these security vulnerabilities in my code:\n\n`;
-    selectedObjects.forEach((f: any, idx: number) => {
+    selectedObjects.forEach((f, idx) => {
       prompt += `### Finding #${idx + 1}: ${f.title}\n`;
       prompt += `- **Severity:** ${f.severity?.toUpperCase()}\n`;
       prompt += `- **File:** ${f.file_path || 'unknown'}${f.line_number ? `:${f.line_number}` : ''}\n`;
@@ -2755,9 +2517,11 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
 
     prompt += `Please perform a root-cause analysis for each finding and generate targeted before/after code patches and PoC verification guides according to the SecureCoder guidelines.`;
 
-    navigator.clipboard.writeText(prompt);
-    setBulkFixCopied(true);
-    setTimeout(() => setBulkFixCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setBulkFixCopied(true);
+      setTimeout(() => setBulkFixCopied(false), 2000);
+    } catch { setStatusActionError(t('review.copyFailed')); }
   };
 
   const [isProjectsPanelOpen, setIsProjectsPanelOpen] = useState(() => {
@@ -2836,37 +2600,31 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
     return m;
   }, [products]);
 
-  // Get products that have findings
+  // Include scanned projects even when they have no findings.
   const activeProducts = useMemo(() => {
-    if (!findings || !products) return [];
-    const ids = new Set<number>();
-    findings.forEach((f: Finding) => { if (f.product_id) ids.add(f.product_id); });
-    return products.filter(p => ids.has(p.id));
-  }, [findings, products]);
+    return products || [];
+  }, [products]);
 
   // Load the latest persisted AI summary so it survives page refreshes.
   useEffect(() => {
-    const targetId = productFilter ?? [...activeProducts].sort((a, b) => {
-      const aCount = findings?.filter((f: Finding) => f.product_id === a.id).length || 0;
-      const bCount = findings?.filter((f: Finding) => f.product_id === b.id).length || 0;
-      return bCount - aCount;
-    })[0]?.id ?? null;
+    const targetId = productFilter;
     if (!targetId) return;
     let cancelled = false;
     securityService.getAISummary(targetId, aiSummaryLang, false)
       .then(stored => {
         if (cancelled || !stored) return;
+        setAiSummaryLocale(aiSummaryLang);
         setAiSummary(stored);
         setAiSummaryProjectId(targetId);
       })
       .catch(() => { /* No persisted summary yet. */ });
     return () => { cancelled = true; };
-  }, [productFilter, activeProducts, findings, aiSummaryLang]);
+  }, [productFilter, aiSummaryLang]);
 
-  const loading = findingsLoading || metricsLoading || productsLoading;
+  const loading = findingsLoading || productsLoading;
   const pageError = findingsError || metricsError || productsError;
 
-  const closedStatuses = ['resolved', 'closed', 'false_positive', 'risk_accepted'];
+  const closedStatuses = terminalStatuses;
 
   const sevCounts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -2885,10 +2643,8 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   }, [findings, productFilter]);
 
   const score = useMemo(() => {
-    const penalty = sevCounts.critical * 10 + sevCounts.high * 4 + sevCounts.medium * 1;
-    const s = 100 - penalty;
-    return s < 0 ? 0 : s;
-  }, [sevCounts]);
+    return metrics?.security_score ?? 0;
+  }, [metrics]);
 
 
   // A scanner finding is a hypothesis until someone confirms it. Showing the two
@@ -2896,13 +2652,15 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   // explains itself, where "25 active findings" next to "0 true positives" reads
   // as a contradiction.
   const triageCounts = useMemo(() => {
-    const counts = { confirmed: 0, needsReview: 0, suppressed: 0 };
+    const counts = { confirmed: 0, needsReview: 0, suppressed: 0, resolved: 0 };
     findings?.forEach((f: Finding) => {
       if (productFilter !== null && f.product_id !== productFilter) return;
       const status = (f.status || 'open').toLowerCase();
-      if (['false_positive', 'risk_accepted', 'resolved', 'closed', 'mitigated'].includes(status)) {
+      if (isResolved(f)) {
+        counts.resolved++;
+      } else if (isSuppressed(f)) {
         counts.suppressed++;
-      } else if (['verified', 'confirmed', 'true_positive'].includes(status)) {
+      } else if (f.ai_triage_status === 'true_positive' || f.is_verified || ['verified', 'confirmed', 'true_positive'].includes(status)) {
         counts.confirmed++;
       } else {
         counts.needsReview++;
@@ -2918,8 +2676,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
       if (productFilter !== null && f.product_id !== productFilter) return;
       total++;
       // Count findings that are in terminal/resolved states
-      const st = (f.status || 'open').toLowerCase();
-      if (closedStatuses.includes(st)) {
+      if (isResolved(f)) {
         resolved++;
       }
     });
@@ -2947,7 +2704,11 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
     if (activeFilter) {
       filtered = filtered.filter((f: Finding) => f.severity?.toLowerCase() === activeFilter);
     }
-    if (statusFilter !== 'all') {
+    if (statusFilter === 'active') {
+      filtered = filtered.filter(isActive);
+    } else if (statusFilter === 'resolved') {
+      filtered = filtered.filter(isResolved);
+    } else if (statusFilter !== 'all') {
       filtered = filtered.filter((f: Finding) => (f.status || 'open') === statusFilter);
     }
     if (scopeType === 'activeFile' && activeFilePath) {
@@ -2992,7 +2753,23 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
     return entries;
   }, [filteredFindings, groupBy]);
 
+  const filterCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: 0, critical: 0, high: 0, medium: 0, low: 0 };
+    for (const finding of findings) {
+      if (productFilter !== null && finding.product_id !== productFilter) continue;
+      if (statusFilter === 'active' ? !isActive(finding) : statusFilter === 'resolved' ? !isResolved(finding) : statusFilter !== 'all' && finding.status !== statusFilter) continue;
+      if (scopeType === 'activeFile' && activeFilePath && finding.file_path !== activeFilePath) continue;
+      const query = searchQuery.trim().toLowerCase();
+      if (query && ![finding.title, finding.description, finding.file_path].some(value => value?.toLowerCase().includes(query))) continue;
+      counts.all++;
+      const severity = finding.severity.toLowerCase();
+      counts[severity] = (counts[severity] || 0) + 1;
+    }
+    return counts;
+  }, [findings, productFilter, statusFilter, scopeType, activeFilePath, searchQuery]);
+
   const totalPages = Math.ceil(filteredFindings.length / PAGE_SIZE);
+  const page = Math.min(requestedPage, Math.max(0, totalPages - 1));
   const pagedFindings = groupBy === 'none' ? filteredFindings.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : [];
 
   const toggleGroup = (key: string) => {
@@ -3000,8 +2777,10 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
   };
 
   const [triagingIds, setTriagingIds] = useState<Set<number>>(new Set());
+  const [statusActionError, setStatusActionError] = useState('');
 
   const handleTriage = async (f: Finding, action: string) => {
+    setStatusActionError('');
     if (action === 'triage') {
       setTriagingIds(prev => {
         const next = new Set(prev);
@@ -3015,11 +2794,11 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
         });
         const data = await res.json();
         if (!data.ok) {
-          alert(data.error || 'AI Triage failed');
+          setStatusActionError(data.error || t('review.actionFailed'));
         }
       } catch (e) {
         console.error(e);
-        alert('Failed to connect to AI Triage service');
+        setStatusActionError(t('review.actionFailed'));
       } finally {
         setTriagingIds(prev => {
           const next = new Set(prev);
@@ -3032,28 +2811,17 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
       return;
     }
 
+    setTriagingIds(previous => new Set(previous).add(f.id));
     try {
-      await fetch(`/api/findings/${f.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status', status: action }) });
-      
-      if (action === 'false_positive' || action === 'risk_accepted') {
-        const reason = action === 'false_positive' ? 'False Positive' : 'Accepted Risk';
-        await fetch('/api/securecoder/ignore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            filePath: f.file_path || '',
-            ruleId: f.rule_id || '',
-            codeSnippet: f.code_snippet || '',
-            lineNumber: f.line_number || 0,
-            vulnerabilityClass: f.title || '',
-            reason: reason
-          })
-        });
-      }
-      refreshFindings?.();
-      refreshMetrics?.();
-    } catch (e) {
-      console.error(e);
+      const response = await fetch(`/api/findings/${f.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status', status: action }) });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || t('review.actionFailed'));
+      refreshFindings({ silent: true });
+      refreshMetrics({ silent: true });
+    } catch (error) {
+      setStatusActionError(error instanceof Error ? error.message : t('review.actionFailed'));
+    } finally {
+      setTriagingIds(previous => { const next = new Set(previous); next.delete(f.id); return next; });
     }
   };
 
@@ -3075,27 +2843,20 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
     );
   }
 
-  const showProjectScore = productFilter !== null;
   const revealTransition = reduceMotion
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.23, 1, 0.32, 1] as [number, number, number, number] };
-  const summaryProjectId = productFilter ?? [...activeProducts].sort((a, b) => {
-    const aCount = findings?.filter((f: Finding) => f.product_id === a.id).length || 0;
-    const bCount = findings?.filter((f: Finding) => f.product_id === b.id).length || 0;
-    return bCount - aCount;
-  })[0]?.id ?? null;
-  const summaryProject = summaryProjectId ? productMap.get(summaryProjectId) : undefined;
+  const summaryProjectId = productFilter;
   const remediationPercent = projectStats.total > 0
     ? Math.round((projectStats.resolved / projectStats.total) * 100)
     : 0;
-  const scannerCount = Object.values(toolStatus).filter(Boolean).length;
-  const scannerTotal = Math.max(Object.keys(toolStatus).length, 4);
-  const hasCurrentSummary = Boolean(aiSummary && aiSummaryProjectId === summaryProjectId && !aiSummaryLoading);
+  const hasCurrentSummary = Boolean(aiSummary && aiSummaryProjectId === summaryProjectId && aiSummaryLocale === aiSummaryLang && !aiSummaryLoading);
 
   const generateAiSummary = async () => {
     if (!summaryProjectId || aiSummaryLoading) return;
     setAiSummary('');
     setAiSummaryLoading(true);
+    setAiSummaryLocale(aiSummaryLang);
     setAiSummaryProjectId(summaryProjectId);
     setIsAiSummaryExpanded(true);
     try {
@@ -3122,42 +2883,25 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   <strong>{i18n.language?.startsWith('ru') ? 'Не удалось обновить данные' : 'Data could not be refreshed'}</strong>
                   <span>{pageError}</span>
                 </div>
-                <button onClick={() => { refreshFindings?.(); refreshMetrics?.(); }}>
+                <button onClick={() => { refreshFindings?.(); refreshMetrics?.(); refreshProducts(); }}>
                   {i18n.language?.startsWith('ru') ? 'Повторить' : 'Retry'}
                 </button>
               </div>
             )}
 
-            {aiAvailable === false && (
-              <motion.section variants={itemVariants} className="simple-ai-offline" role="status">
-                <span className="material-symbols-outlined" aria-hidden="true">info</span>
-                <div>
-                  <strong>
-                    {i18n.language?.startsWith('ru')
-                      ? 'Базовый аудит активен. ИИ-триаж выключен — провайдер не настроен.'
-                      : 'Basic audit active. AI triage is off — no provider configured.'}
-                  </strong>
-                  <span>
-                    {i18n.language?.startsWith('ru')
-                      ? 'Работает без ключа: сканирование, рейтинг безопасности, вердикт политики, отчёты SARIF / CSV / SBOM / для руководства. Требует ключа: автоматический разбор находок на подтверждённые и ложные, PoC и текстовые выводы.'
-                      : 'Works without a key: scanning, security score, policy verdict, and SARIF / CSV / SBOM / executive reports. Needs a key: automatic triage into confirmed and false positives, PoC reasoning, and written conclusions.'}
-                  </span>
-                </div>
-              </motion.section>
-            )}
             <motion.section variants={itemVariants} className="simple-posture-strip" aria-label={t('securityScore')}>
               <div className="simple-posture-strip__repository">
                 <span className="material-symbols-outlined" aria-hidden="true">shield_lock</span>
                 <div>
                   <span>{i18n.language?.startsWith('ru') ? 'Репозиторий' : 'Repository'}</span>
-                  <strong>{summaryProject?.name || t('allProjects')}</strong>
+                  <strong title={productFilter === null ? t('allProjects') : productMap.get(productFilter)?.name}>{productFilter === null ? t('allProjects') : productMap.get(productFilter)?.name || `Project #${productFilter}`}</strong>
                 </div>
               </div>
-              <div className="simple-posture-strip__score">
+              <div className="simple-posture-strip__score" aria-busy={metricsLoading}>
                 <span>{t('securityScore')}</span>
-                <strong>{score}<small>/100</small></strong>
+                <strong>{metricsLoading || metricsError || !metrics ? '—' : score}{!metricsLoading && !metricsError && metrics && <small>/100</small>}</strong>
                 <em className={`simple-risk-label simple-risk-label--${score < 30 ? 'critical' : score < 60 ? 'high' : score < 80 ? 'medium' : 'secure'}`}>
-                  {score < 30 ? t('criticalRisk') : score < 60 ? t('highRisk') : score < 80 ? t('mediumRisk') : t('secureStatus')}
+                  {metricsLoading ? t('review.loadingScore') : metricsError || !metrics ? t('review.scoreUnavailable') : score < 30 ? t('criticalRisk') : score < 60 ? t('highRisk') : score < 80 ? t('mediumRisk') : t('review.noActiveRisk')}
                 </em>
               </div>
               <div className="simple-posture-strip__triage" title={i18n.language?.startsWith('ru')
@@ -3165,6 +2909,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                 : 'A scanner finding is a hypothesis until someone confirms it. Unreviewed findings count as open because they are unresolved, not because they are proven.'}>
                 <span>{i18n.language?.startsWith('ru') ? 'Подтверждено' : 'Confirmed'}: <strong>{triageCounts.confirmed}</strong></span>
                 <span>{i18n.language?.startsWith('ru') ? 'Требуют проверки' : 'Needs review'}: <strong>{triageCounts.needsReview}</strong></span>
+                <span>{i18n.language?.startsWith('ru') ? 'Исправлено' : 'Resolved'}: <strong>{triageCounts.resolved}</strong></span>
                 <span>{i18n.language?.startsWith('ru') ? 'Подавлено' : 'Suppressed'}: <strong>{triageCounts.suppressed}</strong></span>
               </div>
               <div className="simple-posture-strip__severities" aria-label={i18n.language?.startsWith('ru') ? 'Распределение по критичности' : 'Severity distribution'}>
@@ -3174,15 +2919,15 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   { key: 'medium', label: i18n.language?.startsWith('ru') ? 'Средние' : 'Medium', count: sevCounts.medium },
                   { key: 'low', label: i18n.language?.startsWith('ru') ? 'Низкие' : 'Low', count: sevCounts.low },
                 ] as const).map(item => (
-                  <button
+                  <div
                     key={item.key}
-                    type="button"
-                    onClick={() => { setActiveFilter(item.key); setPage(0); }}
                     className={`simple-posture-severity simple-posture-severity--${item.key}`}
+                    title={item.label}
+                    aria-label={`${item.label}: ${item.count}`}
                   >
                     <span>{item.label}</span>
                     <strong>{item.count}</strong>
-                  </button>
+                  </div>
                 ))}
               </div>
               <div className="simple-posture-strip__remediation">
@@ -3202,29 +2947,25 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
               </div>
             </motion.section>
 
-            <motion.section
-              variants={itemVariants}
-              className={`simple-ai-command ${isAiSummaryExpanded ? 'simple-ai-command--expanded' : ''}`}
-              aria-label={t('aiSecuritySummary')}
-            >
-              <div className="simple-ai-command__heading">
-                <span className="material-symbols-outlined" aria-hidden="true">psychology</span>
-                <strong>{t('aiSecuritySummary')}</strong>
-              </div>
-              <div className="simple-ai-command__status" aria-label={i18n.language?.startsWith('ru') ? 'Готовность данных' : 'Data readiness'}>
-                <span><i />{i18n.language?.startsWith('ru') ? 'Репозиторий готов' : 'Repository ready'}</span>
-                <span><i />{i18n.language?.startsWith('ru') ? `Сканеры ${scannerCount}/${scannerTotal}` : `Scanners ${scannerCount}/${scannerTotal}`}</span>
-                <span><i />{i18n.language?.startsWith('ru') ? 'Данные актуальны' : 'Data current'}</span>
-              </div>
+            <div className="simple-data-freshness" aria-label={t('review.lastScan')}>
+              <span>{t('review.lastScan')}: <strong>{metricsLoading ? t('review.refreshingMetrics') : metricsError ? t('review.dataUnavailable') : formatResultTime(metrics?.last_successful_scan_at, i18n.language) || t('review.noTimestamp')}</strong></span>
+              <span>{t('review.lastVerification')}: <strong>{metricsLoading ? t('review.refreshingMetrics') : metricsError ? t('review.dataUnavailable') : formatResultTime(metrics?.last_successful_verification_at, i18n.language) || t('review.noTimestamp')}</strong></span>
+            </div>
+
+            <details className="simple-ai-tools">
+              <summary>{t('review.aiTools')}</summary>
+              {aiAvailable !== true && <p className="review-help">{t('review.aiUnavailable')}</p>}
+            <section className={`simple-ai-command ${isAiSummaryExpanded ? 'simple-ai-command--expanded' : ''}`} aria-label={t('aiSecuritySummary')}>
+              <div className="simple-ai-command__heading"><strong>{t('aiSecuritySummary')}</strong></div>
               <p className="simple-ai-command__copy">
-                {aiSummary && aiSummaryProjectId === summaryProjectId
+                {!summaryProjectId ? t('review.selectProject') : aiSummary && aiSummaryProjectId === summaryProjectId && aiSummaryLocale === aiSummaryLang
                   ? (i18n.language?.startsWith('ru') ? 'Сводка сохранена и готова к просмотру.' : 'The saved summary is ready to review.')
                   : (i18n.language?.startsWith('ru')
                     ? 'Получите краткий разбор риска и порядок исправления с помощью SecureCoder.'
                     : 'Generate a concise risk review and remediation order with SecureCoder.')}
               </p>
               <div className="simple-ai-command__actions">
-                <select value={aiSummaryLang} onChange={event => setAiSummaryLang(event.target.value as 'en' | 'ru')} aria-label={i18n.language?.startsWith('ru') ? 'Язык сводки' : 'Summary language'}>
+                <select disabled={aiSummaryLoading} value={aiSummaryLang} onChange={event => setAiSummaryLang(event.target.value as 'en' | 'ru')} aria-label={i18n.language?.startsWith('ru') ? 'Язык сводки' : 'Summary language'}>
                   <option value="ru">RU</option>
                   <option value="en">EN</option>
                 </select>
@@ -3238,7 +2979,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   type="button"
                   className={hasCurrentSummary ? 'simple-ai-command__secondary simple-ai-command__regenerate' : 'simple-ai-command__primary'}
                   onClick={generateAiSummary}
-                  disabled={!summaryProjectId || aiSummaryLoading}
+                  disabled={!summaryProjectId || aiSummaryLoading || aiAvailable !== true}
                 >
                   <span className="material-symbols-outlined" aria-hidden="true">{hasCurrentSummary ? 'refresh' : 'auto_awesome'}</span>
                   {aiSummaryLoading
@@ -3247,7 +2988,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                 </button>
               </div>
               <AnimatePresence initial={false}>
-                {isAiSummaryExpanded && aiSummaryProjectId === summaryProjectId && (aiSummaryLoading || aiSummary) && (
+                {isAiSummaryExpanded && aiSummaryProjectId === summaryProjectId && aiSummaryLocale === aiSummaryLang && (aiSummaryLoading || aiSummary) && (
                   <motion.div className="simple-ai-command__content" initial={reduceMotion ? false : { opacity: 0, transform: 'translateY(-6px)' }} animate={{ opacity: 1, transform: 'translateY(0)' }} exit={reduceMotion ? { opacity: 0 } : { opacity: 0, transform: 'translateY(-6px)' }} transition={revealTransition}>
                     {aiSummaryLoading ? (
                       <div className="simple-ai-command__loading" aria-live="polite"><span /><span /><span />{i18n.language?.startsWith('ru') ? 'Анализируем репозиторий' : 'Analyzing repository'}</div>
@@ -3257,337 +2998,16 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   </motion.div>
                 )}
               </AnimatePresence>
-            </motion.section>
-
-            {/* ── TOP BENTO ROW ── */}
-            <div className="hidden grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
-              
-              {/* Score Card */}
-              {showProjectScore && (
-              <motion.div
-                variants={itemVariants}
-                className="lg:col-span-1 border border-[rgba(255,255,255,0.06)] rounded-2xl p-6 bg-background/80 backdrop-blur-xl flex flex-col justify-between shadow-2xl relative overflow-hidden min-h-[260px] h-full group"
-              >
-                {/* Advanced Animated Background Glow */}
-                <div className="absolute inset-0 overflow-hidden pointer-events-none rounded-2xl">
-                  <div 
-                    className="absolute -top-[100px] -right-[50px] w-[300px] h-[300px] rounded-full mix-blend-screen opacity-20 filter blur-[90px] group-hover:opacity-30 transition-all duration-700 ease-in-out group-hover:scale-110"
-                    style={{
-                      background: 'radial-gradient(circle, var(--accent-color) 0%, transparent 70%)'
-                    }}
-                  />
-                  <div 
-                    className="absolute -bottom-[100px] -left-[50px] w-[200px] h-[200px] rounded-full mix-blend-screen opacity-10 filter blur-[70px] group-hover:opacity-20 transition-all duration-1000 ease-in-out group-hover:scale-125 delay-150"
-                    style={{
-                      background: 'radial-gradient(circle, var(--accent-color-hover) 0%, transparent 70%)'
-                    }}
-                  />
-                </div>
-
-                {/* Optional glassmorphism overlay */}
-                <div className="absolute inset-0 bg-gradient-to-br from-[rgba(255,255,255,0.03)] to-[rgba(255,255,255,0.005)] rounded-2xl pointer-events-none" />
-
-                {/* Header Section */}
-                <div className="flex items-start justify-between z-10">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <div className="w-6 h-6 rounded-md bg-[rgba(255,255,255,0.06)] border border-[rgba(255,255,255,0.05)] flex items-center justify-center shadow-inner">
-                        <span className="material-symbols-outlined text-[14px] text-[#e4e4e7]">security</span>
-                      </div>
-                      <h3 className="text-sm font-semibold text-[#f4f4f5] tracking-wide font-sans uppercase">
-                        {t('securityScore')}
-                      </h3>
-                    </div>
-                    <div className="text-[11px] text-[#71717a] font-mono tracking-wider ml-8 uppercase">
-                      {productFilter !== null && productMap.has(productFilter) 
-                        ? `${productMap.get(productFilter)!.name}` 
-                        : t('allProjects')}
-                    </div>
-                  </div>
-                  
-                  {/* Premium Status Badge */}
-                  <div 
-                    className="relative flex items-center gap-1.5 px-2.5 py-1 rounded-full border shadow-sm backdrop-blur-md"
-                    style={{
-                      color: 'var(--accent-color)',
-                      backgroundColor: 'var(--accent-color-soft)',
-                      borderColor: 'var(--accent-color-line)'
-                    }}
-                  >
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ backgroundColor: 'var(--accent-color)' }}></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2" style={{ backgroundColor: 'var(--accent-color)' }}></span>
-                    </span>
-                    <span className="text-[10px] font-bold tracking-widest uppercase">
-                      {score < 30 ? t('criticalRisk') : score < 60 ? t('highRisk') : score < 80 ? t('mediumRisk') : t('secureStatus')}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Middle: Gauge (Left) and Severity bars (Right) side-by-side */}
-                <div className="flex gap-6 items-center my-5 relative z-10 flex-1">
-                  {/* Left Column: Radial Progress Gauge (Redesigned) */}
-                  <div className="relative shrink-0 group-hover:scale-105 transition-transform duration-500 ease-out">
-                    <svg className="w-[110px] h-[110px] transform -rotate-90 filter drop-shadow-xl overflow-visible" viewBox="0 0 100 100" style={{ overflow: 'visible' }}>
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="42"
-                        className="stroke-[rgba(255,255,255,0.04)] fill-none"
-                        strokeWidth="8"
-                      />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="42"
-                        className="fill-none stroke-current transition-all duration-1500 ease-out"
-                        strokeWidth="8"
-                        strokeDasharray={2 * Math.PI * 42}
-                        strokeDashoffset={2 * Math.PI * 42 * (1 - score / 100)}
-                        strokeLinecap="round"
-                        style={{
-                          color: 'var(--accent-color)',
-                          filter: 'drop-shadow(0 0 8px var(--accent-color-line))'
-                        }}
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <span 
-                        className="text-[34px] font-black tracking-tighter leading-none"
-                        style={{
-                          background: 'linear-gradient(135deg, #ffffff 0%, var(--accent-color) 100%)',
-                          WebkitBackgroundClip: 'text',
-                          WebkitTextFillColor: 'transparent',
-                          filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.4))'
-                        }}
-                      >
-                        {score}
-                      </span>
-                      <span className="text-[9px] text-[#71717a] font-bold tracking-[0.2em] mt-0.5 uppercase">
-                        {i18n.language?.startsWith('ru') ? 'ИЗ 100' : 'SCORE'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Right Column: High-density Severity list */}
-                  <div className="flex-1 flex flex-col justify-center space-y-2.5">
-                    {(['critical', 'high', 'medium', 'low'] as const).map(s => {
-                      const count = sevCounts[s];
-                      const color = sevDot(s);
-                      const totalCount = sevCounts.critical + sevCounts.high + sevCounts.medium + sevCounts.low;
-                      const pct = totalCount > 0 ? (count / totalCount) * 100 : 0;
-                      return (
-                        <div key={s} className="flex flex-col gap-1.5 group/bar cursor-default">
-                          <div className="flex items-center justify-between text-xs font-mono leading-none">
-                            <span className="flex items-center gap-1.5 text-[#a1a1aa] uppercase text-[10px] tracking-wider font-semibold transition-colors group-hover/bar:text-[#e4e4e7]">
-                              <span className="w-1.5 h-1.5 rounded-full shrink-0 shadow-[0_0_4px_currentColor]" style={{ backgroundColor: color, color: color }} />
-                              {s === 'critical' ? (i18n.language?.startsWith('ru') ? 'Крит' : 'Crit') : s === 'high' ? (i18n.language?.startsWith('ru') ? 'Высок' : 'High') : s === 'medium' ? (i18n.language?.startsWith('ru') ? 'Сред' : 'Med') : (i18n.language?.startsWith('ru') ? 'Низк' : 'Low')}
-                            </span>
-                            <span className="font-bold text-[11px] transition-colors" style={{ color: count > 0 ? color : '#52525b' }}>{count}</span>
-                          </div>
-                          <div className="w-full h-1.5 bg-[rgba(255,255,255,0.03)] rounded-full overflow-hidden shadow-inner border border-[rgba(255,255,255,0.02)]">
-                            <div 
-                              className="h-full rounded-full transition-all duration-1000 ease-out relative" 
-                              style={{ 
-                                width: `${pct}%`, 
-                                backgroundColor: color,
-                                opacity: count > 0 ? 1 : 0.1,
-                                boxShadow: count > 0 ? `0 0 8px ${color}80` : 'none'
-                              }} 
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Remediation/Resolution progress bar */}
-                {metrics && (
-                  <div className="border-t border-[rgba(255,255,255,0.04)] pt-4 mt-1 z-10 font-mono">
-                    <div className="flex justify-between items-center text-[10px] text-[#a1a1aa] font-bold uppercase tracking-widest mb-2">
-                      <span className="flex items-center gap-1.5">
-                        <span className="material-symbols-outlined text-[13px]" style={{ color: 'var(--accent-color)' }}>fact_check</span>
-                        {t('remediationProgress')}
-                      </span>
-                      <span className="text-[#f4f4f5] tabular-nums">
-                        {projectStats.total > 0 
-                          ? `${Math.round((projectStats.resolved / projectStats.total) * 100)}%` 
-                          : '0%'}
-                      </span>
-                    </div>
-                    <div className="w-full h-2 bg-[rgba(255,255,255,0.03)] rounded-full overflow-hidden shadow-inner border border-[rgba(255,255,255,0.02)] relative p-[1px]">
-                      <div 
-                        className="h-full rounded-full transition-all duration-1000 ease-out relative overflow-hidden"
-                        style={{
-                          width: `${projectStats.total > 0 ? (projectStats.resolved / projectStats.total) * 100 : 0}%`,
-                          background: 'linear-gradient(90deg, var(--accent-color-hover) 0%, var(--accent-color) 100%)',
-                          boxShadow: '0 0 10px var(--accent-color-line)'
-                        }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[10px] text-[#52525b] mt-2 font-medium tracking-wide">
-                      <span>{t('resolvedCount', { count: projectStats.resolved })}</span>
-                      <span>{t('totalFindingsCount', { count: projectStats.total })}</span>
-                    </div>
-                  </div>
-                )}
-              </motion.div>
-              )}
-
-              {/* ── AI Security Summary Section ── */}
-              <div className={showProjectScore ? 'lg:col-span-2' : 'lg:col-span-3'}>
-                {(() => {
-                  const summaryProjectId = productFilter ?? activeProducts.sort((a, b) => {
-                    const aCount = findings?.filter((f: Finding) => f.product_id === a.id).length || 0;
-                    const bCount = findings?.filter((f: Finding) => f.product_id === b.id).length || 0;
-                    return bCount - aCount;
-                  })[0]?.id ?? null;
-
-                  if (!summaryProjectId || !productMap.has(summaryProjectId)) {
-                    return (
-                      <motion.div variants={itemVariants} className="h-full border border-dashed border-[rgba(139,92,246,0.2)] rounded-xl p-6 bg-[rgba(139,92,246,0.02)] flex flex-col justify-center items-center gap-3 text-center min-h-[250px]">
-                        <span className="material-symbols-outlined text-[32px] text-[#3f3f46]">analytics</span>
-                        <div>
-                          <div className="text-[14px] font-medium text-[#71717a] mb-1">No projects scanned yet</div>
-                          <div className="text-[12px] text-[#52525b]">Scan a repository from the sidebar to generate an AI security summary</div>
-                        </div>
-                      </motion.div>
-                    );
-                  }
-
-                  const proj = productMap.get(summaryProjectId)!;
-
-                  return (
-                    <motion.div variants={itemVariants} className="h-full rounded-xl overflow-hidden border border-[rgba(255,255,255,0.08)] bg-gradient-to-br from-[rgba(255,255,255,0.02)] to-[rgba(255,255,255,0.005)] shadow-lg p-5 relative flex flex-col min-h-[250px]">
-                      {/* Header */}
-                      <div className="flex items-center justify-between mb-4 border-b border-[rgba(255,255,255,0.06)] pb-3 shrink-0">
-                        <div className="flex items-center gap-2">
-                          <span className="material-symbols-outlined text-lg text-[#71717a]">psychology</span>
-                          <span className="text-xs text-[#e4e4e7] uppercase tracking-[0.15em] font-bold">{t('aiSecuritySummary')}</span>
-                        </div>
-                        <div className="flex items-center gap-2.5">
-                          <select value={aiSummaryLang} onChange={e => setAiSummaryLang(e.target.value as 'en' | 'ru')}
-                            className="text-xs text-[#a1a1aa] bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.08)] rounded px-2.5 py-1 outline-none hover:border-[rgba(255,255,255,0.12)] transition-colors font-bold tracking-wider uppercase font-sans cursor-pointer">
-                            <option value="ru">RU</option>
-                            <option value="en">EN</option>
-                          </select>
-                          {activeProducts.length > 1 && (
-                            <select value={summaryProjectId} onChange={e => setProductFilter(Number(e.target.value))}
-                              className="text-xs text-[#a1a1aa] bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.08)] rounded px-2.5 py-1 outline-none hover:border-[rgba(255,255,255,0.12)] transition-colors font-bold tracking-wider uppercase font-sans max-w-[150px] cursor-pointer">
-                              {activeProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                            </select>
-                          )}
-                          {aiSummaryProjectId === summaryProjectId && aiSummary && !aiSummaryLoading && (
-                            <button onClick={() => { setAiSummary(''); setAiSummaryProjectId(null); }}
-                              className="text-xs text-[#71717a] hover:text-[#e4e4e7] transition-colors flex items-center gap-1.5 font-bold uppercase tracking-wider font-mono">
-                              <span className="material-symbols-outlined text-[13px]">refresh</span>Regenerate
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* AI Summary Content */}
-                      <div className="flex-1 overflow-y-auto pr-2" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.06) transparent' }}>
-                        {aiSummaryLoading && aiSummaryProjectId === summaryProjectId ? (
-                          <div className="flex flex-col items-center justify-center h-full gap-3 text-[#71717a] min-h-[140px]">
-                            <div className="flex gap-1.5">
-                              {[0, 1, 2].map(i => (
-                                <div key={i} className="w-2 h-2 rounded-full bg-[#52525b] animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
-                              ))}
-                            </div>
-                            <span className="text-xs font-mono tracking-widest uppercase">Analyzing repository security...</span>
-                          </div>
-                        ) : aiSummaryProjectId === summaryProjectId && aiSummary ? (
-                          <div className="text-[13px] text-[#a1a1aa] leading-relaxed prose prose-invert max-w-none [&_strong]:text-[#e4e4e7] [&_strong]:font-semibold [&_code]:text-[#e4e4e7] [&_code]:bg-[#27272a] [&_code]:border [&_code]:border-[#3f3f46] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:text-[12px] [&_p]:mb-2.5 last:[&_p]:mb-0 select-text">
-                            <Markdown>{aiSummary}</Markdown>
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 h-full items-center min-h-[140px]">
-                            {/* Left: System Specifications */}
-                            <div className="md:col-span-7 md:border-r border-[rgba(255,255,255,0.06)] pr-5 space-y-3 flex flex-col justify-center h-full">
-                              <div className="flex items-center gap-1.5">
-                                <span className="material-symbols-outlined text-sm text-[var(--accent-color)]">folder_open</span>
-                                <span className="text-xs text-[#71717a] font-mono tracking-widest uppercase font-bold">ACTIVE REPOSITORY</span>
-                              </div>
-                              <div className="text-base font-extrabold text-white tracking-tight">{proj.name}</div>
-                              <div className="grid grid-cols-2 gap-2.5 pt-1">
-                                {[
-                                  { name: 'Trivy', key: 'trivy', label: 'Deps & Vulns' },
-                                  { name: 'Semgrep', key: 'semgrep', label: 'SAST Engine' },
-                                  { name: 'Gitleaks', key: 'gitleaks', label: 'Secrets Scan' },
-                                  { name: 'Bandit', key: 'bandit', label: 'Python SAST' }
-                                ].map(tool => {
-                                  const installed = toolStatus[tool.key];
-                                  return (
-                                    <div key={tool.key} className="flex items-center gap-2.5 p-2 rounded-lg bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)]">
-                                      <div className={`w-2 h-2 rounded-full shrink-0 ${installed ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} />
-                                      <div className="flex-1 min-w-0 font-mono">
-                                        <div className="text-xs text-[#e4e4e7] font-bold leading-none">{tool.name}</div>
-                                        <div className="text-[10px] text-[#71717a] mt-1 leading-none">{tool.label}</div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-
-                            {/* Right: Neural Prompt activation */}
-                            <div className="md:col-span-5 flex flex-col items-center justify-center text-center p-4 rounded-xl bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.05)] relative overflow-hidden group h-full">
-                              <div className="absolute inset-0 bg-radial-gradient from-[rgba(139,92,246,0.02)] to-transparent pointer-events-none group-hover:opacity-100 transition-opacity" />
-                              <span className="material-symbols-outlined text-[30px] text-[var(--accent-color)] animate-pulse mb-2">psychology</span>
-                              <p className="text-xs text-[#a1a1aa] leading-normal max-w-[220px] mb-4">
-                                Generate summary utilizing SecureCoder LLM agent pipeline
-                              </p>
-                              <button
-                                onClick={async () => {
-                                  setAiSummary('');
-                                  setAiSummaryLoading(true);
-                                  setAiSummaryProjectId(summaryProjectId);
-                                  try {
-                                    const summary = await securityService.getAISummary(summaryProjectId, aiSummaryLang, true);
-                                    setAiSummary(summary || 'No response');
-                                  } catch (err) {
-                                    setAiSummary('Failed to generate summary. Check API key configuration.');
-                                  } finally {
-                                    setAiSummaryLoading(false);
-                                  }
-                                }}
-                                className="btn-ai-generate w-full py-2.5 rounded-lg text-xs font-bold tracking-widest uppercase transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
-                              >
-                                <span className="material-symbols-outlined text-sm">bolt</span>
-                                {t('generate')}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  );
-                })()}
-              </div>
-            </div>
-
-            {/* Urgency Banner */}
-            {sevCounts.critical > 0 && (
-              <motion.div variants={itemVariants} className="hidden flex items-center gap-4 px-5 py-3 rounded-xl border border-[rgba(239,68,68,0.15)] bg-gradient-to-r from-[rgba(239,68,68,0.06)] to-[rgba(239,68,68,0.01)] shadow-sm">
-                <span className="material-symbols-outlined text-[#ef4444] text-[20px] animate-pulse">warning</span>
-                <div className="flex-1">
-                  <span className="text-[13px] text-[#f4f4f5] font-semibold tracking-wide">{sevCounts.critical} {sevCounts.critical === 1 ? t('criticalIssueRequires') : t('criticalIssuesRequire')} {t('immediateAttention')}</span>
-                  <span className="text-[12px] text-[#a1a1aa] ml-2 font-mono">— {sevCounts.high} {t('highSeverityAlsoPending')}</span>
-                </div>
-                <button onClick={() => { setActiveFilter('critical'); setPage(0); }}
-                  className="text-[11px] text-[#ef4444] border border-[rgba(239,68,68,0.25)] hover:bg-[rgba(239,68,68,0.1)] font-bold px-3.5 py-1.2 rounded-lg transition-colors shrink-0 uppercase tracking-wider font-mono">
-                  {t('showCritical')}
-                </button>
-              </motion.div>
-            )}
+            </section>
+            </details>
 
             {/* ── MAIN CONTENT SPLIT ── */}
             <div className="simple-workspace-grid grid grid-cols-1 gap-4 items-start">
               
               {/* LEFT: Findings & Toolbar */}
               <div className="simple-findings-column space-y-3 min-w-0">
+                {statusActionError && <p role="alert" className="review-error">{statusActionError}</p>}
+                {bulkVerificationResult && <p role="status">{bulkVerificationResult}</p>}
                 {/* ── Floating Bulk Action Bar ── */}
                 {selectedFindings.size > 0 && (
                   <motion.div
@@ -3614,14 +3034,14 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                         >
                           {selectedFindings.size}
                         </span>
-                        SELECTED
+                        {t('review.selected')}
                       </div>
                       <button
                         onClick={() => setSelectedFindings(new Set())}
                         className="flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider transition-colors duration-200 cursor-pointer text-[#52525b] hover:text-[var(--accent-color)]"
                       >
-                        <span className="material-symbols-outlined text-[13px]">close</span>
-                        CLEAR SELECTION
+                        <span aria-hidden="true" className="material-symbols-outlined text-[13px]">close</span>
+                        {t('review.clearSelection')}
                       </button>
                     </div>
 
@@ -3630,44 +3050,25 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
 
                     {/* Right: actions */}
                     <div className="flex items-center gap-2.5 relative z-10">
-                      {/* Fix Mode select */}
-                      <div className="relative">
-                        <select
-                          value={configAutostartFixes ? 'auto' : 'review'}
-                          onChange={async (e) => {
-                            const auto = e.target.value === 'auto';
-                            setConfigAutostartFixes(auto);
-                            await handleSaveConfig({ autostartFixes: auto });
-                          }}
-                          className="appearance-none pl-3.5 pr-8 py-1.5 rounded-lg text-[11px] font-mono font-semibold uppercase tracking-wider outline-none cursor-pointer transition-[color,background-color,border-color] duration-150 bg-[var(--simple-surface-2)] border border-[var(--simple-line)] text-[var(--simple-fg-soft)] hover:text-[var(--simple-fg)] hover:border-[var(--simple-surface-3)] focus:border-[var(--simple-accent-line)]"
-                          style={{
-                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
-                            backgroundRepeat: 'no-repeat',
-                            backgroundPosition: 'right 8px center',
-                            backgroundSize: '8px'
-                          }}
-                        >
-                          <option value="auto" className="bg-[#111113] text-[#f4f4f5]">Fix Mode: Auto</option>
-                          <option value="review" className="bg-[#111113] text-[#f4f4f5]">Fix Mode: Review First</option>
-                        </select>
-                      </div>
-
+                      <button type="button" disabled={bulkVerifying || bulkIgnoring} onClick={handleBulkVerify} className="btn-secondary px-3 py-2 text-xs disabled:opacity-50">
+                        {bulkVerifying ? t('verification_running_short') : (i18n.language?.startsWith('ru') ? 'Перепроверить выбранные' : 'Verify selected')}
+                      </button>
                       {/* Fix Selected – primary accent filled with translate hover */}
                       <button
                         onClick={handleBulkFix}
                         className="flex items-center gap-1.5 pl-3.5 pr-4 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-[background-color,transform] duration-150 cursor-pointer bg-[var(--simple-accent)] hover:bg-[var(--simple-accent-hover)] text-[var(--accent-color-on-text)] active:scale-[0.97]"
                       >
-                        <span className="material-symbols-outlined text-[14px]">{bulkFixCopied ? 'check' : 'auto_fix_high'}</span>
-                        {bulkFixCopied ? 'Copied!' : 'Fix Selected'}
+                        <span aria-hidden="true" className="material-symbols-outlined text-[14px]">{bulkFixCopied ? 'check' : 'auto_fix_high'}</span>
+                        {bulkFixCopied ? t('review.copied') : t('review.copyPrompt')}
                       </button>
 
                       {/* Ignore Selected – secondary ghost outline with translate hover */}
                       <button
-                        onClick={() => setBulkIgnoreModalOpen(true)}
+                        disabled={bulkVerifying || bulkIgnoring} onClick={() => setBulkIgnoreModalOpen(true)}
                         className="flex items-center gap-1.5 pl-3.5 pr-4 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-[color,background-color,border-color,transform] duration-150 cursor-pointer bg-[var(--simple-surface-2)] border border-[var(--simple-line)] text-[var(--simple-fg-soft)] hover:text-[var(--simple-fg)] hover:bg-[var(--simple-surface-3)] active:scale-[0.97]"
                       >
-                        <span className="material-symbols-outlined text-[14px]">do_not_disturb_on</span>
-                        Ignore Selected
+                        <span aria-hidden="true" className="material-symbols-outlined text-[14px]">do_not_disturb_on</span>
+                        {t('review.bulkDecision')}
                       </button>
                     </div>
                   </motion.div>
@@ -3677,236 +3078,32 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                 <motion.div variants={itemVariants} className="simple-command-surface space-y-2 p-3 rounded-xl">
                   <div className="simple-command-header">
                     <div>
-                      <h2>{i18n.language?.startsWith('ru') ? 'Очередь уязвимостей' : 'Vulnerability queue'}</h2>
-                      <span>{filteredFindings.length} {i18n.language?.startsWith('ru') ? 'находок в текущем представлении' : 'findings in the current view'}</span>
+                      <h2>{i18n.language?.startsWith('ru') ? 'Разбор находок' : 'Finding review'}</h2>
+                      <span>{t('review.findingsInView', { count: filteredFindings.length })}</span>
                     </div>
                     <div className="simple-command-header__actions">
-                      <button ref={secureCoderTriggerRef} type="button" onClick={() => { setIsProjectsPanelOpen(false); setIsSecureCoderOpen(true); }} aria-haspopup="dialog" aria-expanded={isSecureCoderOpen} className="simple-command-header__primary">
-                        <span className="material-symbols-outlined" aria-hidden="true">security</span>
-                        <span><strong>SecureCoder</strong><small>{i18n.language?.startsWith('ru') ? 'Основной ИИ-инструмент исправления' : 'Primary AI remediation tool'}</small></span>
-                      </button>
-                      <button ref={projectsTriggerRef} type="button" onClick={() => { setIsSecureCoderOpen(false); handleToggleProjectsPanel(); }} aria-haspopup="dialog" aria-expanded={isProjectsPanelOpen}>
-                        <span className="material-symbols-outlined" aria-hidden="true">folder_scan</span>
+                      <button ref={projectsTriggerRef} type="button" onClick={() => { setIsSecureCoderOpen(false); handleToggleProjectsPanel(); }} aria-haspopup="dialog" aria-expanded={isProjectsPanelOpen} className="simple-command-header__primary">
+                        <span className="material-symbols-outlined" aria-hidden="true">folder_open</span>
                         {i18n.language?.startsWith('ru') ? 'Сканирование проектов' : 'Project scanning'}
                       </button>
+                      <button ref={secureCoderTriggerRef} type="button" onClick={() => { setIsProjectsPanelOpen(false); setIsSecureCoderOpen(true); }} aria-haspopup="dialog" aria-expanded={isSecureCoderOpen} className="simple-command-header__secondary" aria-label="SecureCoder" title="SecureCoder">
+                        <span className="material-symbols-outlined" aria-hidden="true">smart_toy</span>
+                        <span><strong>SecureCoder</strong><small>{i18n.language?.startsWith('ru') ? 'Дополнительный AI-инструмент' : 'Optional AI assistant'}</small></span>
+                      </button>
                     </div>
                   </div>
-                  {/* Row 1: Filters & Search */}
-                  <div className="flex items-center justify-between gap-4 flex-wrap">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      {/* Select All Checkbox */}
-                      <div className="flex items-center justify-center border-r border-[rgba(255,255,255,0.06)] pr-3">
-                        <input
-                          type="checkbox"
-                          checked={filteredFindings.length > 0 && filteredFindings.every(f => selectedFindings.has(f.id))}
-                          ref={el => {
-                            if (el) {
-                              const selCount = filteredFindings.filter(f => selectedFindings.has(f.id)).length;
-                              el.indeterminate = selCount > 0 && selCount < filteredFindings.length;
-                            }
-                          }}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setSelectedFindings(prev => {
-                              const next = new Set(prev);
-                              filteredFindings.forEach(f => {
-                                if (checked) {
-                                  next.add(f.id);
-                                } else {
-                                  next.delete(f.id);
-                                }
-                              });
-                              return next;
-                            });
-                          }}
-                          className="accent-[var(--accent-color)] cursor-pointer select-checkbox w-3.5 h-3.5 rounded bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.08)]"
-                          title="Select All"
-                        />
-                      </div>
-
-                      {/* Scope Toggles */}
-                      <div className="flex items-center gap-1.5 border-r border-[rgba(255,255,255,0.06)] pr-3">
-                        <button
-                          onClick={() => setScopeType(scopeType === 'all' ? 'activeFile' : 'all')}
-                          className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider transition-all border ${
-                            scopeType === 'activeFile'
-                              ? 'border-[var(--accent-color-line)] bg-[var(--accent-color-soft)] text-[var(--accent-color)] font-semibold'
-                              : 'border-[rgba(255,255,255,0.03)] bg-[rgba(255,255,255,0.015)] text-[#a1a1aa] hover:text-white'
-                          }`}
-                          title="Toggle Active File scope"
-                        >
-                          <span className="material-symbols-outlined text-[12px]">{scopeType === 'activeFile' ? 'description' : 'folder_copy'}</span>
-                          {scopeType === 'activeFile' ? 'Active' : 'All'}
-                        </button>
-
-                        {scopeType === 'activeFile' && (
-                          <select
-                            value={activeFilePath}
-                            onChange={e => { setActiveFilePath(e.target.value); setPage(0); }}
-                            className="bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)] rounded px-1.5 py-0.5 text-[10px] text-white outline-none hover:border-[rgba(255,255,255,0.08)] transition-all cursor-pointer font-mono max-w-[120px]"
-                          >
-                            <option value="">-- Active File --</option>
-                            {uniqueFilePaths.map(path => (
-                              <option key={path} value={path}>{path.split('/').pop()}</option>
-                            ))}
-                          </select>
-                        )}
-                      </div>
-
-                      {/* Severity pills */}
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {[
-                          { key: null, label: t('filterAll'), count: findings?.length ?? 0 },
-                          { key: 'critical', label: t('severityCritical'), count: sevCounts.critical, color: '#ef4444' },
-                          { key: 'high', label: t('severityHigh'), count: sevCounts.high, color: '#f97316' },
-                          { key: 'medium', label: t('severityMedium'), count: sevCounts.medium, color: '#eab308' },
-                          { key: 'low', label: t('severityLow'), count: sevCounts.low, color: '#3f3f46' },
-                        ].map(f => (
-                          <button key={f.key ?? 'all'} onClick={() => { setActiveFilter(f.key); setPage(0); }}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-all border ${activeFilter === f.key ? 'border-[rgba(255,255,255,0.12)] bg-[rgba(255,255,255,0.06)] text-white shadow-sm font-semibold' : 'border-[rgba(255,255,255,0.03)] bg-[rgba(255,255,255,0.015)] text-[#a1a1aa] hover:text-white hover:bg-[rgba(255,255,255,0.03)]'}`}>
-                            {f.color && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: f.color }} />}{f.label} 
-                            <span className="text-[10px] opacity-50 font-mono ml-0.5">({f.count})</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Search */}
-                    <div className="flex items-center gap-2 flex-1 md:flex-none justify-end min-w-[240px]">
-                      <div className="relative w-full">
-                        <span className="material-symbols-outlined text-[14px] text-[#52525b] absolute left-2.5 top-1/2 -translate-y-1/2">search</span>
-                        <input 
-                          value={searchQuery} 
-                          onChange={e => { setSearchQuery(e.target.value); setPage(0); }} 
-                          placeholder={t('searchPlaceholder')}
-                          className="w-full bg-[rgba(0,0,0,0.15)] border border-[rgba(255,255,255,0.05)] rounded-md pl-8 pr-3 py-1 text-[12px] text-[#f4f4f5] placeholder:text-[#52525b] outline-none focus:border-[var(--accent-color)] focus:bg-[rgba(0,0,0,0.25)] transition-all shadow-inner font-sans" 
-                        />
-                      </div>
-                      <div className="text-[12px] text-[#52525b] font-sans shrink-0 bg-[rgba(255,255,255,0.02)] px-2 py-1 rounded-md border border-[rgba(255,255,255,0.03)]">
-                        {filteredFindings.length} ISSUES
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="h-px w-full bg-[rgba(255,255,255,0.04)]" />
-
-                  {/* Row 2: Selects & Active Filters */}
-                  <div className="flex items-center justify-between gap-4 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Product filter */}
-                      {activeProducts.length > 0 && (
-                        <select 
-                          value={productFilter ?? ''} 
-                          onChange={e => { setProductFilter(e.target.value ? Number(e.target.value) : null); setPage(0); }}
-                          className="bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)] rounded-md px-2.5 py-1 text-[12px] uppercase font-sans tracking-wider text-[#a1a1aa] hover:text-white hover:border-[rgba(255,255,255,0.08)] transition-all cursor-pointer appearance-none pr-6 outline-none shadow-sm"
-                          style={{ 
-                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, 
-                            backgroundRepeat: 'no-repeat', 
-                            backgroundPosition: 'right 6px center',
-                            backgroundSize: '8px'
-                          }}
-                        >
-                          <option value="">{t('allProjects')}</option>
-                          {activeProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
-                      )}
-                      
-                      <select 
-                        value={statusFilter} 
-                        onChange={e => { setStatusFilter(e.target.value); setPage(0); }}
-                        className="bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)] rounded-md px-2.5 py-1 text-[12px] uppercase font-sans tracking-wider text-[#a1a1aa] hover:text-white hover:border-[rgba(255,255,255,0.08)] transition-all cursor-pointer appearance-none pr-6 outline-none shadow-sm"
-                        style={{ 
-                          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, 
-                          backgroundRepeat: 'no-repeat', 
-                          backgroundPosition: 'right 6px center',
-                          backgroundSize: '8px'
-                        }}
-                      >
-                        <option value="all">{t('statusAll')}</option>
-                        <option value="open">{t('statusOpen')}</option>
-                        <option value="triage">{t('statusTriage')}</option>
-                        <option value="false_positive">{t('statusFalsePositive')}</option>
-                        <option value="risk_accepted">{t('statusAccepted')}</option>
-                      </select>
-                      
-                      <select 
-                        value={groupBy} 
-                        onChange={e => { setGroupBy(e.target.value as GroupBy); setPage(0); }}
-                        className="bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)] rounded-md px-2.5 py-1 text-[12px] uppercase font-sans tracking-wider text-[#a1a1aa] hover:text-white hover:border-[rgba(255,255,255,0.08)] transition-all cursor-pointer appearance-none pr-6 outline-none shadow-sm"
-                        style={{ 
-                          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, 
-                          backgroundRepeat: 'no-repeat', 
-                          backgroundPosition: 'right 6px center',
-                          backgroundSize: '8px'
-                        }}
-                      >
-                        <option value="none">{t('flatList')}</option>
-                        <option value="severity">{t('groupSeverity')}</option>
-                        <option value="title">{t('groupTitle')}</option>
-                        <option value="file">{t('groupFile')}</option>
-                        <option value="scanner">{t('groupScanner')}</option>
-                        <option value="product">{t('groupProject')}</option>
-                      </select>
-                      
-                      <select 
-                        value={sortBy} 
-                        onChange={e => setSortBy(e.target.value as SortBy)}
-                        className="bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.04)] rounded-md px-2.5 py-1 text-[12px] uppercase font-sans tracking-wider text-[#a1a1aa] hover:text-white hover:border-[rgba(255,255,255,0.08)] transition-all cursor-pointer appearance-none pr-6 outline-none shadow-sm"
-                        style={{ 
-                          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, 
-                          backgroundRepeat: 'no-repeat', 
-                          backgroundPosition: 'right 6px center',
-                          backgroundSize: '8px'
-                        }}
-                      >
-                        <option value="severity">{t('sortSeverity')}</option>
-                        <option value="title">{t('sortTitle')}</option>
-                        <option value="file">{t('sortFile')}</option>
-                      </select>
-                      {expandedIds.size > 0 && (
-                        <button
-                          onClick={() => setExpandedIds(new Set())}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all border border-[var(--accent-color-line)] bg-[var(--accent-color-soft)] text-[var(--accent-color)] hover:bg-[var(--accent-color-hover)] hover:text-[var(--accent-color-on-text)]"
-                          title="Collapse all findings"
-                        >
-                          <span className="material-symbols-outlined text-[14px]">unfold_less</span>
-                          {i18n.language?.startsWith('ru') ? 'Свернуть все' : 'Collapse All'}
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Active filters summary */}
-                    {(activeFilter || productFilter !== null || statusFilter !== 'all' || searchQuery) && (
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {productFilter !== null && (
-                          <span className="inline-flex items-center gap-1 text-[9px] text-[#e4e4e7] bg-[rgba(255,255,255,0.04)] px-2 py-0.5 rounded border border-[rgba(255,255,255,0.03)] font-mono uppercase">
-                            <span className="material-symbols-outlined text-[10px] text-[#a1a1aa]">folder</span>{productMap.get(productFilter)?.name || `Project #${productFilter}`}
-                            <button onClick={() => setProductFilter(null)} className="ml-1 text-[#a1a1aa] hover:text-white material-symbols-outlined text-[11px] leading-none">close</button>
-                          </span>
-                        )}
-                        {activeFilter && (
-                          <span className="inline-flex items-center gap-1 text-[9px] text-[#e4e4e7] bg-[rgba(255,255,255,0.04)] px-2 py-0.5 rounded border border-[rgba(255,255,255,0.03)] font-mono uppercase">
-                            <span className="w-1 h-1 rounded-full" style={{ backgroundColor: sevDot(activeFilter) }} />{activeFilter}
-                            <button onClick={() => setActiveFilter(null)} className="ml-1 text-[#a1a1aa] hover:text-white material-symbols-outlined text-[11px] leading-none">close</button>
-                          </span>
-                        )}
-                        {statusFilter !== 'all' && (
-                          <span className="inline-flex items-center gap-1 text-[9px] text-[#e4e4e7] bg-[rgba(255,255,255,0.04)] px-2 py-0.5 rounded border border-[rgba(255,255,255,0.03)] font-mono uppercase">
-                            {statusFilter.replace('_', ' ')}
-                            <button onClick={() => setStatusFilter('all')} className="ml-1 text-[#a1a1aa] hover:text-white material-symbols-outlined text-[11px] leading-none">close</button>
-                          </span>
-                        )}
-                        {searchQuery && (
-                          <span className="inline-flex items-center gap-1 text-[9px] text-[#e4e4e7] bg-[rgba(255,255,255,0.04)] px-2 py-0.5 rounded border border-[rgba(255,255,255,0.03)] font-mono uppercase">
-                            "{searchQuery}"
-                            <button onClick={() => setSearchQuery('')} className="ml-1 text-[#a1a1aa] hover:text-white material-symbols-outlined text-[11px] leading-none">close</button>
-                          </span>
-                        )}
-                        <button onClick={() => { setActiveFilter(null); setProductFilter(null); setStatusFilter('all'); setSearchQuery(''); setPage(0); }}
-                          className="text-[9px] transition-colors ml-1 font-bold bg-[rgba(239,68,68,0.08)] hover:bg-[rgba(239,68,68,0.15)] text-[#ef4444] px-2 py-0.5 rounded font-mono uppercase tracking-wider">{t('SimpleDashboardPage.clearAll')}</button>
-                      </div>
-                    )}
-                  </div>
+                  <DashboardFilters {...dashboardQuery}
+                    products={activeProducts} filePaths={uniqueFilePaths} counts={filterCounts} count={filteredFindings.length}
+                    allSelected={filteredFindings.length > 0 && filteredFindings.every(f => selectedFindings.has(f.id))}
+                    someSelected={filteredFindings.some(f => selectedFindings.has(f.id))}
+                    onSelectAll={checked => setSelectedFindings(previous => { const next = new Set(previous); for (const finding of filteredFindings) { if (checked) next.add(finding.id); else next.delete(finding.id); } return next; })}
+                    onProject={id => { setProductFilter(id); setSelectedFindings(new Set()); }}
+                    onSeverity={dashboardQuery.setActiveFilter} onStatus={dashboardQuery.setStatusFilter}
+                    onSearch={dashboardQuery.setSearchQuery} onGroup={dashboardQuery.setGroupBy}
+                    onSort={dashboardQuery.setSortBy} onFile={dashboardQuery.setActiveFilePath}
+                    onCollapse={() => setExpandedIds(new Set())}
+                    onClear={() => { clearFilters(); setSelectedFindings(new Set()); }}
+                  />
                 </motion.div>
 
                 {/* ── Findings ── */}
@@ -3924,7 +3121,9 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                 {filteredFindings.length === 0 ? (
                   <motion.div variants={itemVariants} className="simple-empty-state py-12 text-center text-[12px] text-[#71717a] font-mono uppercase tracking-wider">
                     <span className="material-symbols-outlined text-[36px] text-[#3f3f46] mb-2 block">search_off</span>
-                    {searchQuery ? t('SimpleDashboardPage.noIssuesForQuery', { query: searchQuery }) : t('SimpleDashboardPage.noIssues')}
+                    <h3>{pageError ? t('review.loadFailed') : findings.length === 0 ? t('review.noScans') : t('review.noMatches')}</h3><p className="review-help">{pageError ? t('review.retryHelp') : findings.length === 0 ? t('review.startHelp') : t('review.filterHelp')}</p>
+                    {!pageError && findings.length === 0 && <button type="button" className="review-primary" onClick={handleToggleProjectsPanel}>{t('review.startScan')}</button>}
+                    {!pageError && findings.length > 0 && <button type="button" onClick={showHistory}>{t('review.showHistory')}</button>}
                   </motion.div>
                 ) : groupBy !== 'none' && groups ? (
                   <motion.div variants={itemVariants} className="simple-findings-groups space-y-3">
@@ -3982,8 +3181,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                                     });
                                   }}
                                   productMap={productMap}
-                                  setProductFilter={setProductFilter}
-                                  setPage={setPage}
+                                  setProductFilter={id => { setProductFilter(id); setSelectedFindings(new Set()); }}
                                   handleTriage={handleTriage}
                                   onNavigateToChat={onNavigateToChat}
                                   onRefresh={(options) => {
@@ -3992,6 +3190,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                                   }}
                                   isSelected={selectedFindings.has(f.id)}
                                   isTriaging={triagingIds.has(f.id)}
+                                  aiAvailable={aiAvailable === true}
                                   onToggleSelect={() => {
                                     setSelectedFindings(prev => {
                                       const next = new Set(prev);
@@ -4028,8 +3227,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                             });
                           }}
                           productMap={productMap}
-                          setProductFilter={setProductFilter}
-                          setPage={setPage}
+                          setProductFilter={id => { setProductFilter(id); setSelectedFindings(new Set()); }}
                           handleTriage={handleTriage}
                           onNavigateToChat={onNavigateToChat}
                           onRefresh={(options) => {
@@ -4038,6 +3236,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                           }}
                           isSelected={selectedFindings.has(f.id)}
                           isTriaging={triagingIds.has(f.id)}
+                                  aiAvailable={aiAvailable === true}
                           onToggleSelect={() => {
                             setSelectedFindings(prev => {
                               const next = new Set(prev);
@@ -4054,7 +3253,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                     </div>
                     {totalPages > 1 && (
                       <div className="flex items-center justify-between pt-1 px-1">
-                        <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0} className="text-[11px] text-[#a1a1aa] hover:text-[#f4f4f5] disabled:opacity-30 flex items-center gap-1 transition-colors font-bold uppercase tracking-wider font-mono bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] px-2.5 py-1 rounded-md hover:bg-[rgba(255,255,255,0.04)]">
+                        <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="text-[11px] text-[#a1a1aa] hover:text-[#f4f4f5] disabled:opacity-30 flex items-center gap-1 transition-colors font-bold uppercase tracking-wider font-mono bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] px-2.5 py-1 rounded-md hover:bg-[rgba(255,255,255,0.04)]">
                           <span className="material-symbols-outlined text-[14px]">chevron_left</span>{t('SimpleDashboardPage.previous')}</button>
                         <div className="flex items-center gap-1">
                           {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
@@ -4067,7 +3266,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                             );
                           })}
                         </div>
-                        <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1} className="text-[11px] text-[#a1a1aa] hover:text-[#f4f4f5] disabled:opacity-30 flex items-center gap-1 transition-colors font-bold uppercase tracking-wider font-mono bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] px-2.5 py-1 rounded-md hover:bg-[rgba(255,255,255,0.04)]">
+                        <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="text-[11px] text-[#a1a1aa] hover:text-[#f4f4f5] disabled:opacity-30 flex items-center gap-1 transition-colors font-bold uppercase tracking-wider font-mono bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] px-2.5 py-1 rounded-md hover:bg-[rgba(255,255,255,0.04)]">
                           Next<span className="material-symbols-outlined text-[14px]">chevron_right</span></button>
                       </div>
                     )}
@@ -4126,7 +3325,7 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
               className="simple-drawer simple-projects-drawer bg-surface"
             >
               <div className="simple-drawer__bar">
-                <div><span className="material-symbols-outlined" aria-hidden="true">folder_scan</span><strong>{i18n.language?.startsWith('ru') ? 'Сканирование проектов' : 'Project scanning'}</strong></div>
+                <div><span className="material-symbols-outlined" aria-hidden="true">folder_open</span><strong>{i18n.language?.startsWith('ru') ? 'Сканирование проектов' : 'Project scanning'}</strong></div>
                 <button type="button" onClick={closeProjectsPanel} aria-label={i18n.language?.startsWith('ru') ? 'Закрыть сканирование проектов' : 'Close project scanning'}>
                   <span className="material-symbols-outlined" aria-hidden="true">close</span>
                 </button>
@@ -4144,30 +3343,24 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
       {/* Bulk Ignore Triage Justification Modal */}
       <AnimatePresence>
         {bulkIgnoreModalOpen && (
-          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#0e0e11] border border-[rgba(255,255,255,0.08)] rounded-xl w-[400px] p-6 shadow-[0_24px_50px_rgba(0,0,0,0.85)] flex flex-col space-y-4 text-left relative overflow-hidden"
-            >
+          <ModalDialog label={t('review.bulkDecision')} onClose={() => { if (!bulkIgnoring) setBulkIgnoreModalOpen(false); }} className="bulk-review-dialog">
+            <div className="p-6 space-y-4">
               <div>
-                <h3 className="text-[12px] font-bold text-white uppercase tracking-wider">Ignore {selectedFindings.size} Selected Findings</h3>
+                <h3 className="text-[12px] font-bold text-white uppercase tracking-wider">{t('review.bulkDecision')} ({selectedFindings.size})</h3>
                 <p className="text-[11px] text-[#71717a] mt-1 leading-normal">
-                  Choose the triage status and justification reason to suppress these findings in bulk.
+                  {t('review.bulkHint')}
                 </p>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] text-[#71717a] font-bold uppercase tracking-wider">Triage Justification</label>
+                <label className="text-[10px] text-[#71717a] font-bold uppercase tracking-wider">{t('review.decision')}</label>
                 <select
-                  value={bulkIgnoreReason}
+                  aria-label={t('review.decision')} value={bulkIgnoreReason}
                   onChange={e => setBulkIgnoreReason(e.target.value)}
                   className="w-full bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.06)] rounded-md px-3 py-1.5 text-[11px] text-white outline-none focus:border-[var(--accent-color)] cursor-pointer"
                 >
-                  <option value="False Positive">False Positive (Inaccurate finding)</option>
-                  <option value="Accepted Risk">Accepted Risk (Accept risk, do not fix)</option>
-                  <option value="Won't Fix">Won't Fix (Acknowledge, but keep as is)</option>
+                  <option value="False Positive">{t('statusFalsePositive')}</option>
+                  <option value="Accepted Risk">{t('review.acceptRisk')}</option>
                 </select>
               </div>
 
@@ -4176,84 +3369,22 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   onClick={() => setBulkIgnoreModalOpen(false)}
                   className="px-3.5 py-1.5 bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.05)] text-[#a1a1aa] hover:text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
                 >
-                  Cancel
+                  {t('SimpleDashboardPage.cancel')}
                 </button>
                 <button
                   onClick={handleBulkIgnore}
                   disabled={bulkIgnoring}
                   className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  {bulkIgnoring ? 'Ignoring...' : 'Ignore Findings'}
+                  {bulkIgnoring ? t('review.preparing') : t('review.applyDecision')}
                 </button>
               </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ── PREMIUM SCANNING OVERLAY ── */}
-      <AnimatePresence>
-        {globalScanning && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[200] flex items-center justify-center bg-background/90 backdrop-blur-md"
-          >
-            <div className="w-[500px] border border-[rgba(255,255,255,0.08)] bg-surface rounded-2xl shadow-2xl overflow-hidden flex flex-col p-6 font-sans">
-              <div className="flex flex-col items-center gap-4 text-center pb-6 border-b border-[rgba(255,255,255,0.06)]">
-                {/* pulsing visual radar/circle */}
-                <div className="relative w-16 h-16 flex items-center justify-center">
-                  <div className="absolute inset-0 border-2 border-[var(--accent-color-line)] rounded-full animate-ping opacity-25" />
-                  <div className="w-12 h-12 border-2 border-dashed border-[var(--accent-color)] rounded-full animate-spin flex items-center justify-center">
-                    <span className="material-symbols-outlined text-[20px] text-[var(--accent-color)]">
-                      shield
-                    </span>
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white uppercase tracking-widest font-mono">
-                    AI Security Triage Audit Active
-                  </h3>
-                  <p className="text-xs text-[#71717a] mt-1 font-mono truncate max-w-[400px]">
-                    Directory: {globalScanPath}
-                  </p>
-                </div>
-              </div>
-
-              {/* Progress bar */}
-              <div className="py-4 text-left">
-                <div className="flex justify-between items-center text-[10px] text-[#71717a] font-mono mb-1.5 uppercase">
-                  <span>Phase: {scanPhases[globalScanPhase].name}</span>
-                  <span>{globalScanElapsed}s elapsed</span>
-                </div>
-                <div className="w-full h-1.5 bg-surface-bright rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-[var(--accent-color)] rounded-full transition-all duration-500 shadow-[0_0_8px_var(--accent-color-line)]"
-                    style={{ width: `${((globalScanPhase + 1) / scanPhases.length) * 100}%` }}
-                  />
-                </div>
-                <p className="text-[10px] text-[#52525b] mt-2 font-mono italic">
-                  — {scanPhases[globalScanPhase].desc}
-                </p>
-              </div>
-
-              {/* Console log box */}
-              <div className="bg-black/40 border border-[rgba(255,255,255,0.04)] rounded-lg p-4 font-mono text-[10px] text-[#52525b] h-32 overflow-y-auto flex flex-col justify-end gap-1.5 text-left">
-                {globalScanLogs.map((log, i) => (
-                  <div key={i} className={i === globalScanLogs.length - 1 ? 'text-[#a1a1aa]' : ''}>
-                    <span className="text-[#3f3f46] mr-1.5">$</span>{log}
-                  </div>
-                ))}
-              </div>
-
-              <div className="pt-4 mt-2 text-center text-[9px] text-[#3f3f46] font-mono uppercase tracking-[0.2em]">
-                Do not close or reload the browser window
-              </div>
             </div>
-          </motion.div>
+          </ModalDialog>
         )}
       </AnimatePresence>
+
+
     </div>
   );
 };

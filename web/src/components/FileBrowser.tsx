@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { ModalDialog } from '../ui/ModalDialog';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface FileBrowserProps {
@@ -8,6 +9,7 @@ interface FileBrowserProps {
 
 export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) => {
   const { t } = useTranslation('components');
+  const sequence = useRef(0);
   const [path, setPath] = useState('.');
   const [entries, setEntries] = useState<{ name: string; is_dir: boolean; path: string }[]>([]);
   const [loading, setLoading] = useState(true);
@@ -15,15 +17,17 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) 
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const fetchEntries = async (targetPath: string) => {
+    const request = ++sequence.current;
     setLoading(true);
     setError(null);
     try {
       const res = await fetch(`/api/browser?path=${encodeURIComponent(targetPath)}`);
       const data = await res.json();
-      if (data.ok) {
+      if (request !== sequence.current) return;
+      if (res.ok && data.ok) {
         setEntries(
-          data.entries.sort(
-            (a: any, b: any) =>
+          (data.entries || []).sort(
+            (a: { is_dir: boolean; name: string }, b: { is_dir: boolean; name: string }) =>
               (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0) || a.name.localeCompare(b.name),
           ),
         );
@@ -32,9 +36,9 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) 
         setError(data.error || 'Failed to fetch directory content');
       }
     } catch {
-      setError('Connection error');
+      if (request === sequence.current) setError('Connection error');
     } finally {
-      setLoading(false);
+      if (request === sequence.current) setLoading(false);
     }
   };
 
@@ -69,7 +73,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) 
         })();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/85">
+    <ModalDialog label={t('components.fileBrowser.title')} onClose={onCancel} className="file-browser-dialog">
       <div className="w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden border border-outline bg-surface-container">
         {/* Header */}
         <div className="px-5 py-4 border-b border-outline-variant/20 bg-surface-variant">
@@ -92,6 +96,7 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) 
             </div>
             <button
               onClick={onCancel}
+              aria-label={t('components.fileBrowser.cancel')}
               className="w-8 h-8 flex items-center justify-center text-on-surface-variant/40 hover:text-primary hover:bg-surface-container transition-none"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
@@ -256,13 +261,13 @@ export const FileBrowser: React.FC<FileBrowserProps> = ({ onSelect, onCancel }) 
             <button
               onClick={() => onSelect(path)}
               className="px-5 py-2 text-sm font-medium bg-primary text-on-primary transition-none hover:brightness-110"
-              disabled={loading}
+              disabled={loading || Boolean(error)}
             >
               {t('components.fileBrowser.scanCurrent')}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </ModalDialog>
   );
 };

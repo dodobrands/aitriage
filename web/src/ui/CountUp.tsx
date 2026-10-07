@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 
 interface CountUpProps {
   end: number;
@@ -11,30 +11,13 @@ interface CountUpProps {
 
 export const CountUp: React.FC<CountUpProps> = ({
   end,
-  duration = 1500,
   className = '',
   prefix = '',
   suffix = '',
   separator = ',',
 }) => {
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    let startTimestamp: number | null = null;
-    const step = (timestamp: number) => {
-      if (!startTimestamp) startTimestamp = timestamp;
-      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
-      // easeOutExpo
-      const ease = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
-      setCount(Math.floor(ease * end));
-      if (progress < 1) {
-        window.requestAnimationFrame(step);
-      }
-    };
-    window.requestAnimationFrame(step);
-  }, [end, duration]);
-
-  const formattedValue = count.toString().replace(/\B(?=(\d{3})+(?!\d))/g, separator);
+  // Security metrics should show their actual value as soon as data arrives.
+  const formattedValue = end.toString().replace(/\B(?=(\d{3})+(?!\d))/g, separator);
 
   return (
     <span className={className}>

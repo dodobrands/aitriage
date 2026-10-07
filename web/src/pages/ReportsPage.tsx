@@ -72,7 +72,7 @@ export const ReportsPage: React.FC = () => {
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       {/* Page Header */}
-      <div className="cyber-header-premium px-4 py-2 flex justify-between items-center shrink-0 relative z-10 border-b border-outline-variant/30">
+      <div className="cyber-header-premium px-4 py-2 flex flex-wrap gap-3 justify-between items-center shrink-0 relative z-10 border-b border-outline-variant/30">
         <div className="flex items-center gap-4">
           <div className="hidden md:flex w-8 h-8 border border-outline-variant items-center justify-center bg-surface-container-low">
             <span
@@ -99,7 +99,7 @@ export const ReportsPage: React.FC = () => {
             </h1>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3 min-w-0">
           {/* Report scope. The artifact covers exactly what is selected here,
               and the selection is echoed in the generated document itself. */}
           <label className="flex items-center gap-2">
@@ -144,7 +144,7 @@ export const ReportsPage: React.FC = () => {
         {loading ? (
           <LoadingScreen />
         ) : (
-          <div className="p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 max-w-[1600px] mx-auto">
+          <div className="p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-8 max-w-[1600px] mx-auto">
             {/* Left: Config Form */}
             <div className="lg:col-span-5 space-y-6">
               {/* ── Severity Density ────────────────────────────────────────── */}
@@ -358,7 +358,7 @@ export const ReportsPage: React.FC = () => {
             {/* Right: History Table */}
             <div className="lg:col-span-7">
               <div className="cyber-panel flex flex-col h-full overflow-hidden">
-                <div className="px-6 py-4 border-b border-outline-variant flex justify-between items-center bg-surface-container/50">
+                <div className="px-6 py-4 border-b border-outline-variant flex flex-wrap gap-2 justify-between items-center bg-surface-container/50">
                   <div className="flex items-center gap-3">
                     <div className="w-1 h-4 bg-primary" />
                     <span className="text-label-caps text-primary tracking-widest uppercase">
@@ -380,33 +380,33 @@ export const ReportsPage: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="flex flex-col flex-1 min-h-0">
+                <div className="flex flex-col flex-1 min-h-0 overflow-x-auto artifact-history">
                   {/* Table Header */}
-                  <div className="cyber-grid-header flex items-center text-label-xs font-bold text-on-surface-variant/60 shrink-0 uppercase tracking-[0.2em] bg-surface-container/40">
-                    <div className="flex-1 py-3 px-6 border-r border-outline-variant/20">
+                  <div className="cyber-grid-header min-w-[672px] flex items-center text-label-xs font-bold text-on-surface-variant/60 shrink-0 uppercase tracking-[0.2em] bg-surface-container/40">
+                    <div className="w-48 py-3 px-3 shrink-0 border-r border-outline-variant/20">
                       {t('reports.table.timestamp')}
                     </div>
-                    <div className="w-40 py-3 px-6 border-r border-outline-variant/20 shrink-0">
+                    <div className="w-36 py-3 px-6 border-r border-outline-variant/20 shrink-0">
                       {t('reports.table.scope')}
                     </div>
-                    <div className="w-32 py-3 px-6 border-r border-outline-variant/20 shrink-0">
+                    <div className="w-28 py-3 px-3 border-r border-outline-variant/20 shrink-0">
                       {t('reports.table.format')}
                     </div>
-                    <div className="w-28 py-3 px-6 border-r border-outline-variant/20 shrink-0">
+                    <div className="w-24 py-3 px-3 border-r border-outline-variant/20 shrink-0">
                       {t('reports.table.status')}
                     </div>
-                    <div className="w-24 py-3 px-6 shrink-0 text-right">{t('reports.table.action')}</div>
+                    <div className="w-32 py-3 px-3 shrink-0 text-right">{t('reports.table.action')}</div>
                   </div>
 
                   {/* Table Body */}
                   {reportHistory.length > 0 ? (
-                    <div className="divide-y divide-outline-variant/20 overflow-y-auto cyber-scrollbar flex-1">
+                    <div className="min-w-[672px] divide-y divide-outline-variant/20 overflow-y-auto cyber-scrollbar flex-1">
                       {reportHistory.map((row) => (
                         <div
                           key={row.id}
-                          className="cyber-grid-row flex items-center group hover:bg-surface-container-high transition-none"
+                          className="cyber-grid-row min-w-[672px] flex items-center group hover:bg-surface-container-high transition-none"
                         >
-                          <div className="flex-1 py-3.5 px-6 text-mono-data text-on-surface-variant/80 border-r border-outline-variant/10 group-hover:text-primary transition-none tabular-nums">
+                          <div className="w-48 py-3.5 px-3 shrink-0 text-mono-data text-on-surface-variant/80 border-r border-outline-variant/10 group-hover:text-primary transition-none tabular-nums">
                             {(() => {
                               try {
                                 return (
@@ -420,15 +420,15 @@ export const ReportsPage: React.FC = () => {
                               }
                             })()}
                           </div>
-                          <div className="w-40 py-3.5 px-6 text-mono-data text-primary font-bold truncate shrink-0 border-r border-outline-variant/10">
+                          <div className="w-36 py-3.5 px-6 text-mono-data text-primary font-bold truncate shrink-0 border-r border-outline-variant/10">
                             {row.target_scope}
                           </div>
-                          <div className="w-32 py-3.5 px-6 text-mono-data text-on-surface-variant/60 shrink-0 border-r border-outline-variant/10">
+                          <div className="w-28 py-3.5 px-3 text-mono-data text-on-surface-variant/60 shrink-0 border-r border-outline-variant/10">
                             <span className="text-label-xs border border-outline-variant/20 px-2 py-0.5">
                               {row.format}
                             </span>
                           </div>
-                          <div className="w-28 py-3.5 px-6 shrink-0 flex items-center gap-2 border-r border-outline-variant/10">
+                          <div className="w-24 py-3.5 px-3 shrink-0 flex items-center gap-2 border-r border-outline-variant/10">
                             <div
                               className={`skeuo-led ${row.status === 'READY' ? 'text-success bg-success' : row.status === 'ERROR' ? 'text-error bg-error animate-pulse' : 'text-ai-accent bg-ai-accent animate-pulse'}`}
                             />
@@ -444,7 +444,7 @@ export const ReportsPage: React.FC = () => {
                               {row.status}
                             </span>
                           </div>
-                          <div className="w-24 py-3.5 px-6 text-right shrink-0">
+                          <div className="w-32 py-3.5 px-3 text-right shrink-0">
                             {row.status === 'READY' ? (
                               <button
                                 onClick={() => {
@@ -483,16 +483,16 @@ export const ReportsPage: React.FC = () => {
                   )}
 
                   {/* Footer Status */}
-                  <div className="shrink-0 px-6 py-3 border-t border-outline-variant/10 flex items-center justify-between bg-surface-container/30">
+                  <div className="shrink-0 px-6 py-3 border-t border-outline-variant/10 flex flex-wrap gap-2 items-center justify-between bg-surface-container/30">
                     <div className="flex items-center gap-2">
                       <span className="material-symbols-outlined text-[14px] text-on-surface-variant/20">
                         policy
                       </span>
-                      <span className="text-[10px] text-on-surface-variant/20 tracking-[0.3em]">
+                      <span className="text-[10px] break-words text-on-surface-variant tracking-wider">
                         {t('reports.complianceVault')}
                       </span>
                     </div>
-                    <span className="text-[10px] text-on-surface-variant/20 tracking-widest">
+                    <span className="text-[10px] text-on-surface-variant tracking-wider">
                       {reportHistory.length > 0
                         ? t('reports.artifactsStored', { count: reportHistory.length })
                         : t('reports.statusStandby')}

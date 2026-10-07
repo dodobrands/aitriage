@@ -1,21 +1,47 @@
-import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { lazy } from 'react';
+import { createBrowserRouter, redirect, RouterProvider } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginPage } from './components/LoginPage';
-import { DashboardPage } from './pages/DashboardPage';
-import { ProductsPage } from './pages/ProductsPage';
-import { ProductDetailPage } from './pages/ProductDetailPage';
-import { KanbanPage } from './pages/KanbanPage';
-import { FindingsPage } from './pages/FindingsPage';
-import { AdminPanelPage } from './pages/AdminPanelPage';
-import { ReportsPage } from './pages/ReportsPage';
-import { RulesPage } from './pages/RulesPage';
-import { TopologyPage } from './pages/TopologyPage';
-import { ScannersPage } from './pages/ScannersPage';
-import { TerminalPage } from './pages/TerminalPage';
-import { AIChatPage } from './pages/AIChatPage';
-import { CommandCenterPage } from './pages/CommandCenterPage';
-import { FAQPage } from './pages/FAQPage';
+const DashboardPage = lazy(() =>
+  import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })),
+);
+const ProductsPage = lazy(() =>
+  import('./pages/ProductsPage').then((module) => ({ default: module.ProductsPage })),
+);
+const ProductDetailPage = lazy(() =>
+  import('./pages/ProductDetailPage').then((module) => ({ default: module.ProductDetailPage })),
+);
+const FindingsPage = lazy(() =>
+  import('./pages/FindingsPage').then((module) => ({ default: module.FindingsPage })),
+);
+const AdminPanelPage = lazy(() =>
+  import('./pages/AdminPanelPage').then((module) => ({ default: module.AdminPanelPage })),
+);
+const ReportsPage = lazy(() =>
+  import('./pages/ReportsPage').then((module) => ({ default: module.ReportsPage })),
+);
+const RulesPage = lazy(() =>
+  import('./pages/RulesPage').then((module) => ({ default: module.RulesPage })),
+);
+const TopologyPage = lazy(() =>
+  import('./pages/TopologyPage').then((module) => ({ default: module.TopologyPage })),
+);
+const ScannersPage = lazy(() =>
+  import('./pages/ScannersPage').then((module) => ({ default: module.ScannersPage })),
+);
+const TerminalPage = lazy(() =>
+  import('./pages/TerminalPage').then((module) => ({ default: module.TerminalPage })),
+);
+const AIChatPage = lazy(() =>
+  import('./pages/AIChatPage').then((module) => ({ default: module.AIChatPage })),
+);
+const CommandCenterPage = lazy(() =>
+  import('./pages/CommandCenterPage').then((module) => ({ default: module.CommandCenterPage })),
+);
+const FAQPage = lazy(() =>
+  import('./pages/FAQPage').then((module) => ({ default: module.FAQPage })),
+);
 import { RouteError } from './ui/ErrorBoundary';
 
 const router = createBrowserRouter([
@@ -62,11 +88,7 @@ const router = createBrowserRouter([
       },
       {
         path: 'kanban',
-        element: (
-          <ProtectedRoute>
-            <KanbanPage />
-          </ProtectedRoute>
-        ),
+        loader: () => redirect('/'),
       },
       {
         path: 'findings',

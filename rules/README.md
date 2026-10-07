@@ -90,6 +90,19 @@ Each rule is a YAML object with the following fields:
 | `contains:X` | Alert only if file also contains X |
 | `threshold:N` | Alert if matching lines exceed N% of total lines |
 | `missing` | Alert if the expected file does not exist |
+| `missing_lockfile` | Alert if a project uses a package manager (its manifest is present) but has no lockfile for it; see `ecosystems` below |
+
+### Lockfile Ecosystems (`condition: missing_lockfile`)
+
+```yaml
+  ecosystems:
+    - name: "npm"                          # Shown in the evidence
+      manifests: ["package.json"]          # Any of them proves the project uses the ecosystem
+      lockfiles: ["package-lock.json", "yarn.lock"]  # Any of them pins it
+      workspace_root: true                 # Optional: a declared npm-family workspace root lockfile also counts
+```
+
+`workspace_root: true` currently supports npm/yarn/bun membership declared in `package.json` (`workspaces` array or `workspaces.packages`) and pnpm membership in `pnpm-workspace.yaml`. Patterns support `*`, `?`, character classes and `**`, with exclusions. Only a declared member can use the ancestor lockfile, and search stops at the scan root. Other ecosystems retain their per-project check; their workspace semantics need separate validation before enabling inheritance.
 
 ### Taint Mode (`mode: taint`)
 

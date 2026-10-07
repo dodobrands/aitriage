@@ -252,6 +252,7 @@ func (w *Workspace) Close() {
 // with its own subset of files.
 type ProjectContext struct {
 	RootPath string
+	ScanRoot string
 	Files    []*FileInfo
 	Stack    string
 	Config   *config.Config

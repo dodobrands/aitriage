@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dodobrands/aitriage/internal/agent/architect"
@@ -46,7 +47,7 @@ const llmUnavailableMessage = "AI features are offline: no LLM provider is confi
 type Server struct {
 	hostPrefix         string
 	llmClient          llm.Client
-	lastResult         *llm.RichScanResult
+	llmMu              sync.RWMutex
 	userRepo           *repositories.UserRepository
 	productRepo        *repositories.ProductRepository
 	engagementRepo     *repositories.EngagementRepository
@@ -209,6 +210,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mux := http.NewServeMux()
+	mux.Handle("/api/scanner-config/core", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleCoreScannerConfig)))
 	mux.Handle("/api/scan", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleScan)))
 	mux.Handle("/api/browser", middleware.PermissionMiddleware("admin", "manager", "viewer")(http.HandlerFunc(s.handleBrowser)))
 	mux.Handle("/api/triage", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleTriage)))
@@ -257,10 +259,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})))
+	mux.Handle("/api/findings/verify-bulk", middleware.PermissionMiddleware("admin", "manager", "developer")(http.HandlerFunc(s.handleBulkFindingVerification)))
+	mux.Handle("GET /api/findings/{id}/source", middleware.PermissionMiddleware("admin", "manager", "developer", "viewer")(http.HandlerFunc(s.handleFindingSource)))
 	mux.Handle("/api/findings/", middleware.PermissionMiddleware("admin", "manager", "developer")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/ai-triage") {
 			if r.Method == "POST" {
 				s.handleAITriage(w, r)
+			} else {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+		} else if strings.HasSuffix(r.URL.Path, "/source") {
+			if r.Method == http.MethodGet {
+				s.handleFindingSource(w, r)
 			} else {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 			}
@@ -389,6 +399,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.Handle("/api/runway/start/", middleware.PermissionMiddleware("admin", "manager")(http.HandlerFunc(s.handleRunwayStart)))
 
 	// UI
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		jsonError(w, "API endpoint not found", http.StatusNotFound)
+	})
 	mux.HandleFunc("/", handleUI)
 
 	handler := middleware.SecurityHeadersMiddleware(
@@ -460,8 +473,12 @@ type scanResponse struct {
 }
 
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	var req scanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -481,10 +498,13 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	containerFull := os.Getenv("AITRIAGE_RUNTIME") == "container"
+	coreConfig := s.loadCoreScannerConfig()
 	opts := orchestrator.Options{
-		ProjectPath: containerPath,
-		ForceStack:  req.Stack,
-		RunExternal: req.External || containerFull,
+		MinSeverity:  coreConfig.MinSeverity,
+		ExcludePaths: coreConfig.ExcludePaths,
+		ProjectPath:  containerPath,
+		ForceStack:   req.Stack,
+		RunExternal:  req.External || containerFull,
 		// Port probing is opt-in. It inspects the machine AITriage runs on, not
 		// the code being audited, so it must never happen because someone asked
 		// for a source scan.
@@ -492,6 +512,10 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rich := orchestrator.RunAllScanners(ctx, opts)
+	if err := verificationScanError(ctx, &models.Finding{Stack: "core"}, &rich); err != nil {
+		jsonError(w, "scan incomplete: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	// A baseline hides findings the team has already accepted. It is applied
 	// here, before scoring and persistence, so the score, the gate verdict and
@@ -512,7 +536,6 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		orchestrator.ApplySuppressions(&rich, store)
 	}
 
-	s.lastResult = &rich
 	scannerCoverage := "core"
 	if opts.RunExternal {
 		scannerCoverage = "partial"
@@ -544,17 +567,14 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Initialize LLM if config is available
-	if rich.Report.Config != nil && s.llmClient == nil {
-		client, err := llm.NewClient(llm.Config{
+	if rich.Report.Config != nil {
+		s.initializeLLMClient(llm.Config{
 			Provider: rich.Report.Config.LLM.Provider,
 			Model:    rich.Report.Config.LLM.Model,
 			APIKey:   rich.Report.Config.LLM.APIKey,
 			BaseURL:  rich.Report.Config.LLM.BaseURL,
 			Timeout:  rich.Report.Config.LLM.Timeout,
 		})
-		if err == nil {
-			s.llmClient = client
-		}
 	}
 
 	// ── Persist to DB ────────────────────────────────────────────────
@@ -562,6 +582,8 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	productID, err := s.productRepo.FindOrCreateByPath(ctx, req.Path)
 	if err != nil {
 		slog.Error("Failed to find/create product for scan", "path", req.Path, "error", err)
+		jsonError(w, "scan completed but repository could not be saved", http.StatusInternalServerError)
+		return
 	}
 
 	// 2. Create engagement
@@ -576,8 +598,20 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.engagementRepo.Create(ctx, engagement); err != nil {
 		slog.Error("Failed to create engagement", "error", err)
+		jsonError(w, "scan completed but engagement could not be saved", http.StatusInternalServerError)
+		return
 	}
 	engagementID := engagement.ID
+	persisted := false
+	defer func() {
+		if !persisted {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.engagementRepo.UpdateStatus(cleanupCtx, engagementID, "failed"); err != nil {
+				slog.Error("Failed to record unsuccessful engagement", "error", err)
+			}
+		}
+	}()
 
 	// 3. Convert findings and bulk-insert — ALL scanner types
 	var findings []findingDTO
@@ -786,6 +820,8 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	if len(dbFindings) > 0 {
 		if err := s.findingRepo.BulkCreate(ctx, dbFindings); err != nil {
 			slog.Error("Failed to bulk-insert findings", "count", len(dbFindings), "error", err)
+			jsonError(w, "scan completed but findings could not be saved", http.StatusInternalServerError)
+			return
 		} else {
 			slog.Info("Findings persisted to database", "count", len(dbFindings), "engagement_id", engagementID)
 		}
@@ -883,7 +919,10 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// 4. Mark engagement completed
 	if err := s.engagementRepo.UpdateStatus(ctx, engagementID, "completed"); err != nil {
 		slog.Error("Failed to update engagement status", "error", err)
+		jsonError(w, "scan completed but engagement completion could not be saved", http.StatusInternalServerError)
+		return
 	}
+	persisted = true
 
 	var stacks []string
 	for _, st := range rich.Report.Stacks {
@@ -990,7 +1029,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		// without a provider. Only triage and the written narrative need one, so
 		// the UI can say which half of the product is available rather than
 		// letting a user discover it by pressing a button that fails.
-		"ai_available": s.llmClient != nil,
+		"ai_available": s.getLLMClient() != nil,
 	})
 }
 
@@ -1248,7 +1287,7 @@ func (s *Server) handleFindingVerification(w http.ResponseWriter, r *http.Reques
 	scanPath, err := s.resolveFindingScanPath(ctx, finding)
 	if err != nil {
 		summary := fmt.Sprintf("Verification could not start: %v", err)
-		_ = s.findingRepo.MarkVerificationResult(ctx, findingID, false, summary)
+		_ = s.findingRepo.MarkVerificationError(ctx, findingID, finding.Status, summary)
 		jsonError(w, summary, http.StatusBadRequest)
 		return
 	}
@@ -1269,6 +1308,12 @@ func (s *Server) handleFindingVerification(w http.ResponseWriter, r *http.Reques
 		RunExternal: runExternal,
 	})
 
+	if err := verificationScanError(ctx, finding, &rich); err != nil {
+		summary := fmt.Sprintf("Verification incomplete: %v", err)
+		_ = s.findingRepo.MarkVerificationError(ctx, findingID, finding.Status, summary)
+		jsonError(w, summary, http.StatusServiceUnavailable)
+		return
+	}
 	stillPresent, matchedBy := findingStillPresent(finding, scanPath, &rich)
 	var status string
 	var summary string
@@ -1695,63 +1740,69 @@ func sanitizePromptSourceLine(line string) string {
 	return strings.ReplaceAll(line, "```", "'''")
 }
 
+type sourceLine struct {
+	Number    int    `json:"number"`
+	Text      string `json:"text"`
+	Highlight bool   `json:"highlight"`
+}
+
+type sourceExcerpt struct {
+	Source    string
+	Available bool
+	Lines     []sourceLine
+}
+
 func (s *Server) readFindingSourceContext(scanPath, filePath, displayFilePath string, lineNumber, radius int) (string, bool) {
+	excerpt := s.readFindingSourceExcerpt(scanPath, filePath, displayFilePath, lineNumber, radius)
+	return excerpt.Source, excerpt.Available
+}
+
+func (s *Server) readFindingSourceExcerpt(scanPath, filePath, displayFilePath string, lineNumber, radius int) sourceExcerpt {
+	unavailable := func(message string) sourceExcerpt { return sourceExcerpt{Source: message, Lines: []sourceLine{}} }
 	if filePath == "" {
-		return "Source context unavailable: finding has no file path.", false
+		return unavailable("Source context unavailable: finding has no file path.")
 	}
 	if displayFilePath == "" {
 		displayFilePath = filePath
 	}
-
 	fullPath := filePath
 	if scanPath != "" && !filepath.IsAbs(filePath) {
 		fullPath = filepath.Join(scanPath, filePath)
 	}
 	resolvedPath, err := s.resolveProjectPath(fullPath)
 	if err != nil {
-		return fmt.Sprintf("Source context unavailable: %v.", err), false
+		return unavailable(fmt.Sprintf("Source context unavailable: %v.", err))
 	}
-	fullPath = resolvedPath
-
-	data, err := os.ReadFile(fullPath)
+	data, err := readSourceFile(resolvedPath)
 	if err != nil {
-		return fmt.Sprintf("Source context unavailable: could not read %s (%v).", fullPath, err), false
+		return unavailable(fmt.Sprintf("Source context unavailable: could not read %s (%v).", resolvedPath, err))
 	}
-
 	lines := strings.Split(string(data), "\n")
-	if lineNumber <= 0 || lineNumber > len(lines) {
-		limit := len(lines)
-		if limit > 160 {
-			limit = 160
-		}
-		if limit > 12 {
-			limit = 12
-		}
-		for i := 0; i < limit; i++ {
-			lines[i] = sanitizePromptSourceLine(lines[i])
-		}
-		return fmt.Sprintf("File: %s\n```text\n%s\n```", displayFilePath, strings.Join(lines[:limit], "\n")), true
+	knownLine := lineNumber > 0 && lineNumber <= len(lines)
+	start, end := 0, min(len(lines), 12)
+	if knownLine {
+		radius = max(0, min(radius, 80))
+		start = max(0, lineNumber-1-radius)
+		end = min(len(lines), lineNumber+radius)
 	}
-
-	lineIdx := lineNumber - 1
-	start := lineIdx - radius
-	if start < 0 {
-		start = 0
-	}
-	end := lineIdx + radius + 1
-	if end > len(lines) {
-		end = len(lines)
-	}
-
-	var snippet []string
+	excerpt := sourceExcerpt{Available: true, Lines: make([]sourceLine, 0, end-start)}
+	snippet := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
-		prefix := "   "
-		if i == lineIdx {
-			prefix = ">> "
+		text := sanitizePromptSourceLine(lines[i])
+		highlight := knownLine && i+1 == lineNumber
+		excerpt.Lines = append(excerpt.Lines, sourceLine{Number: i + 1, Text: text, Highlight: highlight})
+		if knownLine {
+			prefix := "   "
+			if highlight {
+				prefix = ">> "
+			}
+			snippet = append(snippet, fmt.Sprintf("%s%d: %s", prefix, i+1, text))
+		} else {
+			snippet = append(snippet, text)
 		}
-		snippet = append(snippet, fmt.Sprintf("%s%d: %s", prefix, i+1, sanitizePromptSourceLine(lines[i])))
 	}
-	return fmt.Sprintf("File: %s\n```text\n%s\n```", displayFilePath, strings.Join(snippet, "\n")), true
+	excerpt.Source = fmt.Sprintf("File: %s\n```text\n%s\n```", displayFilePath, strings.Join(snippet, "\n"))
+	return excerpt
 }
 
 func stringValue(value *string) string {
@@ -1776,7 +1827,7 @@ func fallbackString(value *string, fallback string) string {
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	if s.llmClient == nil {
+	if s.getLLMClient() == nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":    false,
@@ -1873,7 +1924,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, llm.Message{Role: role, Content: msg.Content})
 	}
 
-	reply, _, err := s.llmClient.Chat(ctx, messages)
+	reply, _, err := s.getLLMClient().Chat(ctx, messages)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
@@ -1887,7 +1938,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
-	if s.llmClient == nil {
+	if s.getLLMClient() == nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":    false,
@@ -1949,7 +2000,7 @@ Your task is to:
 		{Role: "user", Content: prompt},
 	}
 
-	analysis, _, err := s.llmClient.Chat(r.Context(), messages)
+	analysis, _, err := s.getLLMClient().Chat(r.Context(), messages)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
@@ -1963,7 +2014,7 @@ Your task is to:
 }
 
 func (s *Server) handleAITriage(w http.ResponseWriter, r *http.Request) {
-	if s.llmClient == nil {
+	if s.getLLMClient() == nil {
 		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
 		return
 	}
@@ -2225,7 +2276,7 @@ Return ONLY a valid JSON object with no other text:
 		{Role: "user", Content: prompt},
 	}
 
-	reply, _, err := s.llmClient.Chat(ctx, messages)
+	reply, _, err := s.getLLMClient().Chat(ctx, messages)
 	if err != nil {
 		slog.Error("AI Triage LLM error", "finding_id", findingID, "error", err)
 		jsonError(w, fmt.Sprintf("LLM chat error: %v", err), http.StatusInternalServerError)
@@ -2332,7 +2383,7 @@ func (s *Server) handleFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := os.ReadFile(fullPath)
+	content, err := readSourceFile(fullPath)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2438,12 +2489,12 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var summary string
-	if s.llmClient != nil && (evidence.ActiveCounts.total() > 0 || evidence.SuppressedCounts.total() > 0) {
+	if s.getLLMClient() != nil && (evidence.ActiveCounts.total() > 0 || evidence.SuppressedCounts.total() > 0) {
 		messages := []llm.Message{
 			{Role: "system", Content: buildAISummarySystemPrompt(lang)},
 			{Role: "user", Content: buildAISummaryUserPrompt(evidence, lang)},
 		}
-		reply, _, err := s.llmClient.Chat(r.Context(), messages)
+		reply, _, err := s.getLLMClient().Chat(r.Context(), messages)
 		if err == nil && strings.TrimSpace(reply) != "" {
 			summary = strings.TrimSpace(reply)
 		}
@@ -2546,7 +2597,7 @@ func (s *Server) loadAISummaryEvidence(ctx context.Context, productID int, usePr
 	evidence.LocalAuditExcerpt = s.localAuditExcerpt(projectPath)
 
 	countsQuery := `
-		SELECT COALESCE(severity,''), COALESCE(status,''), COALESCE(is_false_positive,0)
+		SELECT COALESCE(severity,''), CASE WHEN COALESCE(status,'open') IN ('open','') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(status,'') END, COALESCE(is_false_positive,0)
 		FROM findings`
 	countsArgs := []any{}
 	if useProduct {
@@ -2577,7 +2628,7 @@ func (s *Server) loadAISummaryEvidence(ctx context.Context, productID int, usePr
 
 	findingsQuery := `
 		SELECT COALESCE(rule_id,''), title, COALESCE(severity,''), COALESCE(file_path,''), COALESCE(line_number,0),
-		       COALESCE(description,''), COALESCE(fix_suggestion,''), COALESCE(status,''), COALESCE(stack,''),
+		       COALESCE(description,''), COALESCE(fix_suggestion,''), CASE WHEN COALESCE(status,'open') IN ('open','') AND verification_status = 'fixed' THEN 'resolved' ELSE COALESCE(status,'') END, COALESCE(stack,''),
 		       COALESCE(ai_triage_status,''), COALESCE(ai_triage_summary,''), COALESCE(is_false_positive,0)
 		FROM findings`
 	findingsArgs := []any{}
@@ -2639,7 +2690,7 @@ func isActiveSummaryStatus(status string, isFalsePositive bool) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "resolved", "closed", "risk_accepted", "accepted_risk", "false_positive":
+	case "resolved", "fixed", "closed", "mitigated", "risk_accepted", "accepted_risk", "false_positive":
 		return false
 	default:
 		return true
@@ -3441,7 +3492,7 @@ func (s *Server) handleRunwayStart(w http.ResponseWriter, r *http.Request) {
 	// The Runway pipeline is LLM-driven end to end. Without a configured client
 	// every stage would dereference a nil interface inside a background
 	// goroutine, taking the whole server down. Refuse early instead.
-	if s.llmClient == nil {
+	if s.getLLMClient() == nil {
 		jsonError(w, llmUnavailableMessage, http.StatusServiceUnavailable)
 		return
 	}

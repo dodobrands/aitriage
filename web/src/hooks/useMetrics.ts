@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import api from '../services/api';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import api, { apiErrorMessage } from '../services/api';
 import i18n from '../i18n';
 
 export interface TopFile {
@@ -36,35 +36,54 @@ export interface DashboardMetrics {
   security_score: number;
   security_grade: string;
   total_engagements: number;
+  last_successful_scan_at?: string | null;
+  last_successful_verification_at?: string | null;
 }
 
 type RefreshOptions = { silent?: boolean };
 
-export const useMetrics = () => {
+export const useMetrics = (productId?: number) => {
+  const requestSequence = useRef(0);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resultScope, setResultScope] = useState<number | undefined>(undefined);
 
-  const fetchMetrics = useCallback(async (options?: RefreshOptions) => {
-    if (!options?.silent) setLoading(true);
-    try {
-      const { data } = await api.get('/metrics');
-      if (data.ok) {
-        setMetrics(data.metrics);
-        setError(null);
-      } else {
-        setError(data.error || i18n.t('errors.fetchMetrics'));
+  const fetchMetrics = useCallback(
+    async (options?: RefreshOptions) => {
+      const request = ++requestSequence.current;
+      if (!options?.silent) setLoading(true);
+      try {
+        const { data } = await api.get(productId ? `/metrics?product_id=${productId}` : '/metrics');
+        if (request !== requestSequence.current) return;
+        setResultScope(productId);
+        if (data.ok) {
+          setMetrics(data.metrics);
+          setError(null);
+        } else {
+          setMetrics(null);
+          setError(data.error || i18n.t('errors.fetchMetrics'));
+        }
+      } catch (err: unknown) {
+        if (request !== requestSequence.current) return;
+        setResultScope(productId);
+        setMetrics(null);
+        setError(apiErrorMessage(err, i18n.t('errors.fetchMetrics')));
+      } finally {
+        if (request === requestSequence.current) setLoading(false);
       }
-    } catch (err: any) {
-      setError(err.response?.data?.error || err.message);
-    } finally {
-      if (!options?.silent) setLoading(false);
-    }
-  }, []);
+    },
+    [productId],
+  );
 
   useEffect(() => {
+    const sequence = requestSequence;
     fetchMetrics();
+    return () => {
+      sequence.current++;
+    };
   }, [fetchMetrics]);
 
-  return { metrics, loading, error, refresh: fetchMetrics };
+  const matchesScope = resultScope === productId;
+  return { metrics: matchesScope ? metrics : null, loading: loading || !matchesScope, error: matchesScope ? error : null, refresh: fetchMetrics };
 };

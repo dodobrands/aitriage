@@ -12,7 +12,6 @@ export const Breadcrumbs: React.FC = () => {
   // Map route segments to human readable names
   const routeMap: Record<string, string> = {
     products: t('Breadcrumbs.products', 'PRODUCTS_INDEX'),
-    kanban: t('Breadcrumbs.kanban', 'KANBAN_ORCHESTRATOR'),
     findings: t('Breadcrumbs.findings', 'FINDINGS_REPOSITORY'),
     reports: t('Breadcrumbs.reports', 'INTEL_REPORTS'),
     admin: t('Breadcrumbs.admin', 'ROOT_ACCESS_PANEL'),
