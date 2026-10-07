@@ -115,7 +115,7 @@ jobs:
             ! command -v pipx >/dev/null
             aitriage version
             semgrep --version
-            /opt/pipx/venvs/semgrep/bin/python -c "import importlib.metadata as m; assert m.version(\"mcp\") == \"1.28.1\"; assert m.version(\"setuptools\") == \"83.0.0\""
+            /opt/pipx/venvs/semgrep/bin/python -c "import importlib.metadata as m; assert m.version(\"mcp\") == \"1.28.1\"; assert m.version(\"setuptools\") == \"83.0.0\"; assert m.version(\"PyJWT\") == \"2.14.0\""
             /opt/pipx/venvs/bandit/bin/python -c "import importlib.metadata as m; assert m.version(\"setuptools\") == \"83.0.0\""
             trivy --version
             gitleaks version
@@ -204,6 +204,7 @@ jobs:
             aitriage version
             semgrep --version
             semgrep scan --help >/dev/null
+            /opt/pipx/venvs/semgrep/bin/python -c "import importlib.metadata as m; assert m.version(\"PyJWT\") == \"2.14.0\""
             bandit --version
             trivy --version
             gitleaks version

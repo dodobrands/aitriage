@@ -84,6 +84,8 @@ ENV PIPX_HOME=/opt/pipx
 ENV PIPX_BIN_DIR=/usr/local/bin
 # Semgrep 1.170.1 pins mcp 1.23.3 (three fixable HIGH CVEs); upstream 1.172.0
 # still pins it, so this patched override is deliberate and E2E-proven.
+# It also pins PyJWT 2.13.x; 2.14.0 fixes six HIGH/CRITICAL advisories.
+# Keep the scanner version and exercise the overrides in the process E2E gate.
 # AITriage never exposes Semgrep's MCP server.
 #
 # pip vendors its own msgpack/setuptools versions inside pip/_vendor/vendor.txt.
@@ -91,12 +93,12 @@ ENV PIPX_BIN_DIR=/usr/local/bin
 # Remove the complete pip/pipx toolchain after provisioning the scanner venvs.
 RUN pip3 install --break-system-packages --no-cache-dir 'pipx==1.8.0' && \
     pipx install 'semgrep==1.170.1' && \
-    pipx runpip semgrep install --no-cache-dir 'mcp==1.28.1' 'setuptools==83.0.0' && \
+    pipx runpip semgrep install --no-cache-dir 'mcp==1.28.1' 'setuptools==83.0.0' 'PyJWT==2.14.0' && \
     pipx install 'bandit==1.9.4' && \
     pipx runpip bandit install --no-cache-dir 'setuptools==83.0.0' && \
     semgrep --version && semgrep scan --help >/dev/null && \
     /opt/pipx/venvs/semgrep/bin/python -c \
-      "import importlib.metadata as m; assert m.version('mcp') == '1.28.1'; assert m.version('setuptools') == '83.0.0'" && \
+      "import importlib.metadata as m; assert m.version('mcp') == '1.28.1'; assert m.version('setuptools') == '83.0.0'; assert m.version('PyJWT') == '2.14.0'" && \
     /opt/pipx/venvs/bandit/bin/python -c \
       "import importlib.metadata as m; assert m.version('setuptools') == '83.0.0'" && \
     bandit --version && \
