@@ -219,7 +219,10 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		manifest := struct {
 			ScannerCoverage string                      `json:"scanner_coverage"`
 			Scanners        []external.ScannerExecution `json:"scanners"`
-		}{ScannerCoverage: coverage, Scanners: richResult.ScannerExecutions}
+			// ScannerCounts says what scanners[].findings counts, which
+			// differs from the findings in triage-findings.json.
+			ScannerCounts string `json:"scanner_counts"`
+		}{ScannerCoverage: coverage, Scanners: richResult.ScannerExecutions, ScannerCounts: scannerCountsNote}
 		data, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
 			return auditIncomplete(err)
@@ -533,6 +536,10 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 	args = append(args, ".")
 	return args, nil
 }
+
+// scannerCountsNote labels the per-scanner counts of manifest.json: they are
+// raw results, which the findings of triage-findings.json are not.
+const scannerCountsNote = "raw results: scanners[].findings counts the reports each scanner returned, before inline aitriage-ignore comments, ignore.rules, project decisions and the merging of reports of one defect into one finding (see triage-findings.json for the findings)"
 
 func agentOutputsEmpty() bool {
 	return agentReportOut == "" && agentFixSpecOut == "" && agentSummaryOut == "" &&

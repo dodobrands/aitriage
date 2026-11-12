@@ -1168,13 +1168,14 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	}
 	_, _ = fmt.Fprintf(sb, "**Scanner coverage**: `%s`\n\n", coverage)
 	if len(state.ScannerExecutions) > 0 {
-		sb.WriteString("| Scanner | Status | Findings | Version |\n")
+		sb.WriteString("| Scanner | Status | Raw results | Version |\n")
 		sb.WriteString("|---|---|---:|---|\n")
 		for _, scanner := range state.ScannerExecutions {
 			_, _ = fmt.Fprintf(sb, "| `%s` | `%s` | %d | %s |\n",
 				scanner.Scanner, scanner.Status, scanner.Findings, strings.ReplaceAll(scanner.Version, "|", "\\|"))
 		}
 		sb.WriteString("\n")
+		sb.WriteString(rawResultsNote(state) + "\n\n")
 	}
 
 	// ── Blocking Reasons ──────────────────────────────────────────────
@@ -1227,7 +1228,7 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	_, _ = fmt.Fprintf(sb, " · **%d** false positives suppressed", bd.IgnoredFindings)
 	// Reports of one defect by several detectors were merged into one finding
 	// before scoring; say how many, so the count is not a mystery.
-	if merged := bd.DedupedFindings + mergedDetectorReports(state.EnrichedFindings); merged > 0 {
+	if merged := bd.DedupedFindings + mergedReports(state); merged > 0 {
 		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", merged)
 	}
 	sb.WriteString("\n\n")
