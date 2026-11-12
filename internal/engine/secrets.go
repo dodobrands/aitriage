@@ -181,6 +181,24 @@ var envAssignRegex = regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][
 // those — only actual interpolation/format syntax.
 var placeholderValueRegex = regexp.MustCompile(`(?i)(\$\{|\{\{|%\(|%[svd]\b|\{[A-Za-z_][\w.]*\}|process\.env|os\.(getenv|environ)|getenv\(|^\$[A-Za-z_]\w*$|^<[^>]*>$|^(your[_-]|change[_-]?me|replace[_-]|example|placeholder|dummy|sample|xxx+|test|todo|none|null|undefined|foobar|lorem)$)`)
 
+// passwordHashRegex matches stored password hashes in self-describing
+// formats: bcrypt ($2a$10$...), argon2, Django PBKDF2/bcrypt/argon2
+// encodings and crypt(3) ($1$, $5$, $6$).
+var passwordHashRegex = regexp.MustCompile(`^(?:\$2[abxy]?\$\d{2}\$[./A-Za-z0-9]{53}|\$argon2(?:id|i|d)\$\S+|(?:pbkdf2_sha(?:1|256)|bcrypt_sha256|argon2)\$\S+|\$[156]\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]+)$`)
+
+// hexDigestRegex matches a bare hex digest the length of MD5, SHA-1,
+// SHA-256 or SHA-512.
+var hexDigestRegex = regexp.MustCompile(`^(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128})$`)
+
+// isStoredPasswordDigest reports a hex digest stored under a password or hash
+// name: that is the hash an application keeps, not the password. Under other
+// names (SESSION_SECRET, API_KEY) a hex string is usually a random secret.
+func isStoredPasswordDigest(name, val string) bool {
+	lower := strings.ToLower(name)
+	return hexDigestRegex.MatchString(strings.TrimSpace(val)) &&
+		(strings.Contains(lower, "passw") || strings.Contains(lower, "hash") || strings.Contains(lower, "digest"))
+}
+
 // tokenPlaceholderRegex matches placeholder text inside a token-shaped value:
 // "sk-xxxxxxxx", "AKIA****", "ghp_your_token_here", "…EXAMPLEKEY".
 var tokenPlaceholderRegex = regexp.MustCompile(`(?i)x{4,}|\*{3,}|\.{3,}|example|placeholder|your[_-]|dummy|sample|redacted|change_?me|insert[_-]|fake`)
@@ -259,7 +277,7 @@ func detectSecretHits(src string, kind secretScanKind) []secretHit {
 
 	// 2. Keyword-guarded assignment heuristic.
 	addAssign := func(varName, val string, valStart int) {
-		if !isSecretName(varName) || !isLikelySecretValue(val) {
+		if !isSecretName(varName) || !isLikelySecretValue(val) || isStoredPasswordDigest(varName, val) {
 			return
 		}
 		line := lineAt(src, valStart)
@@ -597,6 +615,11 @@ func isLikelySecretValue(val string) bool {
 		return false
 	}
 	if placeholderValueRegex.MatchString(v) || tokenPlaceholderRegex.MatchString(v) {
+		return false
+	}
+	// A password hash (bcrypt, argon2, PBKDF2, crypt, or a bare hex digest)
+	// is what an application should store; it is not a usable credential.
+	if passwordHashRegex.MatchString(v) {
 		return false
 	}
 	// Names and references, not values: a Kubernetes secret name, a secret

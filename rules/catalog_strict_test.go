@@ -17,6 +17,7 @@ import (
 // suppressions and inline directives may still name them, so an id must never
 // be given to a different rule.
 var retiredRuleIDs = map[string]string{
+	"ENTR-PRIVATE-KEY":       "duplicate of the SECRET-PRIVATE-KEY detector, which also requires a key body",
 	"DJANGO-HOSTS":           "an empty ALLOWED_HOSTS rejects requests; it is not a vulnerability",
 	"DJANGO-LOGGING":         "Django logs by default; absence of a LOGGING setting is not a vulnerability",
 	"FAST-ORM":               "a database driver without an ORM is not SQL injection",

@@ -431,3 +431,24 @@ func TestNoFalsePositives(t *testing.T) {
 		})
 	}
 }
+
+func TestPasswordHashesAreNotSecrets(t *testing.T) {
+	for _, v := range []string{
+		"$2a$10$8Zo/1e8KM8QzqOKqbDlYlONBOzukWXrM.IiyzqHRYDXqwB3gzDsba",
+		"pbkdf2_sha256$600000$abcdefgh$" + "c2FsdGVkaGFzaHZhbHVlZm9ydGVzdGluZw==",
+	} {
+		if isLikelySecretValue(v) {
+			t.Errorf("%q is a password hash, not a secret", v)
+		}
+	}
+	digest := "0b14d501a594442a01c6859541bcb3e8" + "164d183d32937b851835442f69d5c94e"
+	if !isStoredPasswordDigest("password", digest) {
+		t.Error("a hex digest stored as a password is the stored hash")
+	}
+	if isStoredPasswordDigest("SESSION_SECRET", digest) {
+		t.Error("a hex value under a secret name is a random secret")
+	}
+	if !isLikelySecretValue("Zq8vT3nL" + "x2Pw9Rk4Vb7M") {
+		t.Error("a random-looking credential must still count as a secret")
+	}
+}

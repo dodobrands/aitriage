@@ -281,24 +281,7 @@ rules:
       subcategory: vuln
     suggestion: "A MongoDB query uses request data directly, so a client can send an operator object such as {\"$ne\": null} instead of a value. Cast values to the expected type (String(...)), validate the body with a schema, or enable sanitizeFilter; never build $where from input."
 
-  - id: ENTR-PRIVATE-KEY
-    name: "Private Key in Source Code"
-    stack: universal
-    extensions: [".ts", ".js", ".py", ".go", ".env", ".yaml", ".yml", ".json", ".pem", ".key", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]
-    target: all
-    regions: all
-    exclude_tests: true
-    # A key body is required, so code that only checks for the header line
-    # (a PEM parser) is not reported.
-    pattern: '-----BEGIN[ A-Z0-9_-]{0,40}PRIVATE KEY(?: BLOCK)?-----(?:\\[rn]|\s)*(?:Proc-Type:[^\n]*?(?:\\n|\n)DEK-Info:[^\n]*?(?:\\n|\n)(?:\\n|\s)*)?[A-Za-z0-9+/=]{40,}'
-    severity: CRITICAL
-    metadata:
-      cwe: "CWE-321"
-      owasp: "A04:2025"
-      confidence: high
-      subcategory: vuln
-    suggestion: "A private key is committed to the repository. Revoke and rotate the key, remove it from the history, and load keys from a secret manager or a mounted file."
-
+  # Retired: ENTR-PRIVATE-KEY — duplicate of the SECRET-PRIVATE-KEY detector, which also requires a key body
   - id: ENTR-JWT-NONE
     name: "JWT Signature Verification Disabled"
     stack: universal
