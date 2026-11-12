@@ -1,0 +1,10 @@
+# Local smoke test only - NOT for production.
+services:
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://app:Pg5ecretPassw0rd@db:5432/app
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: Pg5ecretPassw0rd

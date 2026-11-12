@@ -1,0 +1,7 @@
+ignore:
+  paths:
+    - wp-content/plugins/akismet/
+  rules:
+    - ENTR-SLOP-01
+    - port-53
+    - nginx_missing_server_tokens_off
