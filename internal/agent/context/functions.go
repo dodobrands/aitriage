@@ -206,19 +206,33 @@ func extractImports(lang *tree_sitter.Language, tree *tree_sitter.Tree, content 
 	return strings.Join(parts, "\n")
 }
 
+// fallbackRadius is how many lines on each side of the target extractFallback
+// returns.
+const fallbackRadius = 30
+
 // extractFallback returns a generous window of lines around the target.
+//
+// The line comes from scanner output, which can be stale: the file may have
+// been shortened since, so the line can lie past its end. The window is then
+// the last lines of the file. Slicing with an unclamped line panicked, and the
+// panic ended the whole run.
 func extractFallback(content []byte, line int, filePath string) *FunctionContext {
 	lines := strings.Split(string(content), "\n")
+	name := fmt.Sprintf("(around line %d)", line)
 	idx := line - 1
+	if idx >= len(lines) {
+		name = fmt.Sprintf("(line %d is past the end of the file; its last lines)", line)
+		idx = len(lines) - 1
+	}
 	if idx < 0 {
 		idx = 0
 	}
 
-	start := idx - 30
+	start := idx - fallbackRadius
 	if start < 0 {
 		start = 0
 	}
-	end := idx + 30
+	end := idx + fallbackRadius
 	if end > len(lines) {
 		end = len(lines)
 	}
@@ -234,7 +248,7 @@ func extractFallback(content []byte, line int, filePath string) *FunctionContext
 	}
 
 	return &FunctionContext{
-		Name:      fmt.Sprintf("(around line %d)", line),
+		Name:      name,
 		StartLine: start + 1,
 		EndLine:   end,
 		Body:      strings.Join(lines[start:end], "\n"),
