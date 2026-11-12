@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/prompts"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
 // ErrNoLLMClient is returned when the pipeline is asked to run without a usable
@@ -256,7 +258,7 @@ func enrichFindings(state *AgentState) {
 			Severity:         f.Severity,
 			File:             file,
 			Line:             f.Line,
-			Message:          paths.stripRoot(fmt.Sprintf("[%s] %s", f.Source, f.Message)),
+			Message:          paths.stripRoot(fmt.Sprintf("[%s] %s", f.Source, scannerMessage(f))),
 			Snippet:          extractFullContext(state.ProjectPath, file, f.Line),
 			Package:          f.Package,
 			InstalledVersion: f.InstalledVersion,
@@ -466,7 +468,11 @@ func mergeFinding(current, candidate EnrichedFinding, class healthcheck.FindingC
 		severity = class.Severity
 	}
 	representative, other := current, candidate
-	if shouldPreferSemanticRepresentative(candidate, current) {
+	classKey := ""
+	if classified {
+		classKey = class.Key
+	}
+	if shouldPreferSemanticRepresentative(candidate, current, classKey) {
 		representative, other = candidate, current
 	}
 	representative.Origins = origins
@@ -516,7 +522,15 @@ func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
 	return out
 }
 
-func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding) bool {
+// shouldPreferSemanticRepresentative reports whether candidate should
+// represent a merged finding instead of current. The representative gives the
+// finding its rule id, source and message; origins keeps every detector.
+func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding, classKey string) bool {
+	if classKey == healthcheck.ClassHardcodedSecret {
+		if a, b := secretRepresentativeRank(candidate), secretRepresentativeRank(current); a != b {
+			return a < b
+		}
+	}
 	priority := func(f EnrichedFinding) int {
 		switch strings.ToLower(f.Type) {
 		case "core":
@@ -536,6 +550,42 @@ func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding) bool
 		return candidate.File != ""
 	}
 	return strings.ToLower(candidate.ID) < strings.ToLower(current.ID)
+}
+
+// secretRepresentativeRank orders the detectors of a hardcoded secret for
+// the representative: Gitleaks first, then the built-in SECRET-* rules, then
+// the others. finding.source is then "gitleaks" whenever Gitleaks reported
+// the secret, which CI gates written against Gitleaks rely on, and the text
+// shown is Gitleaks' redacted message rather than, say, Bandit's, which
+// quotes the value.
+func secretRepresentativeRank(f EnrichedFinding) int {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(f.Source), "gitleaks"):
+		return 0
+	case strings.EqualFold(strings.TrimSpace(f.Type), "core") && strings.HasPrefix(strings.ToUpper(strings.TrimSpace(f.ID)), "SECRET-"):
+		return 1
+	default:
+		return 2
+	}
+}
+
+// banditPasswordRules report a possible hardcoded password and quote it in
+// their message ("Possible hardcoded password: 'SuperSecret123'").
+var banditPasswordRules = stringSet("B105", "B106", "B107")
+
+// quotedValuePattern matches a single- or double-quoted value.
+var quotedValuePattern = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+
+// scannerMessage is the message of an external report as the triage graph
+// shows it. Bandit's password checks quote the value they found; it is
+// masked, since the message reaches every artifact.
+func scannerMessage(f external.UnifiedFinding) string {
+	if !strings.EqualFold(strings.TrimSpace(f.Source), "bandit") || !banditPasswordRules[strings.ToUpper(strings.TrimSpace(f.RuleID))] {
+		return f.Message
+	}
+	return quotedValuePattern.ReplaceAllStringFunc(f.Message, func(quoted string) string {
+		return quoted[:1] + "[redacted]" + quoted[:1]
+	})
 }
 
 // hcKey builds a location key used to match AI dispositions to findings.

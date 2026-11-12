@@ -75,6 +75,13 @@ type LLMUsageArtifact struct {
 // TriagedFinding pairs one original scanner finding with its one validated
 // disposition. FindingIndex preserves original scanner order and makes the
 // 1:1 mapping independently auditable.
+//
+// A finding stands for every scanner report of one defect: finding.id,
+// finding.source and finding.message are the representative report's, and
+// finding.origins[] is the full list of reports (type, source, rule_id,
+// file, line, severity). Consumers that gate on a scanner or a rule, such as
+// "fail when Gitleaks found a secret", must check origins[]; for a hardcoded
+// secret the representative is Gitleaks whenever Gitleaks reported it.
 type TriagedFinding struct {
 	FindingIndex int                `json:"finding_index"`
 	Finding      EnrichedFinding    `json:"finding"`

@@ -122,6 +122,14 @@ type AgentState struct {
 }
 
 // EnrichedFinding is a unified representation of any finding with its source snippet attached.
+//
+// One finding may stand for several scanner reports of the same defect (see
+// semanticFindingKey). ID, Type, Source and Message are then those of one of
+// them, the representative; Origins lists every report. A consumer that asks
+// whether a given scanner or rule reported the finding must look in Origins,
+// not at Source: a Gitleaks secret merged with a built-in rule has Source
+// "gitleaks", but a Semgrep report merged under a built-in rule does not have
+// Source "semgrep".
 type EnrichedFinding struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"` // "core", "external", "nfr", "deploy", "network"
@@ -129,12 +137,15 @@ type EnrichedFinding struct {
 	Severity string `json:"severity"`
 	// File is relative to the project root, with forward slashes. A path
 	// outside the root stays absolute.
-	File      string          `json:"file,omitempty"`
-	Line      int             `json:"line,omitempty"`
-	Message   string          `json:"message"`
-	Snippet   string          `json:"code_snippet,omitempty"`
-	ExtraData string          `json:"extra_data,omitempty"`
-	Origins   []FindingOrigin `json:"origins,omitempty"`
+	File      string `json:"file,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Message   string `json:"message"`
+	Snippet   string `json:"code_snippet,omitempty"`
+	ExtraData string `json:"extra_data,omitempty"`
+	// Origins is the complete list of the scanner reports behind the finding,
+	// the representative's included, each with the location and severity its
+	// scanner reported.
+	Origins []FindingOrigin `json:"origins,omitempty"`
 	// VulnID is the display id, CS-<CLASS>-<first hex digits of StableID>.
 	VulnID string `json:"vuln_id,omitempty"`
 	// StableID identifies the finding across runs without depending on its
@@ -151,8 +162,9 @@ type EnrichedFinding struct {
 	PrimaryURL       string `json:"primary_url,omitempty"`
 }
 
-// FindingOrigin keeps every scanner/rule that corroborated a semantic issue.
-// Deduplication reduces user-visible issue count without losing provenance.
+// FindingOrigin is one scanner report behind a finding. Deduplication reduces
+// the user-visible issue count without losing provenance: a finding's
+// origins name every scanner and rule that reported it.
 type FindingOrigin struct {
 	Type   string `json:"type"`
 	Source string `json:"source"`
