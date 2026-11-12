@@ -51,6 +51,84 @@ func TestReasonTextDoesNotWidenASuppression(t *testing.T) {
 	}
 }
 
+// IDs separated by a space were accepted by the earlier substring matching, and
+// a real repository relied on it: "# aitriage-ignore: ENTR-18 PY-BINDING-ALL"
+// silenced both rules until the token parser stopped at the first id and
+// PY-BINDING-ALL resurfaced.
+func TestIDsSeparatedBySpacesAreAllRead(t *testing.T) {
+	cases := []struct {
+		line string
+		want []string
+	}{
+		{`settings.ALLOWED_HOSTS = ["*"]  # aitriage-ignore: ENTR-18 PY-BINDING-ALL`, []string{"ENTR-18", "PY-BINDING-ALL"}},
+		{`// aitriage-ignore: B105 B106 (fixture data)`, []string{"B105", "B106"}},
+		{`# aitriage-ignore: B105, B106 B107`, []string{"B105", "B106", "B107"}},
+		{`# aitriage-ignore: B105 B106, B107`, []string{"B105", "B106", "B107"}},
+		{`# aitriage-ignore: nginx_missing_csp CVE-2024-1234 python.lang.security.audit.eval`, []string{"nginx_missing_csp", "CVE-2024-1234", "python.lang.security.audit.eval"}},
+		{`# aitriage-ignore: gitleaks:jwt semgrep:sqli SECRET`, []string{"gitleaks:jwt", "semgrep:sqli", "SECRET"}},
+		{`<!-- aitriage-ignore: XSS-01 XSS-02 -->`, []string{"XSS-01", "XSS-02"}},
+		{`# aitriage-ignore: R1 R2. Reviewed with the team`, []string{"R1", "R2"}},
+		// The first id and ids after a comma are read as written, so a
+		// lower-case id such as gitleaks' jwt still works.
+		{`# aitriage-ignore: jwt`, []string{"jwt"}},
+		{`# aitriage-ignore: generic-api-key, jwt`, []string{"generic-api-key", "jwt"}},
+	}
+	for _, tc := range cases {
+		got := ParseLine(tc.line)
+		if len(got) != 1 || !reflect.DeepEqual(got[0].IDs, tc.want) {
+			t.Errorf("ParseLine(%q) = %+v; want IDs %q", tc.line, got, tc.want)
+		}
+	}
+
+	content := []byte("settings.ALLOWED_HOSTS = ['*']  # aitriage-ignore: ENTR-18 PY-BINDING-ALL\nDEBUG = True\n")
+	for _, rule := range []string{"ENTR-18", "PY-BINDING-ALL"} {
+		for _, line := range []int{1, 2} {
+			if !Suppressed(content, line, rule) {
+				t.Errorf("%s on line %d was not silenced by a directive that names it", rule, line)
+			}
+		}
+	}
+	if Suppressed(content, 1, "PY-DEBUG") {
+		t.Error("a rule the directive does not name was silenced")
+	}
+}
+
+// A reason written after the ids, with or without parentheses, is prose: none
+// of its words may become an id, and "all" in it never silences every rule.
+func TestProseAfterTheIDsIsNotRead(t *testing.T) {
+	cases := []struct {
+		line string
+		want []string
+	}{
+		{`# aitriage-ignore: B105 allowed in tests`, []string{"B105"}},
+		{`# aitriage-ignore: B105 (allowed in tests)`, []string{"B105"}},
+		{`# aitriage-ignore: ENTR-18 because the value is a test fixture`, []string{"ENTR-18"}},
+		{`# aitriage-ignore: B105 all good`, []string{"B105"}},
+		{`# aitriage-ignore: B105 ALL of it is fake`, []string{"B105"}},
+		{`# aitriage-ignore: B105 Allowed by the security team`, []string{"B105"}},
+		{`# aitriage-ignore: B105 reviewed, see the PR`, []string{"B105"}},
+		{`# aitriage-ignore: B105 tests.`, []string{"B105"}},
+		{`# aitriage-ignore: B105 -- reviewed`, []string{"B105"}},
+		{`# aitriage-ignore: B105(allowed) B106`, []string{"B105"}},
+	}
+	for _, tc := range cases {
+		got := ParseLine(tc.line)
+		if len(got) != 1 || !reflect.DeepEqual(got[0].IDs, tc.want) {
+			t.Errorf("ParseLine(%q) = %+v; want IDs %q", tc.line, got, tc.want)
+		}
+	}
+
+	content := []byte("password = 'x'  # aitriage-ignore: B105 all good, allowed in tests\n")
+	if !Suppressed(content, 1, "B105") {
+		t.Error("the named rule was not silenced")
+	}
+	for _, rule := range []string{"B106", "SECRET-ASSIGN", "allowed", "good", "tests"} {
+		if Suppressed(content, 1, rule) {
+			t.Errorf("%s was silenced by words of the reason", rule)
+		}
+	}
+}
+
 func TestIDsCompareWholeAndCaseInsensitively(t *testing.T) {
 	content := []byte("x = 1  # aitriage-ignore: ENTR-10, b105\n")
 
@@ -197,6 +275,83 @@ func TestDirectiveOnItsOwnLineInsideABlockComment(t *testing.T) {
 		if !Suppressed([]byte(content), 5, "generic-api-key", "gitleaks") {
 			t.Errorf("%s: %q did not silence the file", name, content)
 		}
+	}
+}
+
+// A string literal ended with its line, so a directive in a string spanning
+// lines was read as a comment: "# aitriage-ignore-file" in the second line of
+// a docstring silenced every finding in the file.
+func TestDirectivesInsideStringsThatSpanLinesAreText(t *testing.T) {
+	cases := map[string]struct {
+		content string
+		line    int
+	}{
+		"python docstring":            {"\"\"\"Usage notes.\n# aitriage-ignore-file\n\"\"\"\nTOKEN = 'ghp_example'\n", 4},
+		"python single-quoted triple": {"HELP = '''\n# aitriage-ignore-file\n'''\nTOKEN = 'ghp_example'\n", 4},
+		"python prefixed docstring":   {"HELP = r\"\"\"\\d+\n# aitriage-ignore-file\n\"\"\"\nTOKEN = 'ghp_example'\n", 4},
+		"js template literal":         {"const help = `\n// aitriage-ignore-file\n`;\nconst token = 'ghp_example';\n", 4},
+		"ts tagged template":          {"const q = sql`\n  -- aitriage-ignore-file\n  SELECT 1`;\nconst token = 'ghp_example';\n", 4},
+		"go raw string":               {"package x\nconst doc = `\n# aitriage-ignore-file\n`\nvar token = \"ghp_example\"\n", 5},
+		"line directive in a string":  {"HELP = \"\"\"\n# aitriage-ignore: generic-api-key\nTOKEN = 'ghp_example'\n\"\"\"\n", 3},
+		"next-line directive":         {"HELP = `\n// aitriage-ignore-next-line: generic-api-key\nTOKEN = 'ghp_example'\n`\n", 3},
+		"block marker in a string":    {"HELP = \"\"\"\n/* aitriage-ignore-file */\n\"\"\"\nTOKEN = 'ghp_example'\n", 4},
+		"bare line in a string":       {"HELP = \"\"\"\naitriage-ignore-file\n\"\"\"\nTOKEN = 'ghp_example'\n", 4},
+	}
+	for name, tc := range cases {
+		if Suppressed([]byte(tc.content), tc.line, "generic-api-key", "gitleaks") {
+			t.Errorf("%s: a directive inside a string silenced the finding on line %d", name, tc.line)
+		}
+	}
+}
+
+// Once a string that spans lines is closed, comments count again, including
+// one on the line that closes it, and strings that do not span lines change
+// nothing. A Go raw string has no escapes: `\` is a complete string, and the
+// escaped backticks of a template literal come in pairs.
+func TestDirectivesAfterAStringThatSpansLinesCount(t *testing.T) {
+	cases := map[string]struct {
+		content string
+		line    int
+	}{
+		"after a docstring":         {"\"\"\"Module notes.\n\nMore notes.\n\"\"\"\nTOKEN = 'x'  # aitriage-ignore: generic-api-key\n", 5},
+		"on the closing line":       {"HELP = \"\"\"\ntext\n\"\"\"  # aitriage-ignore: generic-api-key\n", 3},
+		"one-line docstring":        {"def f():\n    \"\"\"Docs.\"\"\"\n    return 'x'  # aitriage-ignore: generic-api-key\n", 3},
+		"escaped quote":             {"HELP = \"\"\"a \\\"\"\" b\n\"\"\"\nTOKEN = 'x'  # aitriage-ignore: generic-api-key\n", 3},
+		"after a template":          {"const t = `\n${a}\n`;\nconst key = 'x'; // aitriage-ignore: generic-api-key\n", 4},
+		"go raw backslash":          {"package x\nvar sep = `\\`\nvar key = \"x\" // aitriage-ignore: generic-api-key\n", 3},
+		"two go raw strings":        {"package x\nvar s = strings.ReplaceAll(p, `\\`, `\\\\`)\nvar key = \"x\" // aitriage-ignore: generic-api-key\n", 3},
+		"escaped backticks in pair": {"const md = `\\`\\`\\`js\\n${code}\\n\\`\\`\\``;\nconst key = 'x'; // aitriage-ignore: generic-api-key\n", 2},
+		"quotes inside a comment":   {"/* say \"\"\" or ` here */\nconst key = 'x'; // aitriage-ignore: generic-api-key\n", 2},
+		"triple quote in a string":  {"x = \"'''\" + '\"\"\"'\nkey = 'x'  # aitriage-ignore: generic-api-key\n", 2},
+		"file directive after one":  {"\"\"\"Docs.\"\"\"\n# aitriage-ignore-file\nTOKEN = 'x'\n", 3},
+	}
+	for name, tc := range cases {
+		if !Suppressed([]byte(tc.content), tc.line, "generic-api-key", "gitleaks") {
+			t.Errorf("%s: the directive did not silence the finding on line %d", name, tc.line)
+		}
+	}
+}
+
+// The state is carried across every line, also lines far from the finding: a
+// docstring opened at the top of the file still hides a directive deep inside
+// it, and one closed above still lets a directive below count.
+func TestStringStateIsTrackedAcrossTheWholeFile(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\"\"\"Long module documentation.\n")
+	for i := 0; i < 40; i++ {
+		b.WriteString("Some text.\n")
+	}
+	b.WriteString("Example: x = 1  # aitriage-ignore: R1\n") // line 42, inside the docstring
+	b.WriteString("x = 1\n")                                 // line 43
+	b.WriteString("\"\"\"\n")                                // line 44 closes it
+	b.WriteString("y = 2  # aitriage-ignore: R1\n")          // line 45
+	content := []byte(b.String())
+
+	if Suppressed(content, 43, "R1") {
+		t.Error("a directive inside a docstring silenced the line below it")
+	}
+	if !Suppressed(content, 45, "R1") {
+		t.Error("a directive after the docstring did not count")
 	}
 }
 
