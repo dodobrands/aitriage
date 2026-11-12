@@ -791,17 +791,30 @@ func (e *Engine) regionMatch(rule Rule, f *core.FileInfo, honourIgnore bool) (in
 	if err != nil || len(kinds) != len(content) {
 		return 0, false
 	}
-	line, pos := 1, 0
-	for _, loc := range rule.CompiledPattern.FindAllIndex(content, maxMatchesPerFile) {
-		line += bytes.Count(content[pos:loc[0]], []byte{'\n'})
-		pos = loc[0]
-		if loc[0] < len(kinds) && !regionAllows(rule.Regions, kinds[loc[0]]) {
-			continue
+	line, pos, start, seen := 1, 0, 0, 0
+	for start < len(content) && seen < maxMatchesPerFile {
+		restart := -1
+		for _, loc := range rule.CompiledPattern.FindAllIndex(content[start:], maxMatchesPerFile-seen) {
+			seen++
+			from, to := start+loc[0], start+loc[1]
+			line += bytes.Count(content[pos:from], []byte{'\n'})
+			pos = from
+			allowed := from >= len(kinds) || regionAllows(rule.Regions, kinds[from])
+			if allowed && !(honourIgnore && e.isLineIgnored(f, line, rule.ID)) {
+				return line, true
+			}
+			// A rejected match that runs over several lines may cover a real
+			// occurrence further down (a commented-out call followed by the
+			// live one): search again from the next line.
+			if nl := bytes.IndexByte(content[from:to], '\n'); nl >= 0 && from+nl+1 < len(content) {
+				restart = from + nl + 1
+				break
+			}
 		}
-		if honourIgnore && e.isLineIgnored(f, line, rule.ID) {
-			continue
+		if restart < 0 {
+			break
 		}
-		return line, true
+		start = restart
 	}
 	return 0, false
 }

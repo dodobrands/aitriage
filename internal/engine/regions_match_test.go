@@ -121,3 +121,12 @@ func TestExtensionsAcceptBaseNameGlobs(t *testing.T) {
 		}
 	}
 }
+
+func TestRegionsMultiLineMatchInCommentDoesNotHideLiveCode(t *testing.T) {
+	src := "import tarfile\n# old: tarfile.open(path)\ntar = tarfile.open(path)\ntar.extractall(dest)\n"
+	rule := models.Rule{ID: "T-TAR", Stack: "universal", Extensions: []string{".py"}, Target: "all", Regions: RegionsCode,
+		Pattern: `(?s)tarfile\.open\(.*?\.extractall\(`, Severity: "HIGH"}
+	if got := runRule(t, rule, "x.py", src); len(got) != 1 || got[0] != 3 {
+		t.Errorf("got lines %v, want [3]", got)
+	}
+}
