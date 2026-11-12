@@ -3,7 +3,6 @@ package rules
 import (
 	"bytes"
 	"io/fs"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -60,9 +59,6 @@ var (
 // no extensions or pattern, a regex rule without a region filter, or the reuse
 // of a retired id.
 func TestCatalogRulesAreWellFormed(t *testing.T) {
-	if os.Getenv("AITRIAGE_STRICT_CATALOG") != "1" {
-		t.Skip("set AITRIAGE_STRICT_CATALOG=1 (enforced once the catalog review lands)")
-	}
 	err := fs.WalkDir(FS, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

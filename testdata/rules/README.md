@@ -23,5 +23,5 @@ testdata/rules/<RULE-ID>/
 - Avoid test-like names (`test_*.py`, `*_test.go`, `*.spec.ts`): the scanner
   does not attach test files to a project.
 
-Run them with `go test ./internal/engine/ -run TestRuleFixtures`. Set
-`AITRIAGE_REQUIRE_RULE_FIXTURES=1` to also fail on rules without fixtures.
+Run them with `go test ./internal/engine/ -run TestRuleFixtures`. The test
+also fails when a rule has no bad or no good case.

@@ -58,11 +58,7 @@ func TestRuleFixtures(t *testing.T) {
 		}
 	}
 
-	// Coverage is enforced once every rule has fixtures; until then it can be
-	// checked on demand.
-	if os.Getenv("AITRIAGE_REQUIRE_RULE_FIXTURES") != "1" {
-		return
-	}
+	// Every rule needs at least one case of each kind.
 	var missing []string
 	for id := range rules {
 		if !covered[id]["bad"] || !covered[id]["good"] {
