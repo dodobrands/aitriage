@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/models"
+	"github.com/dodobrands/aitriage/internal/regions"
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	"github.com/dodobrands/aitriage/rules"
 	"gopkg.in/yaml.v3"
@@ -23,10 +25,20 @@ import (
 type Rule = models.Rule
 
 func (e *Engine) compileRule(r *models.Rule) {
-	if r.Pattern != "" {
+	if r.Pattern != "" && r.Target != "ast" {
 		c, err := regexp.Compile(r.Pattern)
 		if err == nil {
 			r.CompiledPattern = c
+		} else {
+			slog.Warn("Rule pattern is not valid RE2; matching it as a literal string", "rule", r.ID, "error", err)
+		}
+	}
+	if r.PatternNot != "" {
+		c, err := regexp.Compile(r.PatternNot)
+		if err == nil {
+			r.CompiledNot = c
+		} else {
+			slog.Warn("Rule pattern-not is not valid RE2; ignoring it", "rule", r.ID, "error", err)
 		}
 	}
 	for i := range r.Patterns {
@@ -413,6 +425,13 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 					continue
 				}
 				examined++
+				if rule.Regions != "" {
+					if _, ok := e.regionMatch(rule, f, false); ok {
+						found = true
+						break
+					}
+					continue
+				}
 				var b []byte
 				switch rule.Target {
 				case "code":
@@ -601,11 +620,30 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 		return "", 0
 	}
 
+	// Region-aware regex rules run over the raw file and filter matches by
+	// where they start (code, comment, string literal).
+	if rule.Regions != "" && rule.Target != "ast" && rule.Target != "condition" && rule.Pattern != "" {
+		if !conditionAllows(rule, f) {
+			return "", 0
+		}
+		if rule.CompiledNot != nil {
+			if text, err := f.GetNonCommentContent(); err != nil || rule.CompiledNot.Match(text) {
+				return "", 0
+			}
+		}
+		if line, ok := e.regionMatch(rule, f, true); ok {
+			return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), line
+		}
+		return "", 0
+	}
+
 	// 3. Handle logical PatternNot
 	if rule.PatternNot != "" {
 		notRule := rule
 		notRule.Pattern = rule.PatternNot
+		notRule.CompiledPattern = rule.CompiledNot
 		notRule.PatternNot = ""
+		notRule.CompiledNot = nil
 		_, line := e.evaluateFile(notRule, f)
 		if line != 0 {
 			return "", 0 // Matched the negative pattern
@@ -648,17 +686,25 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 		tree, err2 := f.GetTree()
 		b, err3 := f.GetContent()
 		if err2 == nil && err3 == nil {
+			if !conditionAllows(rule, f) {
+				return "", 0
+			}
 			lang, _ := ast.GetLanguage(f.Extension)
 			matches, astErr := ast.MatchInTree(lang, tree, b, rule.Pattern)
-			if astErr == nil && len(matches) > 0 {
-				// Use the real line number from the matched AST node
-				node := matches[0].Node
-				if node != nil {
-					return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path),
-						int(node.StartPosition().Row) + 1 // tree-sitter rows are 0-indexed
-				}
-				return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), 1
+			if astErr != nil {
+				slog.Debug("AST rule query failed", "rule", rule.ID, "file", f.Path, "error", astErr)
 			}
+			for _, m := range matches {
+				line := 1
+				if m.Node != nil {
+					line = int(m.Node.StartPosition().Row) + 1 // tree-sitter rows are 0-indexed
+				}
+				// An inline directive silences one occurrence, not the file.
+				if !e.isLineIgnored(f, line, rule.ID) {
+					return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), line
+				}
+			}
+			return "", 0
 		}
 		if err2 != nil {
 			err = err2
@@ -677,6 +723,10 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 
 	if token, ok := strings.CutPrefix(rule.Condition, "not_contains:"); ok &&
 		strings.Contains(strings.ToLower(targetStr), strings.ToLower(token)) {
+		return "", 0
+	}
+	if token, ok := strings.CutPrefix(rule.Condition, "contains:"); ok &&
+		!strings.Contains(strings.ToLower(targetStr), strings.ToLower(token)) {
 		return "", 0
 	}
 
@@ -710,6 +760,91 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 	}
 
 	return "", 0
+}
+
+// regionMatch returns the line of the first match of the rule's pattern that
+// starts in an allowed region and, when honourIgnore is set, is not silenced
+// by an inline directive. Later matches are considered when earlier ones are
+// rejected, so a comment or an ignored occurrence cannot hide a real one.
+func (e *Engine) regionMatch(rule Rule, f *core.FileInfo, honourIgnore bool) (int, bool) {
+	if rule.CompiledPattern == nil {
+		return 0, false
+	}
+	content, err := f.GetContent()
+	if err != nil {
+		return 0, false
+	}
+	kinds, err := f.GetRegions()
+	if err != nil || len(kinds) != len(content) {
+		return 0, false
+	}
+	line, pos := 1, 0
+	for _, loc := range rule.CompiledPattern.FindAllIndex(content, maxMatchesPerFile) {
+		line += bytes.Count(content[pos:loc[0]], []byte{'\n'})
+		pos = loc[0]
+		if loc[0] < len(kinds) && !regionAllows(rule.Regions, kinds[loc[0]]) {
+			continue
+		}
+		if honourIgnore && e.isLineIgnored(f, line, rule.ID) {
+			continue
+		}
+		return line, true
+	}
+	return 0, false
+}
+
+// maxMatchesPerFile bounds the work spent on one pattern in one file.
+const maxMatchesPerFile = 10000
+
+// regionAllows reports whether a match starting in region kind counts for the
+// rule's region filter.
+func regionAllows(filter string, kind regions.Kind) bool {
+	switch filter {
+	case RegionsCode:
+		return kind == regions.Code
+	case RegionsCodeAndStrings:
+		return kind != regions.Comment
+	case RegionsComments:
+		return kind == regions.Comment
+	default: // RegionsAll
+		return true
+	}
+}
+
+// Region filters a rule may declare in its `regions` field.
+const (
+	RegionsCode           = "code"
+	RegionsCodeAndStrings = "code_and_strings"
+	RegionsComments       = "comments"
+	RegionsAll            = "all"
+)
+
+// conditionAllows evaluates the file-level conditions of a rule over the file
+// without its comments: `not_contains:A|B` drops the file when any token is
+// present, `contains:A|B` keeps it only when one is. A comment that mentions
+// a token neither suppresses nor enables a rule.
+func conditionAllows(rule Rule, f *core.FileInfo) bool {
+	negate := false
+	tokens, ok := strings.CutPrefix(rule.Condition, "contains:")
+	if !ok {
+		if tokens, ok = strings.CutPrefix(rule.Condition, "not_contains:"); !ok {
+			return true
+		}
+		negate = true
+	}
+	text, err := f.GetNonCommentContent()
+	if err != nil {
+		return false
+	}
+	lower := bytes.ToLower(text)
+	found := false
+	for _, token := range strings.Split(tokens, "|") {
+		if token != "" && bytes.Contains(lower, []byte(strings.ToLower(token))) {
+			found = true
+			break
+		}
+	}
+	return found != negate
 }
 
 // isLineIgnored reports whether an inline directive silences ruleID at line.

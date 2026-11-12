@@ -33,8 +33,13 @@ type Rule struct {
 	ExcludePaths []string    `yaml:"exclude_paths" json:"exclude_paths"` // path fragments to skip (e.g. "seed", "migration")
 	Suggestion   string      `yaml:"suggestion" json:"suggestion"`
 	Severity     string      `yaml:"severity" json:"severity"`
-	Message      string      `yaml:"message" json:"message"`
-	Languages    []string    `yaml:"languages" json:"languages"`
+	// Regions restricts where a regex match may start: "code" (not in a
+	// comment or string literal), "code_and_strings" (not in a comment),
+	// "comments" (only in a comment) or "all" (anywhere). The pattern always
+	// runs over the raw file. Empty keeps the legacy behaviour of Target.
+	Regions   string   `yaml:"regions" json:"regions,omitempty"`
+	Message   string   `yaml:"message" json:"message"`
+	Languages []string `yaml:"languages" json:"languages"`
 
 	// Semgrep-like logical patterns
 	Patterns         []Rule `yaml:"patterns" json:"patterns,omitempty"`
@@ -56,6 +61,7 @@ type Rule struct {
 	PatternSanitizers []yaml.Node       `yaml:"pattern-sanitizers" json:"-"`
 
 	CompiledPattern *regexp.Regexp `yaml:"-" json:"-"`
+	CompiledNot     *regexp.Regexp `yaml:"-" json:"-"`
 }
 
 // IsTaint reports whether the rule is a Semgrep taint-mode rule. Taint rules are
