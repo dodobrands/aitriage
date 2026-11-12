@@ -3,7 +3,6 @@ package scanner
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/core"
@@ -77,8 +76,15 @@ type SarifRegion struct {
 	EndColumn   int `json:"endColumn,omitempty"`
 }
 
-// ToSARIF converts the ScanReport to the SARIF format required by GitHub code scanning.
+// ToSARIF converts the ScanReport to the SARIF format required by GitHub code
+// scanning. Paths, and the project root inside evidence, are project-relative.
+//
+// Dismissed findings (audit status ignored or triage) are left out. GitHub's
+// SARIF upload does not honour SARIF suppressions, so a dismissed finding
+// emitted as a suppressed result would come back as an open alert. Dismissals
+// stay visible in triage-findings.json and the summary counts.
 func (r ScanReport) ToSARIF() ([]byte, error) {
+	r = r.WithRelativePaths()
 	run := SarifRun{
 		Tool: SarifTool{
 			Driver: SarifDriver{
@@ -134,14 +140,6 @@ func (r ScanReport) ToSARIF() ([]byte, error) {
 			level = "note"
 		}
 
-		relPath := res.File
-		if filepath.IsAbs(res.File) {
-			if r, err := filepath.Rel(r.ProjectPath, res.File); err == nil {
-				relPath = r
-			}
-		}
-		relPath = filepath.ToSlash(relPath)
-
 		line := res.Line
 		if line <= 0 {
 			line = 1 // SARIF requires line > 0
@@ -157,7 +155,7 @@ func (r ScanReport) ToSARIF() ([]byte, error) {
 				{
 					PhysicalLocation: SarifPhysicalLocation{
 						ArtifactLocation: SarifArtifactLocation{
-							Uri: relPath,
+							Uri: res.File,
 						},
 						Region: SarifRegion{
 							StartLine: line,

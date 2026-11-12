@@ -46,6 +46,10 @@ type SuppressionSummary struct {
 	// ones, which a decision removes. Not serialized: the finding's own
 	// disposition rationale carries the decision.
 	Core map[string]SuppressionDecision `json:"-"`
+	// Reports lists the reports of the other scanners (external, NFR, deploy)
+	// a decision removed before triage. Another detector's report of the same
+	// defect is covered by the same decision (see dismissals.of).
+	Reports []DismissedReport `json:"-"`
 }
 
 // SuppressionDecision is the reason and note of one recorded decision.
@@ -54,10 +58,141 @@ type SuppressionDecision struct {
 	Note   string
 }
 
+// ReportRef identifies one scanner report by what decides which defect it
+// describes. File is project-relative (ProjectRelativePath).
+type ReportRef struct {
+	Type             string
+	Source           string
+	RuleID           string
+	File             string
+	Line             int
+	Package          string
+	InstalledVersion string
+}
+
+// DismissedReport is a scanner report a recorded decision dismissed.
+type DismissedReport struct {
+	ReportRef
+	Decision SuppressionDecision
+}
+
+// DefectKey returns the key under which a report merges with the other
+// detectors of the same defect (see semanticFindingKey). It returns false
+// when no canonical class covers the report's rule: such a report merges only
+// with identical reports, so a decision about it covers nothing else.
+func DefectKey(r ReportRef) (string, bool) {
+	f := EnrichedFinding{ID: r.RuleID, Type: r.Type, Source: r.Source, File: r.File, Line: r.Line, Package: r.Package, InstalledVersion: r.InstalledVersion}
+	if _, ok := findingClass(f); !ok {
+		return "", false
+	}
+	return semanticFindingKey(f), true
+}
+
 // CoreDecisionKey identifies a built-in finding the way the graph matches
-// project decisions to it.
+// project decisions to it. file is the project-relative path, as
+// ProjectRelativePath returns it: findings enter the graph that way.
 func CoreDecisionKey(ruleID, file string, line int) string {
 	return hcKey(ruleID, file, line)
+}
+
+// dismissal is one recorded decision about one scanner report.
+type dismissal struct {
+	source, ruleID string
+	// reason is a .aitriage-suppressions.json reason, or
+	// SuppressionReasonAuditLog for a dismissal in the audit log, whose
+	// status is then set.
+	reason, note string
+	status       core.AuditStatus
+}
+
+// dismissals indexes the decisions of a run the way findings are matched to
+// them.
+type dismissals struct {
+	// byOrigin holds the dismissed built-in reports, keyed like
+	// CoreDecisionKey; they stay in the inventory as origins of findings.
+	byOrigin map[string]dismissal
+	// byDefect holds every dismissed report of a canonical class by its
+	// DefectKey, including the reports removed before triage.
+	byDefect map[string]dismissal
+}
+
+// recordedDismissals collects the decisions of a run: built-in findings
+// dismissed in the audit log or by a project decision, and the reports of
+// other scanners a project decision removed.
+func recordedDismissals(state *AgentState) dismissals {
+	paths := newPathResolver(state.ProjectPath)
+	d := dismissals{byOrigin: map[string]dismissal{}, byDefect: map[string]dismissal{}}
+	for _, result := range state.CoreFindings {
+		if result.AuditStatus != core.AuditStatusIgnored && result.AuditStatus != core.AuditStatusTriage {
+			continue
+		}
+		file := paths.relative(result.File)
+		key := hcKey(result.ID, file, result.Line)
+		dm := dismissal{source: "aitriage", ruleID: result.ID, reason: SuppressionReasonAuditLog, status: result.AuditStatus}
+		if decision, ok := state.Suppressions.Core[key]; ok && decision.Reason != SuppressionReasonAuditLog {
+			dm.reason, dm.note = decision.Reason, decision.Note
+		}
+		if _, seen := d.byOrigin[key]; !seen {
+			d.byOrigin[key] = dm
+		}
+		if defect, ok := DefectKey(ReportRef{Type: "core", Source: "aitriage", RuleID: result.ID, File: file, Line: result.Line}); ok {
+			if _, seen := d.byDefect[defect]; !seen {
+				d.byDefect[defect] = dm
+			}
+		}
+	}
+	for _, r := range state.Suppressions.Reports {
+		defect, ok := DefectKey(r.ReportRef)
+		if !ok {
+			continue
+		}
+		if _, seen := d.byDefect[defect]; !seen {
+			d.byDefect[defect] = dismissal{source: r.Source, ruleID: r.RuleID, reason: firstNonEmpty(r.Decision.Reason, SuppressionReasonFalsePositive), note: r.Decision.Note}
+		}
+	}
+	return d
+}
+
+// of returns the decision that covers a finding. A finding is one defect,
+// however many detectors reported it, and a person decided about it: a
+// dismissal of any detector behind it covers it, and so does a dismissal of a
+// report of the same canonical class at the same location that was removed
+// before triage. A decision never covers a finding of another class, even on
+// the same line.
+func (d dismissals) of(f EnrichedFinding) (dismissal, bool) {
+	if isEnvironmentFinding(f) {
+		return dismissal{}, false
+	}
+	for _, origin := range findingOrigins(f) {
+		if !strings.EqualFold(origin.Type, "core") {
+			continue
+		}
+		for _, key := range originKeys(f, origin) {
+			if dm, ok := d.byOrigin[key]; ok {
+				return dm, true
+			}
+		}
+	}
+	if len(d.byDefect) > 0 {
+		if _, classified := findingClass(f); classified {
+			if dm, ok := d.byDefect[semanticFindingKey(f)]; ok {
+				return dm, true
+			}
+		}
+	}
+	return dismissal{}, false
+}
+
+// originKeys are the keys a decision about one origin of f may be recorded
+// under: the origin's own location, which is what the scanner reported, and
+// the finding's location for origins built without one.
+func originKeys(f EnrichedFinding, origin FindingOrigin) []string {
+	own := hcKey(origin.RuleID, origin.File, origin.Line)
+	merged := hcKey(origin.RuleID, f.File, f.Line)
+	if own == merged {
+		return []string{own}
+	}
+	return []string{own, merged}
 }
 
 // isEnvironmentFinding reports whether a finding describes the scanning host
@@ -69,12 +204,7 @@ func isEnvironmentFinding(f EnrichedFinding) bool {
 // deterministicDispositions decides, without the LLM, the findings that must
 // never reach it. The map is keyed by EnrichedFindings index.
 func deterministicDispositions(state *AgentState) map[int]FindingDisposition {
-	dismissed := make(map[string]core.AuditStatus)
-	for _, result := range state.CoreFindings {
-		if result.AuditStatus == core.AuditStatusIgnored || result.AuditStatus == core.AuditStatusTriage {
-			dismissed[hcKey(result.ID, result.File, result.Line)] = result.AuditStatus
-		}
-	}
+	recorded := recordedDismissals(state)
 
 	out := make(map[int]FindingDisposition)
 	for i, finding := range state.EnrichedFindings {
@@ -83,11 +213,11 @@ func deterministicDispositions(state *AgentState) map[int]FindingDisposition {
 		case isEnvironmentFinding(finding):
 			d = networkProbeDisposition()
 		default:
-			status, ok := dismissedCoreStatus(finding, dismissed)
+			decision, ok := recorded.of(finding)
 			if !ok {
 				continue
 			}
-			d = suppressedDisposition(finding, status, state.Suppressions)
+			d = suppressedDisposition(finding, decision)
 		}
 		d.FindingIndex = i
 		d.FindingID = finding.VulnID
@@ -95,27 +225,6 @@ func deterministicDispositions(state *AgentState) map[int]FindingDisposition {
 		out[i] = d
 	}
 	return out
-}
-
-// dismissedCoreStatus reports whether every scanner behind a finding is a
-// dismissed built-in rule. A finding merged with a still-open external or NFR
-// origin is not dismissed: that scanner's report has not been decided on.
-func dismissedCoreStatus(f EnrichedFinding, dismissed map[string]core.AuditStatus) (core.AuditStatus, bool) {
-	if len(dismissed) == 0 {
-		return "", false
-	}
-	var status core.AuditStatus
-	for _, origin := range findingOrigins(f) {
-		if !strings.EqualFold(origin.Type, "core") {
-			return "", false
-		}
-		s, ok := dismissed[hcKey(origin.RuleID, f.File, f.Line)]
-		if !ok {
-			return "", false
-		}
-		status = s
-	}
-	return status, true
 }
 
 // findingOrigins returns the scanners behind a finding; a finding built
@@ -127,24 +236,37 @@ func findingOrigins(f EnrichedFinding) []FindingOrigin {
 	return []FindingOrigin{originOf(f)}
 }
 
-func suppressedDisposition(f EnrichedFinding, status core.AuditStatus, summary SuppressionSummary) FindingDisposition {
-	rationale := fmt.Sprintf("Dismissed in the AITriage audit log (status %s).", status)
-	for _, origin := range findingOrigins(f) {
-		decision, ok := summary.Core[hcKey(origin.RuleID, f.File, f.Line)]
-		if !ok || decision.Reason == SuppressionReasonAuditLog {
-			continue
-		}
-		rationale = fmt.Sprintf("Dismissed by a project decision in .aitriage-suppressions.json (%s).", decision.Reason)
-		if note := strings.TrimSpace(decision.Note); note != "" {
+// suppressedDisposition records a dismissed finding with the decision behind
+// it. When the finding stands for more than the dismissed report, the
+// rationale says which report the decision was recorded for.
+func suppressedDisposition(f EnrichedFinding, decision dismissal) FindingDisposition {
+	rationale := fmt.Sprintf("Dismissed in the AITriage audit log (status %s).", decision.status)
+	if decision.reason != SuppressionReasonAuditLog {
+		rationale = fmt.Sprintf("Dismissed by a project decision in .aitriage-suppressions.json (%s).", decision.reason)
+		if note := strings.TrimSpace(decision.note); note != "" {
 			rationale += " Note: " + note
 		}
-		break
+	}
+	origins := findingOrigins(f)
+	if len(origins) > 1 || !hasOriginRule(origins, decision.ruleID) {
+		defect := firstNonEmpty(f.Class, f.ID)
+		rationale += fmt.Sprintf(" The decision was recorded for %s %s and covers every detector's report of this %s finding at %s.",
+			decision.source, decision.ruleID, defect, displayLocation(f.File, f.Line))
 	}
 	return FindingDisposition{
 		Disposition:       "False Positive",
 		Rationale:         rationale + " Not sent to the LLM; excluded from the score and the gate.",
 		DispositionSource: dispositionSourceSuppressed,
 	}
+}
+
+func hasOriginRule(origins []FindingOrigin, ruleID string) bool {
+	for _, origin := range origins {
+		if strings.EqualFold(origin.RuleID, ruleID) {
+			return true
+		}
+	}
+	return false
 }
 
 func networkProbeDisposition() FindingDisposition {

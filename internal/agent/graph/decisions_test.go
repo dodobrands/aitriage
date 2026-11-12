@@ -3,11 +3,13 @@ package graph
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 	"github.com/dodobrands/aitriage/internal/scanner/network"
 )
 
@@ -79,20 +81,92 @@ func TestRunNeverSendsSuppressedOrNetworkFindingsToTheLLM(t *testing.T) {
 	}
 }
 
-// A finding merged from a dismissed built-in rule and a still-open external
-// scanner report is not dismissed: nobody decided on the external report.
-func TestDismissalRequiresEveryOrigin(t *testing.T) {
-	finding := EnrichedFinding{ID: "FAST-LAZY-EXC", Type: "core", File: "app.py", Line: 10, Origins: []FindingOrigin{
-		{Type: "core", Source: "aitriage", RuleID: "FAST-LAZY-EXC"},
-		{Type: "external", Source: "bandit", RuleID: "B110"},
-	}}
-	dismissed := map[string]core.AuditStatus{hcKey("FAST-LAZY-EXC", "app.py", 10): core.AuditStatusIgnored}
-	if _, ok := dismissedCoreStatus(finding, dismissed); ok {
-		t.Fatal("a finding with an open external origin must still be triaged")
+// A merged finding is one defect: a recorded dismissal of any detector behind
+// it covers it, and the decision stays visible on the finding. A dismissal
+// never covers another class on the same line.
+func TestDismissalOfOneDetectorCoversTheMergedFinding(t *testing.T) {
+	root := writeProjectFiles(t, identityFixtureFiles())
+	state := multiDetectorState(root)
+	state.CoreFindings = append(state.CoreFindings, core.CheckResult{
+		ID: "FAST-SQLI", Name: "SQL Injection Risk", Status: core.Absent, Severity: "CRITICAL", File: filepath.Join(root, "core", "fns.py"), Line: 3, Evidence: "raw query",
+	})
+	// `aitriage ignore add SECRET-ASSIGN --file core/fns.py --reason false-positive`
+	state.CoreFindings[0].AuditStatus = core.AuditStatusIgnored
+	state.Suppressions = SuppressionSummary{
+		Total: 1, ByReason: map[string]int{SuppressionReasonFalsePositive: 1},
+		Core: map[string]SuppressionDecision{
+			CoreDecisionKey("SECRET-ASSIGN", "core/fns.py", 3): {Reason: SuppressionReasonFalsePositive, Note: "fixture value, not a credential"},
+		},
 	}
-	finding.Origins = finding.Origins[:1]
-	if _, ok := dismissedCoreStatus(finding, dismissed); !ok {
-		t.Fatal("a finding whose only origin is dismissed must not be triaged")
+	enrichFindings(state)
+	preset := deterministicDispositions(state)
+
+	secretIndex, sqliIndex := -1, -1
+	for i, f := range state.EnrichedFindings {
+		switch f.Class {
+		case healthcheck.ClassHardcodedSecret:
+			secretIndex = i
+		case "sql_injection":
+			sqliIndex = i
+		}
+	}
+	secret, ok := preset[secretIndex]
+	if !ok || secret.DispositionSource != dispositionSourceSuppressed || secret.Disposition != "False Positive" {
+		t.Fatalf("merged hardcoded secret disposition = %+v, want suppressed by the SECRET-ASSIGN decision", secret)
+	}
+	if len(state.EnrichedFindings[secretIndex].Origins) != 4 {
+		t.Fatalf("hardcoded secret origins = %+v, want all four detectors", state.EnrichedFindings[secretIndex].Origins)
+	}
+	for _, want := range []string{"false_positive", "fixture value, not a credential", "SECRET-ASSIGN", "every detector"} {
+		if !strings.Contains(secret.Rationale, want) {
+			t.Fatalf("rationale %q lacks %q", secret.Rationale, want)
+		}
+	}
+	if _, covered := preset[sqliIndex]; covered {
+		t.Fatal("a dismissal of the hardcoded secret covered the SQL injection on the same line")
+	}
+
+	computeHealthCheck(state)
+	if bd := state.HealthCheck.Breakdown; bd.IgnoredFindings != 1 || bd.ActiveFindings != 2 {
+		t.Fatalf("breakdown = %+v, want the secret ignored and the command and SQL injections active", bd)
+	}
+}
+
+// A report removed before triage by a decision (here gitleaks') covers the
+// other detectors' reports of the same defect, and only of that defect.
+func TestRemovedReportDecisionCoversTheSameDefect(t *testing.T) {
+	root := writeProjectFiles(t, identityFixtureFiles())
+	state := multiDetectorState(root)
+	// ApplySuppressions removed the gitleaks report; the pipeline remembers it.
+	var kept []external.UnifiedFinding
+	for _, f := range state.ExternalFindings {
+		if f.Source != "gitleaks" {
+			kept = append(kept, f)
+		}
+	}
+	state.ExternalFindings = kept
+	state.Suppressions = SuppressionSummary{
+		Total: 1, ByReason: map[string]int{SuppressionReasonAcceptedRisk: 1},
+		Reports: []DismissedReport{{
+			ReportRef: ReportRef{Type: "external", Source: "gitleaks", RuleID: "generic-api-key", File: "core/fns.py", Line: 3},
+			Decision:  SuppressionDecision{Reason: SuppressionReasonAcceptedRisk, Note: "rotated"},
+		}},
+	}
+	enrichFindings(state)
+	preset := deterministicDispositions(state)
+	var suppressed, open []string
+	for i, f := range state.EnrichedFindings {
+		if d, ok := preset[i]; ok && d.DispositionSource == dispositionSourceSuppressed {
+			if !strings.Contains(d.Rationale, "accepted_risk") || !strings.Contains(d.Rationale, "gitleaks generic-api-key") {
+				t.Fatalf("rationale %q does not name the decision", d.Rationale)
+			}
+			suppressed = append(suppressed, f.Class)
+			continue
+		}
+		open = append(open, f.Class)
+	}
+	if len(suppressed) != 1 || suppressed[0] != healthcheck.ClassHardcodedSecret || len(open) != 1 || open[0] != healthcheck.ClassCommandInjection {
+		t.Fatalf("suppressed = %v, open = %v; want only the hardcoded secret covered", suppressed, open)
 	}
 }
 

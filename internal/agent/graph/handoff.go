@@ -56,6 +56,13 @@ type AIAgentFinding struct {
 	// "triage-failed").
 	DispositionSource string `json:"disposition_source,omitempty"`
 	Recommendation    string `json:"recommendation,omitempty"`
+	// StableID identifies the finding across runs (triage-findings.json).
+	StableID string `json:"stable_id,omitempty"`
+	// Package, InstalledVersion and FixedVersion name the upgrade a
+	// dependency advisory needs.
+	Package          string `json:"package,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	FixedVersion     string `json:"fixed_version,omitempty"`
 }
 
 // BuildAgentHandoff builds the canonical actionable handoff. A completed scan
@@ -134,6 +141,10 @@ func collectActionableFindings(state *AgentState) ([]actionableFinding, int, int
 			disposition:       disposition,
 			label:             dispositionLabel(d),
 			dispositionSource: d.DispositionSource,
+			pkg:               finding.Package,
+			installedVersion:  finding.InstalledVersion,
+			fixedVersion:      finding.FixedVersion,
+			stableID:          finding.StableID,
 		})
 	}
 	return actionable, tp, fp, nr
@@ -183,6 +194,10 @@ func buildAIAgentData(state *AgentState, actionable []actionableFinding, tp, fp,
 			Title:             strings.ReplaceAll(finding.message, "\\|", "|"),
 			Disposition:       finding.disposition,
 			DispositionSource: finding.dispositionSource,
+			StableID:          finding.stableID,
+			Package:           finding.pkg,
+			InstalledVersion:  finding.installedVersion,
+			FixedVersion:      finding.fixedVersion,
 		}
 		item.Recommendation = recommendations[finding.vulnID]
 		data.Findings = append(data.Findings, item)

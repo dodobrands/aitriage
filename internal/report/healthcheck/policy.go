@@ -213,7 +213,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		if key == "" {
 			continue
 		}
-		if count := res.Breakdown.CountByClass[key]; count > 0 {
+		if count := blockedClassCount(res.Breakdown, key); count > 0 {
 			reasons = append(reasons, BlockingReason{
 				Code:      "blocked_class",
 				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
@@ -238,6 +238,22 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		Summary:         fmt.Sprintf("Security policy %q failed with %d blocking reason(s)", policy.Profile, len(reasons)),
 		BlockingReasons: reasons,
 	}
+}
+
+// blockedClassCount counts the active findings a block_classes entry names. An
+// entry may be a canonical class ("hardcoded_secret", or "hardcoded-secret" as
+// the configuration examples spell it) or a rule id, which is what classes
+// were before findings of several detectors were merged: a policy written
+// then must keep blocking the findings it blocked.
+func blockedClassCount(bd Breakdown, key string) int {
+	count := bd.CountByClass[key]
+	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
+		count = bd.CountByClass[c.Key]
+	}
+	if n := bd.CountByRule[key]; n > count {
+		count = n
+	}
+	return count
 }
 
 func appendThresholdReason(reasons []BlockingReason, code, severity string, count, threshold int) []BlockingReason {

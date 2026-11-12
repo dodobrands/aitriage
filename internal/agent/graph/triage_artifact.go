@@ -10,6 +10,15 @@ import (
 
 // TriageArtifactSchemaVersion is incremented only for incompatible changes to
 // triage-findings.json. Consumers must reject versions they do not understand.
+//
+// Still 1 after findings gained stable_id, class, the dependency fields and
+// per-origin locations, and the artifact gained the scope counts: every
+// change adds a field and none changes a type. Values did change: paths are
+// project-relative, vuln_id has the CS-<CLASS>-<hex> form, one finding may
+// stand for several detectors, and health_check.breakdown.count_by_class is
+// keyed by canonical class (per-rule counts moved to count_by_rule). The only
+// in-tree consumer that parses the file (hostrun approval) compares vuln_id
+// verbatim and is unaffected.
 const TriageArtifactSchemaVersion = 1
 
 // TriageFindingsArtifact is the canonical, machine-readable record of an AI
@@ -42,7 +51,10 @@ type TriageFindingsArtifact struct {
 	Classification ClassificationStats `json:"classification"`
 	// Suppressions counts the findings project decisions dismissed.
 	Suppressions SuppressionSummary `json:"suppressions"`
-	Findings     []TriagedFinding   `json:"findings"`
+	// Scope counts the findings the project configuration removed before
+	// triage: ignore.rules entries and inline aitriage-ignore comments.
+	Scope    ScopeSummary     `json:"scope"`
+	Findings []TriagedFinding `json:"findings"`
 	// ClassificationAudit records raw structured model responses and their
 	// validation outcome. It is sensitive triage evidence and follows the same
 	// artifact retention policy as the finding inventory.
@@ -106,6 +118,7 @@ func BuildTriageFindingsArtifact(state *AgentState) (TriageFindingsArtifact, err
 		StageFailures:       state.StageFailures,
 		Classification:      buildClassificationStats(state),
 		Suppressions:        state.Suppressions,
+		Scope:               ScopeSummary{IgnoredByConfig: state.IgnoredByConfig, SuppressedInline: state.SuppressedInline},
 		Findings:            findings,
 		ClassificationAudit: state.ClassificationAudit,
 	}, nil

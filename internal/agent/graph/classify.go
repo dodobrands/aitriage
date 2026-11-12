@@ -19,7 +19,7 @@ import (
 // Needs Manual Review. It composes five layers on top of the batching safety net:
 //
 //	Layer 1  dedup identical findings by fingerprint (no silent drop)
-//	Layer 2  reuse cached verdicts by fingerprint (cheap re-runs in CI)
+//	Layer 2  reuse cached verdicts by a line-free key (cheap re-runs in CI)
 //	Layer 3  severity/category gating: deterministic disposition for the rest
 //	Layer 4  SecureCoder threat-model-once + structured per-finding classification
 //	Layer 5  bounded concurrency + budget; anything left defaults to NR
@@ -137,7 +137,10 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 	var toLLM []int
 	for i, f := range unique {
 		fp := Fingerprint(f)
-		if cached, ok := cache.Get(fp); ok {
+		// Verdicts are cached without the line number, so a finding that only
+		// moved within its file is not re-classified.
+		if cached, cachedLine, ok := cache.lookup(verdictCacheKey(f)); ok {
+			cached.Evidence = relocateEvidence(cached.Evidence, cachedLine, f)
 			if cachedVerdictUsable(req, f, cached) {
 				cached.FindingIndex = i
 				cached.DispositionSource = dispositionSourceCache
@@ -215,7 +218,7 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 			d.DispositionSource = dispositionSourceLLM
 			stored := d
 			result[gi] = &stored
-			cache.Set(fp, stored)
+			cache.store(verdictCacheKey(unique[gi]), stored, unique[gi].Line)
 		}
 		switch {
 		case outcome.transportErr != nil:

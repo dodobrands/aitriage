@@ -18,10 +18,11 @@ import (
 	"github.com/dodobrands/aitriage/rules"
 )
 
-// ── Layer 2: Verdict Cache (keyed by fingerprint) ────────────────────────────
+// ── Layer 2: Verdict Cache (keyed by verdictCacheKey) ────────────────────────
 //
 // In CI, the same findings recur on every push/PR. Caching the LLM verdict by
-// fingerprint means a re-run costs (almost) zero LLM calls. This is the single
+// a line-number-free key (verdictCacheKey) means a re-run costs (almost) zero
+// LLM calls, also after edits elsewhere in a file. This is the single
 // biggest cost lever at scale.
 //
 // Correctness: the cache key embeds provider/model/prompt/rules/policy namespace
@@ -37,7 +38,11 @@ import (
 // model produced the verdicts.
 // v5 adds the output language to the namespace: a cached rationale written in
 // one language must not be served into a run that asked for another.
-const verdictCacheSchemaVersion = 5
+// v6 keys verdicts by verdictCacheKey (stable identity plus code window, no
+// line number) instead of Fingerprint. Findings also became project-relative
+// and several detectors of one defect merged into one finding, so every v5
+// key would have missed anyway.
+const verdictCacheSchemaVersion = 6
 const verdictCacheRulesDigestVersion = "rules-v1"
 
 type verdictCacheKeyContext struct {
@@ -109,6 +114,10 @@ type cachedVerdict struct {
 	Rationale   string               `json:"rationale"`
 	Confidence  string               `json:"confidence"`
 	Evidence    *DispositionEvidence `json:"evidence,omitempty"`
+	// FindingLine is where the finding was when the verdict was made. The
+	// key has no line number, so a verdict survives the finding moving; its
+	// evidence lines move with it (see relocateEvidence).
+	FindingLine int `json:"finding_line,omitempty"`
 }
 
 type verdictCache struct {
@@ -153,8 +162,8 @@ func newVerdictCacheWithContext(ctx verdictCacheKeyContext) *verdictCache {
 	return c
 }
 
-func (c *verdictCache) key(fingerprint string) string {
-	return fmt.Sprintf("%s|%s", c.namespace, fingerprint)
+func (c *verdictCache) key(findingKey string) string {
+	return fmt.Sprintf("%s|%s", c.namespace, findingKey)
 }
 
 func (c *verdictCache) load() {
@@ -171,15 +180,21 @@ func (c *verdictCache) load() {
 	c.stats.LoadedEntries = len(entries)
 }
 
-// Get returns a previously cached disposition for a fingerprint, if present.
-func (c *verdictCache) Get(fingerprint string) (FindingDisposition, bool) {
+// Get returns a previously cached disposition for a key, if present.
+func (c *verdictCache) Get(key string) (FindingDisposition, bool) {
+	d, _, ok := c.lookup(key)
+	return d, ok
+}
+
+// lookup returns a cached disposition and the line its finding was on.
+func (c *verdictCache) lookup(key string) (FindingDisposition, int, bool) {
 	if !c.enabled {
-		return FindingDisposition{}, false
+		return FindingDisposition{}, 0, false
 	}
-	v, ok := c.entries[c.key(fingerprint)]
+	v, ok := c.entries[c.key(key)]
 	if !ok {
 		c.stats.Misses++
-		return FindingDisposition{}, false
+		return FindingDisposition{}, 0, false
 	}
 	c.stats.Hits++
 	return FindingDisposition{
@@ -187,12 +202,17 @@ func (c *verdictCache) Get(fingerprint string) (FindingDisposition, bool) {
 		Rationale:   v.Rationale,
 		Confidence:  v.Confidence,
 		Evidence:    v.Evidence,
-	}, true
+	}, v.FindingLine, true
 }
 
-// Set records a freshly produced verdict for a fingerprint.
-func (c *verdictCache) Set(fingerprint string, d FindingDisposition) {
-	if !c.enabled || fingerprint == "" {
+// Set records a freshly produced verdict for a key.
+func (c *verdictCache) Set(key string, d FindingDisposition) {
+	c.store(key, d, 0)
+}
+
+// store records a verdict together with the line its finding was on.
+func (c *verdictCache) store(key string, d FindingDisposition, findingLine int) {
+	if !c.enabled || key == "" {
 		return
 	}
 	v, ok := cacheableVerdict(d)
@@ -200,9 +220,36 @@ func (c *verdictCache) Set(fingerprint string, d FindingDisposition) {
 		c.stats.SkippedSensitive++
 		return
 	}
-	c.entries[c.key(fingerprint)] = v
+	v.FindingLine = findingLine
+	c.entries[c.key(key)] = v
 	c.dirty = true
 	c.stats.Stores++
+}
+
+// relocateEvidence moves the lines of cached evidence about the finding's own
+// file by as many lines as the finding moved since the verdict was cached. The
+// moved evidence is validated again like any model verdict, so a mitigation
+// that did not move with the finding is caught there.
+func relocateEvidence(evidence *DispositionEvidence, cachedLine int, f EnrichedFinding) *DispositionEvidence {
+	if evidence == nil || cachedLine <= 0 || f.Line <= 0 || cachedLine == f.Line || evidence.Line <= 0 {
+		return evidence
+	}
+	if evidence.File != "" && !sameProjectFile(evidence.File, f.File) {
+		return evidence
+	}
+	moved := *evidence
+	moved.Line += f.Line - cachedLine
+	if moved.Line < 1 {
+		return evidence
+	}
+	return &moved
+}
+
+// sameProjectFile compares a model-cited path with a project-relative one;
+// the model may cite either form.
+func sameProjectFile(cited, file string) bool {
+	a, b := normalizePath(cited), normalizePath(file)
+	return a == b || strings.HasSuffix(a, "/"+b)
 }
 
 func (c *verdictCache) InvalidateFalsePositive() {

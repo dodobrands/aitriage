@@ -19,8 +19,10 @@ import (
 // cvePattern matches CVE identifiers like CVE-2026-28684 (year + at least 4 digits).
 var cvePattern = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
 
-// vulnIDPattern matches generated CS-XXX-NNN vulnerability identifiers.
-var vulnIDPattern = regexp.MustCompile(`CS-[A-Z0-9]+-\d{3,}`)
+// vulnIDPattern matches display ids: the current CS-<CLASS>-<hex> form
+// (assignVulnIDs) and the CS-<CLASS>-<NNN> counter form of earlier releases,
+// which a model may still produce from memory and must be caught as unknown.
+var vulnIDPattern = regexp.MustCompile(`\bCS-[A-Z0-9]+-(?:[0-9A-F]{6,}|[0-9]{3,})\b`)
 
 // canonicalDispositionByVulnID maps each finding's generated VulnID to its
 // authoritative disposition, straight from state. This is the same 1:1 mapping
@@ -68,7 +70,7 @@ func buildCanonicalFindingsSection(state *AgentState) string {
 	for i, f := range state.EnrichedFindings {
 		file := f.File
 		if file == "" {
-			file = "N/A"
+			file = projectLevelLocation
 		}
 		disp := "Needs Manual Review (unclassified)"
 		src := ""
@@ -146,11 +148,7 @@ func canonicalActiveFindingsBrief(state *AgentState) string {
 		return sb.String()
 	}
 	for _, r := range rows {
-		file := r.file
-		if file == "" {
-			file = "N/A"
-		}
-		sb.WriteString(fmt.Sprintf("- **%s** [%s] %s — `%s:%d` — %s\n", r.vulnID, r.sev, r.disp, file, r.line, r.rationale))
+		sb.WriteString(fmt.Sprintf("- **%s** [%s] %s — `%s` — %s\n", r.vulnID, r.sev, r.disp, displayLocation(r.file, r.line), r.rationale))
 	}
 	sb.WriteString("\nDo not introduce any vulnerability ID, CVE, or package that is not listed above.\n")
 	return sb.String()

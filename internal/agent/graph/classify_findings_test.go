@@ -538,7 +538,7 @@ func TestClassifyFindingsFullCacheHitSkipsThreatModelAndClassification(t *testin
 	findings := makeFindings(2)
 	cache := newVerdictCache("")
 	for _, finding := range findings {
-		cache.Set(Fingerprint(finding), FindingDisposition{
+		cache.Set(verdictCacheKey(finding), FindingDisposition{
 			Disposition: "True Positive",
 			Rationale:   "cached",
 			Confidence:  "high",
@@ -575,7 +575,7 @@ func TestClassifyFindingsInvalidCachedFalsePositiveFallsBackToLLM(t *testing.T) 
 
 	findings := makeFindings(1)
 	cache := newVerdictCache("")
-	cache.Set(Fingerprint(findings[0]), FindingDisposition{
+	cache.Set(verdictCacheKey(findings[0]), FindingDisposition{
 		Disposition: "False Positive",
 		Rationale:   "cached fp",
 		Confidence:  "high",
@@ -622,7 +622,7 @@ func TestClassifyFindingsPartialCacheHitBuildsThreatModelForUncachedFindings(t *
 
 	findings := makeFindings(2)
 	cache := newVerdictCache("")
-	cache.Set(Fingerprint(findings[0]), FindingDisposition{
+	cache.Set(verdictCacheKey(findings[0]), FindingDisposition{
 		Disposition: "True Positive",
 		Rationale:   "cached",
 		Confidence:  "high",

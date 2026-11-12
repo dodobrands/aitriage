@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
@@ -72,6 +73,38 @@ func TestEnforceArtifactIntegrityRebuildsDeterministic(t *testing.T) {
 	// The hallucinated identifiers must be gone.
 	if strings.Contains(state.ReportMarkdown, "CVE-2024-12345") || strings.Contains(state.AIFixSpec, "CS-SQLI-999") {
 		t.Fatal("rebuilt artifacts still contain hallucinated identifiers")
+	}
+}
+
+// D4: the validator knows the CS-<CLASS>-<hex> display ids. A real id passes;
+// an unknown one in either form, including the counter form of earlier
+// releases a model may reproduce, is caught.
+func TestValidateArtifactIntegrityUnderstandsStableDisplayIDs(t *testing.T) {
+	state := &AgentState{
+		CoreFindings: []core.CheckResult{
+			{ID: "FAST-SQLI", Name: "SQL Injection Risk", Status: core.Absent, Severity: "CRITICAL", File: "db.py", Line: 10, Evidence: "raw query"},
+		},
+		Policy: healthcheck.Policy{FailOn: healthcheck.FailOnNever},
+	}
+	enrichFindings(state)
+	state.FindingDispositions = allDispositions(state, "True Positive")
+	valid := state.EnrichedFindings[0].VulnID
+	if !vulnIDPattern.MatchString(valid) {
+		t.Fatalf("display id %q does not match the validator pattern", valid)
+	}
+
+	state.ReportMarkdown = "Fix " + valid + " first.\n\n" + buildCanonicalFindingsSection(state)
+	state.AIFixSpec = canonicalActiveFindingsBrief(state)
+	if v := validateArtifactIntegrity(state); len(v) != 0 {
+		t.Fatalf("canonical display id flagged: %v", v)
+	}
+
+	for _, bogus := range []string{"CS-SQLI-ABC123", "CS-SQLI-001"} {
+		state.AIFixSpec = "Also fix " + bogus + ".\n" + canonicalActiveFindingsBrief(state)
+		v := validateArtifactIntegrity(state)
+		if len(v) == 0 || !strings.Contains(strings.Join(v, "\n"), bogus) {
+			t.Fatalf("unknown id %s not flagged: %v", bogus, v)
+		}
 	}
 }
 

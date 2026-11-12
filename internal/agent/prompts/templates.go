@@ -10,12 +10,18 @@ import "strings"
 // (comments, docstrings, configuration, the flagged line itself), matching the
 // stricter evidence validator. Verdicts cached under v3 may rest on exactly
 // that kind of evidence, so they must not be reused.
-const SecureCoderPromptVersion = "securecoder-v4"
+//
+// v5: vulnerability IDs are CS-<CLASS>-<hex> derived from a stable finding
+// identity. The framework no longer asks the model to assign CS-XXX-NNN IDs,
+// which invited invented counter IDs, but to use the given ones verbatim.
+const SecureCoderPromptVersion = "securecoder-v5"
 
+// The report and fix-spec prompts were rewritten for the same ID change
+// (report-v2, fixspec-v2).
 const (
 	PoCPromptVersion     = "poc-v1"
-	ReportPromptVersion  = "report-v1"
-	FixSpecPromptVersion = "fixspec-v1"
+	ReportPromptVersion  = "report-v2"
+	FixSpecPromptVersion = "fixspec-v2"
 )
 
 // ── Secure Coding Guidelines (from SecureCoder SKILL.md) ─────────────────────
@@ -34,7 +40,7 @@ const SecureCoderFramework = `You are AITriage SecureCoder — an autonomous sec
 4. Classify each finding: True Positive (exploitable) / False Positive (mitigated) / Needs Manual Review.
 5. For True Positives: trace the exploit data flow step by step (PoC reasoning).
 6. Generate remediation with drop-in code fixes referencing the MUST/MUST NOT ruleset below.
-7. Assign CS-XXX-NNN vulnerability IDs to all findings.
+7. Refer to every finding by the vulnerability ID it was given (CS-<CLASS>-<hex>, for example CS-XSS-3FA9C1). Never invent, shorten or renumber an ID.
 
 Emojis are strictly forbidden everywhere in your response.
 MUST follow the LOCALISATION CONTRACT supplied with each request. If no contract is supplied, respond in English. The language of the source code and its comments never decides the response language.
@@ -201,7 +207,7 @@ JSON, TOML, INI, .env, Docker Compose, .conf): they contain no code that
 mitigates. For those findings return True Positive or Needs Manual Review.
 
 Return ONLY JSON with this exact shape (no prose, no markdown):
-{"finding_dispositions":[{"finding_index":0,"finding_id":"CS-XXX-001","fingerprint":"exact input fingerprint","disposition":"True Positive","confidence":"high","rationale":"...","evidence":{"basis":"code_mitigation","file":"path/file.py","line":12,"observed":"literal source text"}}]}`
+{"finding_dispositions":[{"finding_index":0,"finding_id":"exact input finding_id","fingerprint":"exact input fingerprint","disposition":"True Positive","confidence":"high","rationale":"...","evidence":{"basis":"code_mitigation","file":"path/file.py","line":12,"observed":"literal source text"}}]}`
 
 const ClassificationUserPromptTemplate = `## Threat Model
 %s
@@ -285,7 +291,7 @@ const PoCUserPromptTemplate = `The following %d True Positive findings require P
 
 For each finding, reason through the exploit step by step.`
 
-// ── Report Prompt (enhanced with CS-XXX-NNN format) ──────────────────────────
+// ── Report Prompt ────────────────────────────────────────────────────────────
 
 const ReportSystemPrompt = SecureCoderFramework + `
 
@@ -307,7 +313,7 @@ Crucial formatting rules:
 2. The Vulnerability Report table MUST use the following columns EXACTLY:
    | Vulnerability ID | Severity | File | Line | Triage Status | Recommendation | Rationale |
    Where:
-   - "Vulnerability ID" uses the CS-XXX-NNN format provided in the findings (e.g. CS-XSS-001, CS-SQLI-002).
+   - "Vulnerability ID" is copied verbatim from the reference table (e.g. CS-XSS-3FA9C1, CS-SQLI-0B7D24). Never invent or renumber an ID.
    - "Triage Status" is one of: "True Positive", "False Positive", "Needs Manual Review".
    - "Rationale" should briefly explain the reasoning for the triage status.
    Do NOT generate any other tables in the Vulnerability Report section.
@@ -337,7 +343,7 @@ const ReportUserPromptTemplate = `Here is the core engine summary and the aggreg
 
 %s
 
-Please synthesize this into a single, cohesive Markdown security report following the CS-XXX-NNN format.`
+Please synthesize this into a single, cohesive Markdown security report that names findings by their vulnerability IDs from the reference table, verbatim.`
 
 // ── Fix Spec Prompt (enhanced with threat model + PoC context) ───────────────
 
@@ -362,8 +368,8 @@ Start with a summary table:
 
 | # | Priority | File | Issue | Vuln IDs |
 |---|----------|------|-------|----------|
-| 1 | CRITICAL | path/to/file.py:14 | SSTI via string concat in template | CS-SSTI-001 |
-| 2 | HIGH | path/to/app.py:17 | Debug mode enabled in production | CS-DEBUG-001 |
+| 1 | CRITICAL | path/to/file.py:14 | SSTI via string concat in template | CS-SSTI-8C41D2 |
+| 2 | HIGH | path/to/app.py:17 | Debug mode enabled in production | CS-DEBUG-27B9E0 |
 ...
 
 Then for each task:
@@ -373,7 +379,7 @@ Then for each task:
 ### Task 1: [Short description]
 
 **Priority**: CRITICAL / HIGH / MEDIUM
-**Vuln IDs**: CS-SSTI-001, CS-XSS-001
+**Vuln IDs**: CS-SSTI-8C41D2, CS-XSS-3FA9C1
 **File**: thirdparty/PythonSSTI/main.py
 **Line**: 14
 **Function**: read_root()
@@ -420,45 +426,6 @@ Remember: describe problems, not solutions. The AI IDE will write the code.
 
 ## Security Report
 %s`
-
-// ── Vulnerability ID Generation ──────────────────────────────────────────────
-
-// VulnClassCodes maps vulnerability class names to short codes for CS-XXX-NNN IDs.
-var VulnClassCodes = map[string]string{
-	"cross-site scripting":           "XSS",
-	"xss":                            "XSS",
-	"sql injection":                  "SQLI",
-	"command injection":              "EXEC",
-	"path traversal":                 "PATH",
-	"ssrf":                           "SSRF",
-	"server-side request forgery":    "SSRF",
-	"hardcoded secret":               "SECRETS",
-	"secret":                         "SECRETS",
-	"weak cryptography":              "CRYPTO",
-	"insecure deserialization":       "DESER",
-	"csrf":                           "CSRF",
-	"authentication":                 "AUTH",
-	"authorization":                  "AUTHZ",
-	"information exposure":           "INFO",
-	"information disclosure":         "INFO",
-	"ssti":                           "SSTI",
-	"server-side template injection": "SSTI",
-	"jwt":                            "JWT",
-	"debug mode":                     "DEBUG",
-	"open redirect":                  "REDIR",
-	"xml external entity":            "XXE",
-	"insecure configuration":         "CONFIG",
-	"denial of service":              "DOS",
-	"race condition":                 "RACE",
-	"prototype pollution":            "PROTO",
-	"directory listing":              "DIRLIST",
-	"file upload":                    "UPLOAD",
-	"cors misconfiguration":          "CORS",
-	"cookie":                         "COOKIE",
-	"session":                        "SESSION",
-	"logging":                        "LOG",
-	"error handling":                 "ERROR",
-}
 
 // ── Web Prompt Templates (served via /api/prompts) ───────────────────────────
 // These templates are the single source of truth for ALL frontends.

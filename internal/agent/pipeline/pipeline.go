@@ -12,11 +12,13 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/dodobrands/aitriage/internal/agent/graph"
 	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
@@ -126,6 +128,9 @@ func BuildState(opts Options, rich llm.RichScanResult) *graph.AgentState {
 		rich = applyTarget(rich, opts.Target)
 	}
 	decisions := applyProjectDecisions(&rich, opts.ProjectPath)
+	if decisions.LoadError != "" {
+		fmt.Fprintf(os.Stderr, "   ⚠️ %s not applied: %s\n", suppression.File, decisions.LoadError)
+	}
 
 	coverage := "partial"
 	if len(rich.MissingRequiredScanners()) == 0 {
@@ -155,6 +160,8 @@ func BuildState(opts Options, rich llm.RichScanResult) *graph.AgentState {
 		CriticalFiles:      rich.CriticalFiles,
 		HistoryLeaks:       rich.HistoryLeaks,
 		Suppressions:       decisions,
+		IgnoredByConfig:    rich.IgnoredByConfig,
+		SuppressedInline:   rich.SuppressedInline,
 	}
 }
 

@@ -104,22 +104,30 @@ func TestArtifactCacheKeyInvalidatesOnDispositionAndPolicyChange(t *testing.T) {
 	}
 }
 
-func TestArtifactCacheKeyIgnoresGeneratedVulnIDs(t *testing.T) {
+// A cached report names display ids, which follow the flagged line's content
+// rather than the fingerprint; a bundle must not be restored under ids it does
+// not contain. The id echoed in a disposition is not part of the key.
+func TestArtifactCacheKeyFollowsDisplayIDs(t *testing.T) {
 	base := artifactCacheTestState("True Positive")
 	key1, miss := buildArtifactCacheKey(base)
 	if miss != "" {
 		t.Fatalf("base key miss = %q", miss)
 	}
 
+	echoed := artifactCacheTestState("True Positive")
+	echoed.FindingDispositions[0].FindingID = "CS-AUTH-1A2B3C"
+	if key, _ := buildArtifactCacheKey(echoed); key != key1 {
+		t.Fatal("artifact cache key must not depend on the id a disposition echoes")
+	}
+
 	renamed := artifactCacheTestState("True Positive")
-	renamed.EnrichedFindings[0].VulnID = "CS-AUTH-042"
-	renamed.FindingDispositions[0].FindingID = "CS-AUTH-042"
+	renamed.EnrichedFindings[0].VulnID = "CS-AUTH-1A2B3C"
 	key2, miss := buildArtifactCacheKey(renamed)
 	if miss != "" {
 		t.Fatalf("renamed key miss = %q", miss)
 	}
-	if key1 != key2 {
-		t.Fatal("artifact cache key must not depend on generated CS-* IDs")
+	if key1 == key2 {
+		t.Fatal("artifact cache key must change when a finding's display id changes")
 	}
 }
 
@@ -372,7 +380,7 @@ func TestRunArtifactCacheWarmThenExactHitSkipsSecondaryLLMStages(t *testing.T) {
 	if hitState.ReportMarkdown != warmState.ReportMarkdown || hitState.AIFixSpec != warmState.AIFixSpec {
 		t.Fatalf("hit artifacts not byte-identical to warm:\nreport hit=%q warm=%q", hitState.ReportMarkdown, warmState.ReportMarkdown)
 	}
-	if !strings.Contains(hitState.ReportMarkdown, "Canonical Finding Inventory") || !strings.Contains(hitState.ReportMarkdown, "CS-MISC-001") {
+	if !strings.Contains(hitState.ReportMarkdown, "Canonical Finding Inventory") || !strings.Contains(hitState.ReportMarkdown, hitState.EnrichedFindings[0].VulnID) {
 		t.Fatalf("restored report missing canonical section: %q", hitState.ReportMarkdown)
 	}
 }

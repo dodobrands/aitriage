@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,7 +122,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.HealthCheck.Breakdown.DedupedFindings)
 
 	if !artifactCacheHit {
-		fmt.Fprintf(os.Stderr, "🤖 Generating Security Report (CS-XXX-NNN format)...\n")
+		fmt.Fprintf(os.Stderr, "🤖 Generating Security Report...\n")
 		reportRunwayProgress(state, 4, "generating_report")
 		if err := generateReport(ctx, state, llmClient); err != nil {
 			return err
@@ -223,56 +224,70 @@ func gatherRepoContext(state *AgentState) {
 }
 
 func enrichFindings(state *AgentState) {
+	paths := newPathResolver(state.ProjectPath)
 	var enriched []EnrichedFinding
+	// add records the scanner's own report as the finding's first origin
+	// before anything about its location is resolved.
+	add := func(f EnrichedFinding) {
+		f.Origins = []FindingOrigin{originOf(f)}
+		enriched = append(enriched, f)
+	}
 
 	for _, f := range state.CoreFindings {
-		enriched = append(enriched, EnrichedFinding{
+		file := paths.relative(f.File)
+		add(EnrichedFinding{
 			ID:       f.ID,
 			Type:     "core",
 			Source:   "aitriage",
 			Severity: f.Severity,
-			File:     f.File,
+			File:     file,
 			Line:     f.Line,
-			Message:  fmt.Sprintf("%s: %s", f.Name, f.Evidence),
-			Snippet:  extractFullContext(state.ProjectPath, f.File, f.Line),
+			Message:  paths.stripRoot(fmt.Sprintf("%s: %s", f.Name, f.Evidence)),
+			Snippet:  extractFullContext(state.ProjectPath, file, f.Line),
 		})
 	}
 	for _, f := range state.ExternalFindings {
-		enriched = append(enriched, EnrichedFinding{
-			ID:       f.RuleID,
-			Type:     "external",
-			Source:   f.Source,
-			Severity: f.Severity,
-			File:     f.File,
-			Line:     f.Line,
-			Message:  fmt.Sprintf("[%s] %s", f.Source, f.Message),
-			Snippet:  extractFullContext(state.ProjectPath, f.File, f.Line),
+		file := paths.relative(f.File)
+		add(EnrichedFinding{
+			ID:               f.RuleID,
+			Type:             "external",
+			Source:           f.Source,
+			Severity:         f.Severity,
+			File:             file,
+			Line:             f.Line,
+			Message:          paths.stripRoot(fmt.Sprintf("[%s] %s", f.Source, f.Message)),
+			Snippet:          extractFullContext(state.ProjectPath, file, f.Line),
+			Package:          f.Package,
+			InstalledVersion: f.InstalledVersion,
+			FixedVersion:     f.FixedVersion,
+			PrimaryURL:       f.PrimaryURL,
 		})
 	}
 	// Add other findings without snippets or with basic info
 	for _, f := range state.NFRFindings {
-		enriched = append(enriched, EnrichedFinding{
+		add(EnrichedFinding{
 			ID:       f.RuleID,
 			Type:     "nfr",
 			Source:   "aitriage",
 			Severity: f.Severity,
-			Message:  fmt.Sprintf("%s: %s", f.Name, f.Message),
+			Message:  paths.stripRoot(fmt.Sprintf("%s: %s", f.Name, f.Message)),
 		})
 	}
 	for _, f := range state.DeployFindings {
-		enriched = append(enriched, EnrichedFinding{
+		file := paths.relative(f.File)
+		add(EnrichedFinding{
 			ID:       f.Issue,
 			Type:     "deploy",
 			Source:   "aitriage",
 			Severity: f.Severity,
-			File:     f.File,
+			File:     file,
 			Line:     f.Line,
-			Message:  fmt.Sprintf("%s. Advice: %s", f.Issue, f.Advice),
-			Snippet:  extractFullContext(state.ProjectPath, f.File, f.Line),
+			Message:  paths.stripRoot(fmt.Sprintf("%s. Advice: %s", f.Issue, f.Advice)),
+			Snippet:  extractFullContext(state.ProjectPath, file, f.Line),
 		})
 	}
 	for _, f := range state.NetworkFindings {
-		enriched = append(enriched, EnrichedFinding{
+		add(EnrichedFinding{
 			ID:       fmt.Sprintf("port-%d", f.Port),
 			Type:     "network",
 			Source:   "aitriage",
@@ -281,11 +296,13 @@ func enrichFindings(state *AgentState) {
 		})
 	}
 
+	locateProjectLevelFindings(state.ProjectPath, enriched)
 	enriched = mergeSemanticFindings(enriched)
 	sortEnrichedFindings(enriched)
 
-	// Assign CS-XXX-NNN vulnerability IDs after canonical sorting so IDs remain
-	// stable when scanner result order varies between otherwise identical runs.
+	// Identities come after canonical sorting: the order only breaks ties
+	// between findings no class or location tells apart.
+	assignStableIDs(state.ProjectPath, enriched)
 	assignVulnIDs(enriched)
 
 	state.EnrichedFindings = enriched
@@ -344,12 +361,7 @@ func computeHealthCheck(state *AgentState) {
 			triageFailed[d.FindingIndex] = d.DispositionSource == dispositionSourceTriageFailed
 		}
 	}
-	ignoredCore := make(map[string]bool)
-	for _, finding := range state.CoreFindings {
-		if finding.AuditStatus == core.AuditStatusIgnored || finding.AuditStatus == core.AuditStatusTriage {
-			ignoredCore[hcKey(finding.ID, finding.File, finding.Line)] = true
-		}
-	}
+	recorded := recordedDismissals(state)
 
 	in := healthcheck.Input{}
 	for _, r := range state.CoreFindings {
@@ -373,19 +385,31 @@ func computeHealthCheck(state *AgentState) {
 			class = f.ID
 		}
 		isIgnored := ignored[i]
-		if !isIgnored && len(f.Origins) == 1 && f.Origins[0].Type == "core" {
-			isIgnored = ignoredCore[hcKey(f.Origins[0].RuleID, f.File, f.Line)]
+		if !isIgnored {
+			_, isIgnored = recorded.of(f)
 		}
 		// With no dispositions at all (a scan that never ran AI triage), every
 		// finding is by definition unreviewed.
 		isUnreviewed := unreviewed[i] || len(state.FindingDispositions) == 0
 
+		origins := findingOrigins(f)
+		rules := make([]string, 0, len(origins))
+		sources := make([]string, 0, len(origins))
+		for _, origin := range origins {
+			rules = append(rules, origin.RuleID)
+			sources = append(sources, origin.Source)
+		}
 		in.Findings = append(in.Findings, healthcheck.Finding{
-			Source:       source,
-			Class:        class,
-			Severity:     f.Severity,
-			File:         f.File,
-			Line:         f.Line,
+			Source:   source,
+			Class:    class,
+			Severity: f.Severity,
+			File:     f.File,
+			Line:     f.Line,
+			// The key the detectors were merged under: the health check
+			// counts each defect once, however many scanners reported it.
+			Identity:     semanticFindingKey(f),
+			Rules:        rules,
+			Sources:      sources,
 			Ignored:      isIgnored,
 			NeedsReview:  isUnreviewed,
 			Unclassified: unclassified[i],
@@ -399,79 +423,83 @@ func computeHealthCheck(state *AgentState) {
 	state.SecurityGrade = res.Grade
 }
 
+// mergeSemanticFindings merges the reports of one defect (same class, same
+// location; see semanticFindingKey) into a single finding that keeps every
+// detector in Origins. Its severity is the class severity when the class
+// defines one, otherwise the highest any detector reported.
 func mergeSemanticFindings(findings []EnrichedFinding) []EnrichedFinding {
 	merged := make([]EnrichedFinding, 0, len(findings))
 	positions := make(map[string]int)
 	for _, finding := range findings {
-		finding.Origins = mergeOrigins(finding.Origins, []FindingOrigin{originOf(finding)})
+		if len(finding.Origins) == 0 {
+			finding.Origins = []FindingOrigin{originOf(finding)}
+		}
+		class, classified := findingClass(finding)
+		if classified {
+			finding.Class = class.Key
+			if class.Severity != "" {
+				finding.Severity = class.Severity
+			}
+		}
 		key := semanticFindingKey(finding)
-		if key == "" {
+		pos, ok := positions[key]
+		if !ok {
+			positions[key] = len(merged)
 			merged = append(merged, finding)
 			continue
 		}
-		if pos, ok := positions[key]; ok {
-			current := merged[pos]
-			origins := mergeOrigins(current.Origins, finding.Origins)
-			if shouldPreferSemanticRepresentative(finding, current) {
-				finding.Origins = origins
-				merged[pos] = finding
-			} else {
-				current.Origins = origins
-				if severitySortRank(finding.Severity) < severitySortRank(current.Severity) {
-					current.Severity = finding.Severity
-				}
-				if current.File == "" && finding.File != "" {
-					current.File, current.Line, current.Snippet = finding.File, finding.Line, finding.Snippet
-				}
-				merged[pos] = current
-			}
-			continue
-		}
-		positions[key] = len(merged)
-		merged = append(merged, finding)
+		merged[pos] = mergeFinding(merged[pos], finding, class, classified)
 	}
 	return merged
 }
 
-func semanticFindingClass(f EnrichedFinding) string {
-	switch strings.ToUpper(strings.TrimSpace(f.ID)) {
-	case "FAST-LAZY-EXC", "B110":
-		return "exception_swallow"
-	case "FAST-AUTH", "NFR-API-003":
-		return "missing_authentication"
-	case "FAST-RATELIMIT", "NFR-API-001":
-		return "missing_rate_limiting"
-	case "FAST-CORS", "NFR-API-002":
-		return "missing_cors_policy"
-	default:
-		return ""
+// mergeFinding folds one more report of a defect into the finding that
+// represents it.
+func mergeFinding(current, candidate EnrichedFinding, class healthcheck.FindingClass, classified bool) EnrichedFinding {
+	origins := mergeOrigins(current.Origins, candidate.Origins)
+	severity := current.Severity
+	if severitySortRank(candidate.Severity) < severitySortRank(severity) {
+		severity = candidate.Severity
 	}
+	if classified && class.Severity != "" {
+		severity = class.Severity
+	}
+	representative, other := current, candidate
+	if shouldPreferSemanticRepresentative(candidate, current) {
+		representative, other = candidate, current
+	}
+	representative.Origins = origins
+	representative.Severity = severity
+	switch {
+	case representative.File == "" && other.File != "":
+		// A located report makes the merged finding actionable.
+		representative.File, representative.Line, representative.Snippet = other.File, other.Line, other.Snippet
+	case representative.Line == 0 && other.Line > 0 && normalizePath(representative.File) == normalizePath(other.File):
+		// A file-scoped defect is easier to act on with a line to look at.
+		representative.Line, representative.Snippet = other.Line, other.Snippet
+	}
+	if representative.Package == "" && other.Package != "" {
+		representative.Package, representative.InstalledVersion = other.Package, other.InstalledVersion
+		representative.FixedVersion, representative.PrimaryURL = other.FixedVersion, other.PrimaryURL
+	}
+	return representative
 }
 
-func semanticFindingKey(f EnrichedFinding) string {
-	class := semanticFindingClass(f)
-	if class == "" {
-		return "exact|" + Fingerprint(f)
-	}
-	if f.File != "" || f.Line != 0 {
-		return class + "|" + normalizePath(f.File) + "|" + fmt.Sprint(f.Line)
-	}
-	return class + "|project"
-}
-
+// originOf is the scanner report a finding was built from, as reported.
 func originOf(f EnrichedFinding) FindingOrigin {
 	source := strings.TrimSpace(f.Source)
 	if source == "" {
 		source = f.Type
 	}
-	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID}
+	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity}
 }
 
 func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
 	seen := make(map[string]FindingOrigin)
 	for _, group := range groups {
 		for _, origin := range group {
-			key := strings.ToLower(origin.Type + "\x00" + origin.Source + "\x00" + origin.RuleID)
+			key := strings.ToLower(origin.Type + "\x00" + origin.Source + "\x00" + origin.RuleID + "\x00" +
+				normalizePath(origin.File) + "\x00" + strconv.Itoa(origin.Line))
 			seen[key] = origin
 		}
 	}
@@ -590,52 +618,6 @@ func severitySortRank(value string) int {
 	default:
 		return 9
 	}
-}
-
-// assignVulnIDs generates CS-XXX-NNN identifiers for each finding.
-func assignVulnIDs(findings []EnrichedFinding) {
-	counters := make(map[string]int)
-	for i := range findings {
-		code := classifyVulnCode(findings[i].Message)
-		counters[code]++
-		findings[i].VulnID = fmt.Sprintf("CS-%s-%03d", code, counters[code])
-	}
-}
-
-// AssignVulnIDsPublic is the exported version of assignVulnIDs for use by the web pipeline.
-func AssignVulnIDsPublic(findings []EnrichedFinding) {
-	assignVulnIDs(findings)
-}
-
-// vulnClassKeys holds VulnClassCodes keys in a fixed order: longest first (the
-// most specific class wins), then alphabetical. Map iteration order is random
-// per run, which made CS-* IDs — and every cache key derived from them —
-// nondeterministic for messages matching more than one class.
-var vulnClassKeys = sortedVulnClassKeys()
-
-func sortedVulnClassKeys() []string {
-	keys := make([]string, 0, len(prompts.VulnClassCodes))
-	for key := range prompts.VulnClassCodes {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if len(keys[i]) != len(keys[j]) {
-			return len(keys[i]) > len(keys[j])
-		}
-		return keys[i] < keys[j]
-	})
-	return keys
-}
-
-// classifyVulnCode maps a finding message to a short vulnerability class code.
-func classifyVulnCode(message string) string {
-	lower := strings.ToLower(message)
-	for _, key := range vulnClassKeys {
-		if strings.Contains(lower, key) {
-			return prompts.VulnClassCodes[key]
-		}
-	}
-	return "MISC"
 }
 
 // ── Threat Model Step ────────────────────────────────────────────────────────
@@ -903,13 +885,15 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 		return nil
 	}
 
-	// Generate lookup table for original findings (now with CS-XXX-NNN IDs)
+	// Generate lookup table for original findings, with their display IDs.
 	var lookupLines []string
 	lookupLines = append(lookupLines, "| Vulnerability ID | Rule ID | Severity | File | Line |")
 	lookupLines = append(lookupLines, "|---|---|---|---|---|")
 	for _, f := range state.EnrichedFindings {
 		file := f.File
 		if file == "" {
+			// The report prompt asks the model to resolve File=N/A to the
+			// affected file; the reports themselves say "project".
 			file = "N/A"
 		}
 		lookupLines = append(lookupLines, fmt.Sprintf("| %s | %s | %s | %s | %d |", f.VulnID, f.ID, f.Severity, file, f.Line))
@@ -1061,6 +1045,26 @@ type actionableFinding struct {
 	// (unclassified)"; disposition stays one of the three canonical values.
 	label             string
 	dispositionSource string
+	// pkg, installedVersion and fixedVersion are set for dependency advisories.
+	pkg              string
+	installedVersion string
+	fixedVersion     string
+	stableID         string
+}
+
+// projectLevelLocation is how reports name the location of a finding that
+// applies to the project as a whole rather than to one file.
+const projectLevelLocation = "project"
+
+// displayLocation renders a finding location for reports.
+func displayLocation(file string, line int) string {
+	if file == "" {
+		return projectLevelLocation
+	}
+	if line > 0 {
+		return fmt.Sprintf("%s:%d", file, line)
+	}
+	return file
 }
 
 // policyTerms renders the gate settings a reader needs to interpret the
@@ -1101,9 +1105,8 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	// The share of Needs Review the model never classified decides what to do
 	// next: review by hand, or re-run triage with more retries / smaller batches.
 	_, _ = fmt.Fprintf(sb, "**Needs Review**: %d", hc.Breakdown.NeedsReviewFindings)
-	if unclassified := hc.Breakdown.UnclassifiedFindings; unclassified > 0 {
-		_, _ = fmt.Fprintf(sb, " (%d unclassified: no model verdict — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`)",
-			unclassified, classifyMaxRetries(), GetBatchSize(state))
+	if notes := unclassifiedNotes(state); len(notes) > 0 {
+		_, _ = fmt.Fprintf(sb, " (%s)", strings.Join(notes, "; "))
 	}
 	sb.WriteString("\n\n")
 
@@ -1170,8 +1173,10 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		_, _ = fmt.Fprintf(sb, " (%d unclassified)", bd.UnclassifiedFindings)
 	}
 	_, _ = fmt.Fprintf(sb, " · **%d** false positives suppressed", bd.IgnoredFindings)
-	if bd.DedupedFindings > 0 {
-		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", bd.DedupedFindings)
+	// Reports of one defect by several detectors were merged into one finding
+	// before scoring; say how many, so the count is not a mystery.
+	if merged := bd.DedupedFindings + mergedDetectorReports(state.EnrichedFindings); merged > 0 {
+		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", merged)
 	}
 	sb.WriteString("\n\n")
 	if line := suppressionReasonsLine(state.Suppressions); line != "" {
@@ -1181,52 +1186,22 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	if state.Suppressions.LoadError != "" {
 		_, _ = fmt.Fprintf(sb, "> **Project decisions not applied:** %s\n\n", state.Suppressions.LoadError)
 	}
+	if line := scopeExclusionsLine(state.IgnoredByConfig, state.SuppressedInline); line != "" {
+		sb.WriteString(line + "\n\n")
+	}
+
+	groups := groupDependencyFindings(actionable)
+	writeDependencySummary(sb, groups)
 
 	// ── Top Critical Issues (max 5, CRITICAL first then HIGH) ─────────
 	if len(actionable) > 0 {
 		sb.WriteString("### ⚠️ Top Critical Issues\n\n")
-
-		type ranked struct {
-			severity string
-			vulnID   string
-			file     string
-			line     int
-			message  string
-		}
-		var top []ranked
-		// First pass: CRITICAL
-		for _, f := range actionable {
-			if strings.ToUpper(f.severity) == "CRITICAL" {
-				top = append(top, ranked{severity: f.severity, vulnID: f.vulnID, file: f.file, line: f.line, message: f.message})
+		for i, issue := range topCriticalIssues(actionable, groups, maxTopCriticalIssues) {
+			_, _ = fmt.Fprintf(sb, "%d. **[%s]** %s", i+1, issue.severity, issue.title)
+			if issue.location != "" {
+				_, _ = fmt.Fprintf(sb, " — `%s`", issue.location)
 			}
-		}
-		// Second pass: HIGH
-		for _, f := range actionable {
-			if strings.ToUpper(f.severity) == "HIGH" {
-				top = append(top, ranked{severity: f.severity, vulnID: f.vulnID, file: f.file, line: f.line, message: f.message})
-			}
-		}
-
-		limit := 5
-		if len(top) < limit {
-			limit = len(top)
-		}
-		for i := 0; i < limit; i++ {
-			file := top[i].file
-			if file == "" {
-				file = "N/A"
-			}
-			// Clean message for display: take first part before ":"
-			displayMsg := top[i].message
-			if idx := strings.Index(displayMsg, ":"); idx > 0 && idx < 60 {
-				displayMsg = displayMsg[:idx]
-			}
-			displayMsg = strings.ReplaceAll(displayMsg, "\\|", "|")
-			if top[i].line > 0 {
-				_, _ = fmt.Fprintf(sb, "%d. **[%s]** %s — `%s:%d`\n", i+1, top[i].severity, displayMsg, file, top[i].line)
-			} else {
-				_, _ = fmt.Fprintf(sb, "%d. **[%s]** %s — `%s`\n", i+1, top[i].severity, displayMsg, file)
-			}
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	} else {
@@ -1306,18 +1281,9 @@ func writeAIRemediationPrompt(sb *strings.Builder, state *AgentState, actionable
 
 	sb.WriteString("## VULNERABILITIES FOUND\n\n")
 	for i, f := range actionable {
-		file := f.file
-		if file == "" {
-			file = "N/A"
-		}
 		title := strings.ReplaceAll(f.message, "\\|", "|")
-		if f.line > 0 {
-			_, _ = fmt.Fprintf(sb, "%d. [%s] %s | %s | %s:%d\n",
-				i+1, strings.ToUpper(f.severity), f.vulnID, title, file, f.line)
-		} else {
-			_, _ = fmt.Fprintf(sb, "%d. [%s] %s | %s | %s\n",
-				i+1, strings.ToUpper(f.severity), f.vulnID, title, file)
-		}
+		_, _ = fmt.Fprintf(sb, "%d. [%s] %s | %s | %s\n",
+			i+1, strings.ToUpper(f.severity), f.vulnID, title, displayLocation(f.file, f.line))
 		_, _ = fmt.Fprintf(sb, "   Status: %s\n", firstNonEmpty(f.label, f.disposition))
 	}
 

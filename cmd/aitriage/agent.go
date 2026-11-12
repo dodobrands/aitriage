@@ -229,7 +229,9 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if agentSARIFOut != "" {
-		data, err := richResult.Report.ToSARIF()
+		// Findings a project decision dismissed are left out, as `aitriage
+		// scan` leaves out audit-log dismissals.
+		data, err := pipeline.SARIF(opts, richResult)
 		if err != nil {
 			return auditIncomplete(fmt.Errorf("build SARIF: %w", err))
 		}

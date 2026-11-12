@@ -96,6 +96,13 @@ type AgentState struct {
 	// sent to the LLM.
 	Suppressions SuppressionSummary
 
+	// IgnoredByConfig counts findings removed by .aitriage.yaml ignore.rules,
+	// keyed by the entry as written; SuppressedInline counts findings silenced
+	// by an aitriage-ignore comment, keyed by "source:rule". Both were removed
+	// before triage and only their counts remain.
+	IgnoredByConfig  map[string]int
+	SuppressedInline map[string]int
+
 	// LLM usage tracking (accumulated across all Chat calls)
 	TotalUsage         llm.Usage
 	StageUsage         map[string]llm.Usage
@@ -112,17 +119,32 @@ type AgentState struct {
 
 // EnrichedFinding is a unified representation of any finding with its source snippet attached.
 type EnrichedFinding struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"` // "core", "external", "nfr", "deploy", "network"
-	Source    string          `json:"source,omitempty"`
-	Severity  string          `json:"severity"`
+	ID       string `json:"id"`
+	Type     string `json:"type"` // "core", "external", "nfr", "deploy", "network"
+	Source   string `json:"source,omitempty"`
+	Severity string `json:"severity"`
+	// File is relative to the project root, with forward slashes. A path
+	// outside the root stays absolute.
 	File      string          `json:"file,omitempty"`
 	Line      int             `json:"line,omitempty"`
 	Message   string          `json:"message"`
 	Snippet   string          `json:"code_snippet,omitempty"`
 	ExtraData string          `json:"extra_data,omitempty"`
 	Origins   []FindingOrigin `json:"origins,omitempty"`
-	VulnID    string          `json:"vuln_id,omitempty"` // CS-XXX-NNN format
+	// VulnID is the display id, CS-<CLASS>-<first hex digits of StableID>.
+	VulnID string `json:"vuln_id,omitempty"`
+	// StableID identifies the finding across runs without depending on its
+	// line number (see assignStableIDs).
+	StableID string `json:"stable_id,omitempty"`
+	// Class is the canonical defect class the finding was merged under
+	// (healthcheck.ClassifyRule); empty when no class covers its rule.
+	Class string `json:"class,omitempty"`
+	// Package, InstalledVersion, FixedVersion and PrimaryURL describe a
+	// dependency advisory.
+	Package          string `json:"package,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	FixedVersion     string `json:"fixed_version,omitempty"`
+	PrimaryURL       string `json:"primary_url,omitempty"`
 }
 
 // FindingOrigin keeps every scanner/rule that corroborated a semantic issue.
@@ -131,6 +153,12 @@ type FindingOrigin struct {
 	Type   string `json:"type"`
 	Source string `json:"source"`
 	RuleID string `json:"rule_id"`
+	// File, Line and Severity are what this scanner reported, which may differ
+	// from the merged finding: a project-level rule has no file, and each
+	// detector rates the defect on its own scale.
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Severity string `json:"severity,omitempty"`
 }
 
 // ── SecureCoder Threat Model Types ───────────────────────────────────────────

@@ -1,9 +1,6 @@
 package pipeline
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/dodobrands/aitriage/internal/agent/graph"
 	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
@@ -43,7 +40,6 @@ func applyProjectDecisions(rich *llm.RichScanResult, projectPath string) graph.S
 		// Fail closed: the decisions are not applied, so the findings stay
 		// open, and the reason is reported instead of silently ignored.
 		summary.LoadError = err.Error()
-		fmt.Fprintf(os.Stderr, "   ⚠️ %s not applied: %v\n", suppression.File, err)
 	case len(store.Entries) > 0:
 		detachScanFindings(rich)
 		tallyStoreDecisions(rich, store, root, &summary)
@@ -87,22 +83,33 @@ func tallyStoreDecisions(rich *llm.RichScanResult, store *suppression.Store, roo
 			if summary.Core == nil {
 				summary.Core = map[string]graph.SuppressionDecision{}
 			}
-			summary.Core[graph.CoreDecisionKey(r.ID, r.File, r.Line)] = graph.SuppressionDecision{Reason: firstReason(entry.Reason), Note: entry.Note}
+			summary.Core[coreDecisionKey(root, r)] = graph.SuppressionDecision{Reason: firstReason(entry.Reason), Note: entry.Note}
 		}
+	}
+	// The reports of other scanners are removed before triage; remembering
+	// them lets the same decision cover another detector's report of the
+	// same defect.
+	removed := func(entry suppression.Entry, ref graph.ReportRef) {
+		record(entry)
+		ref.File = graph.ProjectRelativePath(root, ref.File)
+		summary.Reports = append(summary.Reports, graph.DismissedReport{
+			ReportRef: ref,
+			Decision:  graph.SuppressionDecision{Reason: firstReason(entry.Reason), Note: entry.Note},
+		})
 	}
 	for _, f := range rich.External {
 		if entry, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]); ok {
-			record(entry)
+			removed(entry, graph.ReportRef{Type: "external", Source: f.Source, RuleID: f.RuleID, File: f.File, Line: f.Line, Package: f.Package, InstalledVersion: f.InstalledVersion})
 		}
 	}
 	for _, f := range rich.NFR {
 		if entry, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromNFR([]nfr.NFRFinding{f}))[0]); ok {
-			record(entry)
+			removed(entry, graph.ReportRef{Type: "nfr", Source: "aitriage", RuleID: f.RuleID})
 		}
 	}
 	for _, f := range rich.Deploy {
 		if entry, ok := store.SuppressesInProject(root, baseline.Relativize(root, baseline.FromDeploy([]deployaudit.DeployFinding{f}))[0]); ok {
-			record(entry)
+			removed(entry, graph.ReportRef{Type: "deploy", Source: "aitriage", RuleID: f.Issue, File: f.File, Line: f.Line})
 		}
 	}
 }
@@ -115,7 +122,7 @@ func tallyAuditLogDecisions(rich *llm.RichScanResult, summary *graph.Suppression
 		if r.Status != core.Absent || (r.AuditStatus != core.AuditStatusIgnored && r.AuditStatus != core.AuditStatusTriage) {
 			continue
 		}
-		key := graph.CoreDecisionKey(r.ID, r.File, r.Line)
+		key := coreDecisionKey(rich.ProjectPath, r)
 		if _, decided := summary.Core[key]; decided {
 			continue
 		}
@@ -125,6 +132,60 @@ func tallyAuditLogDecisions(rich *llm.RichScanResult, summary *graph.Suppression
 		summary.Core[key] = graph.SuppressionDecision{Reason: graph.SuppressionReasonAuditLog, Note: string(r.AuditStatus)}
 		addDecision(summary, graph.SuppressionReasonAuditLog)
 	}
+}
+
+// coreDecisionKey keys a built-in finding the way the graph looks it up: with
+// its project-relative path.
+func coreDecisionKey(root string, r core.CheckResult) string {
+	return graph.CoreDecisionKey(r.ID, graph.ProjectRelativePath(root, r.File), r.Line)
+}
+
+// SARIF renders the deterministic findings of a scan as SARIF, the file
+// `aitriage agent --sarif-out` writes. Dismissed findings are left out, as
+// `aitriage scan` leaves them out: a built-in finding dismissed in the audit
+// log or by .aitriage-suppressions.json, and one whose defect a decision on
+// another detector's report covers (the rule triage applies to merged
+// findings). GitHub's SARIF upload does not honour SARIF suppressions, so
+// emitting them would reopen the alerts. Dismissals stay in
+// triage-findings.json and the summary. The caller's scan result is not
+// modified.
+func SARIF(opts Options, rich llm.RichScanResult) ([]byte, error) {
+	decisions := applyProjectDecisions(&rich, opts.ProjectPath)
+	root := rich.ProjectPath
+	report := rich.Report
+	report.Results = cloneSlice(rich.Report.Results)
+
+	covered := map[string]bool{}
+	for _, r := range decisions.Reports {
+		if key, ok := graph.DefectKey(r.ReportRef); ok {
+			covered[key] = true
+		}
+	}
+	for _, r := range report.Results {
+		if r.Status == core.Absent && dismissedResult(r) {
+			if key, ok := graph.DefectKey(coreReportRef(root, r)); ok {
+				covered[key] = true
+			}
+		}
+	}
+	for i, r := range report.Results {
+		if r.Status != core.Absent || dismissedResult(r) {
+			continue
+		}
+		if key, ok := graph.DefectKey(coreReportRef(root, r)); ok && covered[key] {
+			report.Results[i].AuditStatus = core.AuditStatusIgnored
+		}
+	}
+	return report.ToSARIF()
+}
+
+func dismissedResult(r core.CheckResult) bool {
+	return r.AuditStatus == core.AuditStatusIgnored || r.AuditStatus == core.AuditStatusTriage
+}
+
+// coreReportRef describes a built-in finding the way the graph sees it.
+func coreReportRef(root string, r core.CheckResult) graph.ReportRef {
+	return graph.ReportRef{Type: "core", Source: "aitriage", RuleID: r.ID, File: graph.ProjectRelativePath(root, r.File), Line: r.Line}
 }
 
 func addDecision(summary *graph.SuppressionSummary, reason string) {
