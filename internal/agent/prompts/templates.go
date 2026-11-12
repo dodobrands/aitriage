@@ -5,7 +5,12 @@ import "strings"
 // SecureCoderPromptVersion is part of the deterministic verdict-cache namespace.
 // Bump it whenever the prompts or evidence contract change in a way that could
 // alter TP/FP/NR decisions.
-const SecureCoderPromptVersion = "securecoder-v3"
+//
+// v4: the classification prompt spells out what is NOT a code mitigation
+// (comments, docstrings, configuration, the flagged line itself), matching the
+// stricter evidence validator. Verdicts cached under v3 may rest on exactly
+// that kind of evidence, so they must not be reused.
+const SecureCoderPromptVersion = "securecoder-v4"
 
 const (
 	PoCPromptVersion     = "poc-v1"
@@ -177,6 +182,23 @@ finding's absolute in-project path (for example /workspace/project/app.py) or us
 a path relative to the scanned project. Never reference a file outside the
 scanned project. evidence.observed must be literal text from evidence.line.
 If you cannot provide one of those proofs, return Needs Manual Review instead.
+
+A code_mitigation is executable code that neutralises the flagged data flow:
+a validation or authorization check, an escaping or encoding call, a
+parameterised query, a safe API used instead of the dangerous one. The
+following are NOT code mitigations and can never justify a False Positive:
+- comments, docstrings, TODO notes, README or other documentation text, and
+  string literals, even when they say the code is safe, local, or test-only;
+- the flagged line itself: the vulnerable statement is never its own
+  mitigation, so evidence.line must point at the code that neutralises it;
+- configuration flags, environment variable names, scanner or path exclusions
+  (for example in .aitriage.yaml), and suppression lists: they state intent,
+  they do not enforce anything;
+- an allow-list, validator, or sanitiser that is merely defined: cite the line
+  where it is actually applied to this data flow, not its definition.
+code_mitigation is never accepted for configuration or data files (YAML,
+JSON, TOML, INI, .env, Docker Compose, .conf): they contain no code that
+mitigates. For those findings return True Positive or Needs Manual Review.
 
 Return ONLY JSON with this exact shape (no prose, no markdown):
 {"finding_dispositions":[{"finding_index":0,"finding_id":"CS-XXX-001","fingerprint":"exact input fingerprint","disposition":"True Positive","confidence":"high","rationale":"...","evidence":{"basis":"code_mitigation","file":"path/file.py","line":12,"observed":"literal source text"}}]}`

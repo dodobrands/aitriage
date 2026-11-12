@@ -58,6 +58,11 @@ type verdictCacheKeyContext struct {
 	MaxMedium       int      `json:"max_medium"`
 	BlockSources    []string `json:"block_sources,omitempty"`
 	BlockClasses    []string `json:"block_classes,omitempty"`
+	// ConfirmedMinSeverity changes the gate the cached report narrates.
+	ConfirmedMinSeverity string `json:"confirmed_min_severity,omitempty"`
+	// FPCriticalRequiresHighConfidence changes which verdicts are accepted, so
+	// verdicts stored with it off must never be served with it on.
+	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 }
 
 type verdictCacheOption func(*verdictCacheKeyContext)
@@ -94,6 +99,8 @@ func withVerdictCachePolicy(policy healthcheck.Policy) verdictCacheOption {
 		ctx.MaxMedium = policy.MaxMedium
 		ctx.BlockSources = sortedCopy(policy.BlockSources)
 		ctx.BlockClasses = sortedCopy(policy.BlockClasses)
+		ctx.ConfirmedMinSeverity = strings.TrimSpace(policy.ConfirmedMinSeverity)
+		ctx.FPCriticalRequiresHighConfidence = policy.FPCriticalRequiresHighConfidence
 	}
 }
 

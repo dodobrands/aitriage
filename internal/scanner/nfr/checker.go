@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 	"gopkg.in/yaml.v3"
 )
 
@@ -198,19 +199,41 @@ func ruleApplies(projectPath string, rule Rule) (bool, error) {
 	return false, nil
 }
 
+// matchingFiles returns the in-scope files whose name matches one of globs.
+// Scope is the one every other scanner uses (vendored trees, .gitignore,
+// .aitriageignore and ignore.paths): a rate limiter inside an excluded
+// directory is no evidence about the application, and a route there is not one
+// of its endpoints.
 func matchingFiles(projectPath string, globs []string) ([]string, error) {
+	scope := external.NewScopeFilter(projectPath)
 	var matches []string
 	err := filepath.WalkDir(projectPath, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
+		// The scope filter reads a relative path as relative to the root, which
+		// a walked path is not when projectPath itself is relative.
+		rel, relErr := filepath.Rel(projectPath, path)
+		if relErr != nil {
+			rel = path
+		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", ".aitriage", "aitriage-reports", "node_modules", "vendor", "dist", "build", ".next":
-				if path != projectPath {
-					return filepath.SkipDir
-				}
+			if rel == "." {
+				return nil
 			}
+			// Kept even when AITRIAGE_SCAN_VENDORED widens the scope filter:
+			// a dependency's rate limiter must not satisfy an NFR of the
+			// application itself.
+			switch entry.Name() {
+			case ".git", ".aitriage", "aitriage-reports", "node_modules", "vendor", "dist", ".next":
+				return filepath.SkipDir
+			}
+			if !scope.DirInScope(rel) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !scope.InScope(rel) {
 			return nil
 		}
 		for _, glob := range globs {

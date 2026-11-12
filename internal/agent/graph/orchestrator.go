@@ -2,7 +2,6 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +27,15 @@ var ErrNoLLMClient = errors.New("no LLM client configured: the SecureCoder pipel
 //
 //	enrichFindings → buildThreatModel → runPoCVerification →
 //	computeHealthCheck → generateReport → generateSummary → generateAIFixSpec
+//
+// A provider failure never discards the run. The optional stages (PoC, report,
+// fix spec) fall back to deterministic renderings and Run returns nil. When
+// classification itself could not finish, every stage still completes —
+// unclassified findings are marked "triage-failed" and the gate fails with
+// triage_incomplete — and Run returns a *TriageIncompleteError last, so a
+// caller can publish the artifacts and exit with a distinct status. Only an
+// abort (the caller cancelled, or the client suspended the run to wait for a
+// deferred answer) unwinds Run early.
 func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	if llmClient == nil {
 		return ErrNoLLMClient
@@ -44,22 +52,44 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	// SecureCoder Step 1: Threat Model (classifies each finding as TP/FP/NR)
 	fmt.Fprintf(os.Stderr, "🏗️ Building Threat Model (SecureCoder)...\n")
 	reportRunwayProgress(state, 1, "building_threat_model")
+	var incomplete *TriageIncompleteError
 	if err := buildThreatModel(ctx, state, llmClient); err != nil {
-		return fmt.Errorf("threat-model analysis failed: %w", err)
+		if !errors.As(err, &incomplete) {
+			return fmt.Errorf("threat-model analysis failed: %w", err)
+		}
+		state.TriageStatus = TriageStatusFailed
+		state.TriageFailureReason = incomplete.Reason
+		state.TriageFailureStage = incomplete.Stage
+		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
+			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
+	} else {
+		state.TriageStatus = TriageStatusComplete
 	}
 
 	artifactCache := newArtifactBundleCache()
-	artifactKey, artifactKeyMiss := buildArtifactCacheKey(state)
+	artifactKey, artifactKeyMiss := "", ""
 	artifactCacheHit := false
 	if artifactCache.enabled {
-		if artifactKeyMiss != "" {
+		if incomplete != nil {
+			// Nothing about an incomplete triage may be reused or stored.
+			artifactKeyMiss = "triage_incomplete_not_eligible"
+			artifactCache.stats.MissReason = artifactKeyMiss
+			artifactCache.stats.EligibilitySkipped = true
+		} else {
+			artifactKey, artifactKeyMiss = buildArtifactCacheKey(state)
+		}
+		switch {
+		case incomplete != nil:
+			fmt.Fprintf(os.Stderr, "   ℹ️ Artifact cache skipped: AI triage did not complete\n")
+		case artifactKeyMiss != "":
 			artifactCache.stats.MissReason = artifactKeyMiss
 			fmt.Fprintf(os.Stderr, "   ℹ️ Artifact cache miss: %s\n", artifactKeyMiss)
-		} else {
+		default:
 			artifactCache.stats.Key = artifactKey
 			fmt.Fprintf(os.Stderr, "   ℹ️ Artifact cache key: %s (loaded_entries=%d)\n", artifactKey, artifactCache.stats.LoadedEntries)
 			if artifactCache.Restore(state, artifactKey) {
 				artifactCacheHit = true
+				state.PoCStats.Status = pocStatusCached
 				fmt.Fprintf(os.Stderr, "   ✅ Artifact cache exact hit: restored PoC/report/fixspec bundle\n")
 			} else {
 				fmt.Fprintf(os.Stderr, "   ℹ️ Artifact cache miss: %s\n", firstNonEmpty(artifactCache.stats.MissReason, "key_miss"))
@@ -81,11 +111,12 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	fmt.Fprintf(os.Stderr, "🩺 Computing Security Health Check (all sources, FP-aware)...\n")
 	reportRunwayProgress(state, 3, "computing_health_check")
 	computeHealthCheck(state)
-	fmt.Fprintf(os.Stderr, "   ✅ Health Check: %d/100 (%s) — %d active (%d confirmed, %d unreviewed), %d ignored (FP), %d deduped\n",
+	fmt.Fprintf(os.Stderr, "   ✅ Health Check: %d/100 (%s) — %d active (%d confirmed, %d unreviewed, %d unclassified), %d ignored (FP), %d deduped\n",
 		state.HealthCheck.Score, state.HealthCheck.Grade,
 		state.HealthCheck.Breakdown.ActiveFindings,
 		state.HealthCheck.Breakdown.ConfirmedFindings,
 		state.HealthCheck.Breakdown.NeedsReviewFindings,
+		state.HealthCheck.Breakdown.UnclassifiedFindings,
 		state.HealthCheck.Breakdown.IgnoredFindings,
 		state.HealthCheck.Breakdown.DedupedFindings)
 
@@ -122,6 +153,12 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 				artifactCache.stats.EligibilitySkipped = true
 				artifactCache.stats.MissReason = "integrity_failed_not_eligible"
 				fmt.Fprintf(os.Stderr, "   ⚠️ Artifact cache: integrity failure; bundle NOT stored (not eligible for exact reuse).\n")
+			case artifactStageFailed(state):
+				// PoC, report or fix spec fell back to a deterministic
+				// rendering; the next healthy run should produce the real one.
+				artifactCache.stats.EligibilitySkipped = true
+				artifactCache.stats.MissReason = "stage_failure_not_eligible"
+				fmt.Fprintf(os.Stderr, "   ⚠️ Artifact cache: an LLM stage fell back to a deterministic rendering; bundle NOT stored.\n")
 			case uncached > 0:
 				// Strict fallback mode: a run with uncached verdicts (NR-fallback
 				// or sensitive-skip) can never produce an exact artifact hit — the
@@ -157,6 +194,12 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 			formatLLMUsage(u))
 	}
 
+	if incomplete != nil {
+		// Every artifact is in state; the caller decides how to publish an
+		// incomplete triage.
+		reportRunwayProgress(state, 7, "triage_incomplete")
+		return incomplete
+	}
 	reportRunwayProgress(state, 7, "completed")
 	return nil
 }
@@ -282,6 +325,10 @@ func computeHealthCheck(state *AgentState) {
 	// Tracking it separately lets the gate explain itself instead of reporting
 	// "active findings" next to "0 true positives".
 	unreviewed := make(map[int]bool)
+	// Unreviewed findings without any model verdict, and the subset lost to a
+	// provider failure, which the gate must never let pass.
+	unclassified := make(map[int]bool)
+	triageFailed := make(map[int]bool)
 	for _, d := range state.FindingDispositions {
 		if d.FindingIndex < 0 || d.FindingIndex >= len(state.EnrichedFindings) {
 			continue
@@ -293,6 +340,8 @@ func computeHealthCheck(state *AgentState) {
 			// confirmed; neither ignored nor unreviewed
 		default:
 			unreviewed[d.FindingIndex] = true
+			unclassified[d.FindingIndex] = isUnclassifiedSource(d.DispositionSource)
+			triageFailed[d.FindingIndex] = d.DispositionSource == dispositionSourceTriageFailed
 		}
 	}
 	ignoredCore := make(map[string]bool)
@@ -332,13 +381,15 @@ func computeHealthCheck(state *AgentState) {
 		isUnreviewed := unreviewed[i] || len(state.FindingDispositions) == 0
 
 		in.Findings = append(in.Findings, healthcheck.Finding{
-			Source:      source,
-			Class:       class,
-			Severity:    f.Severity,
-			File:        f.File,
-			Line:        f.Line,
-			Ignored:     isIgnored,
-			NeedsReview: isUnreviewed,
+			Source:       source,
+			Class:        class,
+			Severity:     f.Severity,
+			File:         f.File,
+			Line:         f.Line,
+			Ignored:      isIgnored,
+			NeedsReview:  isUnreviewed,
+			Unclassified: unclassified[i],
+			TriageFailed: triageFailed[i],
 		})
 	}
 
@@ -464,14 +515,15 @@ func hcKey(id, file string, line int) string {
 }
 
 // countUncachedVerdicts returns how many unique verdicts a re-run cannot get
-// from the verdict cache: NR-fallback dispositions (never cached — they must
-// be re-triaged) plus verdicts skipped as sensitive. Each of them forces an
-// LLM call on the next run, whose output text changes the artifact cache key.
+// from the verdict cache: NR-fallback and triage-failed dispositions (never
+// cached — they must be re-triaged) plus verdicts skipped as sensitive. Each
+// of them forces an LLM call on the next run, whose output text changes the
+// artifact cache key.
 func countUncachedVerdicts(state *AgentState) int {
 	seen := make(map[string]bool)
 	n := 0
 	for _, d := range state.FindingDispositions {
-		if d.DispositionSource != dispositionSourceNRFallback || seen[d.Fingerprint] {
+		if !isUnclassifiedSource(d.DispositionSource) || seen[d.Fingerprint] {
 			continue
 		}
 		seen[d.Fingerprint] = true
@@ -588,16 +640,26 @@ func classifyVulnCode(message string) string {
 
 // ── Threat Model Step ────────────────────────────────────────────────────────
 
-// GetBatchSize returns the batch size to use, falling back to 150 if not configured.
+// defaultClassificationBatchSize is how many findings one classification
+// request carries when nothing is configured. At 150, weaker models silently
+// dropped part of every batch and each dropped finding became an unclassified
+// Needs Review; 40 keeps a request small enough to be answered completely
+// while still amortising the threat-model context. It matches the config
+// default (config.DefaultLLMBatchSize).
+const defaultClassificationBatchSize = 40
+
+// GetBatchSize returns the batch size to use, falling back to
+// defaultClassificationBatchSize if not configured.
 func GetBatchSize(state *AgentState) int {
 	if state != nil && state.BatchSize > 0 {
 		return state.BatchSize
 	}
-	return 150
+	return defaultClassificationBatchSize
 }
 
 // threatModelMaxRetries bounds how many extra LLM passes are made to classify
-// findings the model omitted in earlier passes before they default to NR.
+// findings the model omitted in earlier passes before they default to NR, and
+// how many repair requests a malformed threat model gets.
 const threatModelMaxRetries = 2
 
 // nrFallbackRationale is recorded for findings the LLM never classified, even
@@ -605,9 +667,9 @@ const threatModelMaxRetries = 2
 // Positive) so they keep penalising the Health Check score.
 const nrFallbackRationale = "LLM did not classify this finding after retries; defaulting to Needs Manual Review for safety."
 
-// errThreatModelParse marks a malformed (unparseable) threat-model response.
-// Transport errors are returned unwrapped so they always fail the pipeline,
-// whereas a malformed retry response is tolerated and handled by the NR fallback.
+// errThreatModelParse marks a malformed (unparseable) model response, for the
+// threat model and for classification alike. Transport errors are never
+// wrapped with it, so the two failure kinds stay distinguishable.
 var errThreatModelParse = errors.New("parse threat-model JSON")
 
 // rawDisposition is the LLM's unvalidated classification for a single finding,
@@ -622,11 +684,32 @@ type rawDisposition struct {
 	Evidence     *DispositionEvidence
 }
 
+// buildThreatModel produces one disposition per finding: deterministic ones
+// for findings that must never reach the LLM (project decisions, network
+// probes), and SecureCoder classifications for the rest. It returns a
+// *TriageIncompleteError, with every disposition still recorded, when the
+// provider failed before the model could classify everything.
 func buildThreatModel(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	if len(state.EnrichedFindings) == 0 {
 		fmt.Fprintf(os.Stderr, "   ℹ️ No findings — skipping threat model\n")
-		state.ThreatModelSource = "skipped_empty"
+		state.ThreatModelSource = threatModelSourceSkippedEmpty
 		return nil
+	}
+
+	preset := deterministicDispositions(state)
+	var (
+		modelFindings []EnrichedFinding
+		modelIndex    []int
+	)
+	for i, finding := range state.EnrichedFindings {
+		if _, decided := preset[i]; decided {
+			continue
+		}
+		modelFindings = append(modelFindings, finding)
+		modelIndex = append(modelIndex, i)
+	}
+	if len(preset) > 0 {
+		fmt.Fprintf(os.Stderr, "   ℹ️ %d finding(s) decided without the LLM (project decisions or network probe)\n", len(preset))
 	}
 
 	repoContextText := ""
@@ -634,90 +717,67 @@ func buildThreatModel(ctx context.Context, state *AgentState, llmClient llm.Clie
 		repoContextText = state.RepoContext.FormatForLLM(5000) // ~5K tokens for threat model
 	}
 
-	tm, dispositions, audit, cacheStats, err := ClassifyFindingsWithAudit(ctx, repoContextText, state.ProjectPath, state.Language, state.EnrichedFindings, trackTriageLLMStages(state, llmClient), &state.TotalUsage, GetBatchSize(state), withVerdictCachePolicy(state.Policy), withVerdictCacheLLMIdentity(state))
-	state.VerdictCacheStats = cacheStats
-	if err != nil {
+	res, err := classifyFindings(ctx, classifyRequest{
+		repoContextText: repoContextText,
+		projectPath:     state.ProjectPath,
+		language:        state.Language,
+		findings:        modelFindings,
+		client:          trackTriageLLMStages(state, llmClient),
+		usage:           &state.TotalUsage,
+		batchSize:       GetBatchSize(state),
+		cacheOptions:    []verdictCacheOption{withVerdictCachePolicy(state.Policy), withVerdictCacheLLMIdentity(state)},
+		policy:          validationPolicy{fpCriticalRequiresHighConfidence: state.Policy.FPCriticalRequiresHighConfidence},
+	})
+	state.VerdictCacheStats = res.CacheStats
+	state.ClassificationAudit = res.Audit
+	var incomplete *TriageIncompleteError
+	if err != nil && !errors.As(err, &incomplete) {
 		return err
 	}
 
-	state.ThreatModel = tm
-	if tm == nil {
-		state.ThreatModelSource = "cache_skipped"
-	} else {
-		state.ThreatModelSource = "llm"
+	state.ThreatModel = res.ThreatModel
+	switch {
+	case len(modelFindings) == 0:
+		state.ThreatModelSource = threatModelSourceSkippedEmpty
+	case res.ThreatModelSource != "":
+		state.ThreatModelSource = res.ThreatModelSource
+	default:
+		// Every finding was resolved from the verdict cache or by gating.
+		state.ThreatModelSource = threatModelSourceCacheSkipped
 	}
+	if res.ThreatModelSource == threatModelSourceFailedParse {
+		recordStageFailure(state, usageStageThreatModel, stageStatusDegraded, res.ThreatModelIssue)
+		fmt.Fprintf(os.Stderr, "   ⚠️ %s\n", res.ThreatModelIssue)
+	}
+
+	dispositions := make([]FindingDisposition, 0, len(state.EnrichedFindings))
+	for i := range state.EnrichedFindings {
+		if d, decided := preset[i]; decided {
+			dispositions = append(dispositions, d)
+		}
+	}
+	for k, d := range res.Dispositions {
+		// The classifier indexes the subset it was given; map back.
+		d.FindingIndex = modelIndex[k]
+		d.FindingID = state.EnrichedFindings[modelIndex[k]].VulnID
+		dispositions = append(dispositions, d)
+	}
+	sort.SliceStable(dispositions, func(a, b int) bool { return dispositions[a].FindingIndex < dispositions[b].FindingIndex })
 	state.FindingDispositions = dispositions
-	state.ClassificationAudit = audit
 
 	// Final invariant: every finding has exactly one valid disposition.
 	if err := validateFindingDispositions(state.FindingDispositions, len(state.EnrichedFindings)); err != nil {
 		return err
 	}
 
-	tp, fp, nr := countDispositions(state.FindingDispositions)
-	fmt.Fprintf(os.Stderr, "   ✅ Threat model: %d True Positives, %d False Positives, %d Needs Review\n", tp, fp, nr)
+	tally := tallyDispositions(state)
+	fmt.Fprintf(os.Stderr, "   ✅ Threat model: %d True Positives, %d False Positives, %d Needs Review (%d unclassified)\n",
+		tally.TruePositives, tally.FalsePositives, tally.NeedsReview, tally.Unclassified)
 
+	if incomplete != nil {
+		return incomplete
+	}
 	return nil
-}
-
-// threatModelLLMCall sends a single batch of findings to the LLM and returns the
-// parsed threat model plus the raw (unvalidated) dispositions. Transport errors
-// are wrapped plainly; malformed JSON is wrapped with errThreatModelParse.
-func threatModelLLMCall(ctx context.Context, repoContextText, projectPath, language string, batch []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) (*ThreatModel, []rawDisposition, error) {
-	findingsJSON, _ := json.MarshalIndent(batch, "", "  ")
-	userPrompt := fmt.Sprintf(prompts.ThreatModelUserPromptTemplate,
-		repoContextText,
-		projectPath,
-		len(batch),
-		string(findingsJSON),
-	)
-
-	messages := []llm.Message{
-		{Role: "system", Content: prompts.ThreatModelSystemPrompt},
-		{Role: "user", Content: userPrompt + prompts.LocalisationContract(language)},
-	}
-
-	response, u, err := llmClient.Chat(ctx, messages)
-	addUsage(usage, u)
-	if err != nil {
-		return nil, nil, fmt.Errorf("threat model LLM call failed: %w", err)
-	}
-
-	// Parse JSON from response (handle markdown code fences)
-	jsonText := extractJSON(response)
-
-	var rawResult struct {
-		ComponentOverview   string       `json:"component_overview"`
-		EntryPoints         []EntryPoint `json:"entry_points"`
-		TrustBoundaries     TrustBounds  `json:"trust_boundaries"`
-		SensitiveDataPaths  []DataPath   `json:"sensitive_data_paths"`
-		PrivilegedActions   []PrivAction `json:"privileged_actions"`
-		PriorityAreas       []string     `json:"priority_areas"`
-		FindingDispositions []struct {
-			FindingIndex int    `json:"finding_index"`
-			Disposition  string `json:"disposition"`
-			Rationale    string `json:"rationale"`
-		} `json:"finding_dispositions"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonText), &rawResult); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errThreatModelParse, err)
-	}
-
-	tm := &ThreatModel{
-		ComponentOverview:  rawResult.ComponentOverview,
-		EntryPoints:        rawResult.EntryPoints,
-		TrustBoundaries:    rawResult.TrustBoundaries,
-		SensitiveDataPaths: rawResult.SensitiveDataPaths,
-		PrivilegedActions:  rawResult.PrivilegedActions,
-		PriorityAreas:      rawResult.PriorityAreas,
-	}
-
-	disps := make([]rawDisposition, 0, len(rawResult.FindingDispositions))
-	for _, d := range rawResult.FindingDispositions {
-		disps = append(disps, rawDisposition{FindingIndex: d.FindingIndex, Disposition: d.Disposition, Rationale: d.Rationale})
-	}
-	return tm, disps, nil
 }
 
 func isSupportedDisposition(d string) bool {
@@ -727,20 +787,6 @@ func isSupportedDisposition(d string) bool {
 	default:
 		return false
 	}
-}
-
-func countDispositions(dispositions []FindingDisposition) (tp, fp, nr int) {
-	for _, d := range dispositions {
-		switch d.Disposition {
-		case "True Positive":
-			tp++
-		case "False Positive":
-			fp++
-		default:
-			nr++
-		}
-	}
-	return tp, fp, nr
 }
 
 func validateFindingDispositions(dispositions []FindingDisposition, findingCount int) error {
@@ -800,18 +846,39 @@ func runPoCVerification(ctx context.Context, state *AgentState, llmClient llm.Cl
 
 	if len(tpFindings) == 0 {
 		fmt.Fprintf(os.Stderr, "   ℹ️ No True Positives — skipping PoC verification\n")
+		state.PoCStats.Status = pocStatusSkipped
+		state.PoCStats.Reason = "no true positives"
+		return nil
+	}
+	if reason := providerFailure(state); reason != "" {
+		state.PoCStats.Status = pocStatusSkipped
+		state.PoCStats.Reason = reason
+		recordStageFailure(state, usageStagePoC, stageStatusSkipped, reason)
+		fmt.Fprintf(os.Stderr, "   ⚠️ PoC verification skipped: %s\n", reason)
 		return nil
 	}
 
 	// Phase 5b: verify ALL true positives (deduped, batched, bounded concurrency,
 	// budget-capped) instead of silently dropping everything past the 75th.
+	//
+	// PoC is advisory: its results feed the report narrative only. A provider
+	// failure here is recorded and the run goes on; nothing below reads PoC
+	// results back into dispositions or the gate.
 	pocResults, stats, err := verifyPoCs(ctx, state.Language, tpFindings, trackLLMStage(state, usageStagePoC, llmClient), &state.TotalUsage)
+	stats.Status = pocStatusCompleted
 	state.PoCStats = stats
-	if err != nil {
-		return fmt.Errorf("PoC verification LLM call failed: %w", err)
-	}
-
 	state.PoCResults = pocResults
+	if err != nil {
+		if abortsRun(ctx, err) {
+			return fmt.Errorf("PoC verification LLM call failed: %w", err)
+		}
+		reason := failureReason(err)
+		state.PoCStats.Status = pocStatusFailed
+		state.PoCStats.Reason = reason
+		recordStageFailure(state, usageStagePoC, stageStatusFailed, reason)
+		fmt.Fprintf(os.Stderr, "   ⚠️ PoC verification failed (%s); continuing without the missing PoC traces — dispositions and the gate are unaffected.\n", reason)
+		return nil
+	}
 
 	verified := 0
 	incomplete := 0
@@ -828,6 +895,14 @@ func runPoCVerification(ctx context.Context, state *AgentState, llmClient llm.Cl
 }
 
 func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client) error {
+	if reason := providerFailure(state); reason != "" {
+		// The provider already failed in this run: render the report from the
+		// triage results instead of spending more retries on the same outage.
+		recordStageFailure(state, usageStageReport, stageStatusSkipped, reason)
+		state.ReportMarkdown = buildDeterministicReport(state, stageFallbackNotice(state, "report"))
+		return nil
+	}
+
 	// Generate lookup table for original findings (now with CS-XXX-NNN IDs)
 	var lookupLines []string
 	lookupLines = append(lookupLines, "| Vulnerability ID | Rule ID | Severity | File | Line |")
@@ -863,30 +938,17 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 	// Build disposition summary block
 	dispositionBlock := ""
 	if len(state.FindingDispositions) > 0 {
-		tp, fp, nr := 0, 0, 0
-		for _, d := range state.FindingDispositions {
-			switch d.Disposition {
-			case "True Positive":
-				tp++
-			case "False Positive":
-				fp++
-			default:
-				nr++
-			}
-		}
-		dispositionBlock = fmt.Sprintf("\n## Finding Dispositions (Threat Model)\n- True Positives: %d\n- False Positives: %d\n- Needs Manual Review: %d\n", tp, fp, nr)
+		tally := tallyDispositions(state)
+		dispositionBlock = fmt.Sprintf("\n## Finding Dispositions (Threat Model)\n- True Positives: %d\n- False Positives: %d (%d dismissed by project decisions)\n- Needs Manual Review: %d (%d unclassified: no model verdict)\n- Network probe results (host environment, not scored): %d\n",
+			tally.TruePositives, tally.FalsePositives, tally.Suppressed, tally.NeedsReview, tally.Unclassified, tally.Network)
 
 		// Audit trail: how each disposition was produced (scale transparency).
-		srcCounts := map[string]int{}
-		for _, d := range state.FindingDispositions {
-			if d.DispositionSource != "" {
-				srcCounts[d.DispositionSource]++
-			}
-		}
-		if len(srcCounts) > 0 {
-			dispositionBlock += fmt.Sprintf("- Disposition sources: %d LLM, %d cached, %d deterministic, %d NR-fallback\n",
+		if srcCounts := tally.BySource; len(srcCounts) > 0 {
+			dispositionBlock += fmt.Sprintf("- Disposition sources: %d LLM, %d cached, %d deterministic, %d NR-fallback, %d triage-failed, %d suppressed, %d network-probe\n",
 				srcCounts[dispositionSourceLLM], srcCounts[dispositionSourceCache],
-				srcCounts[dispositionSourceDeterministic], srcCounts[dispositionSourceNRFallback])
+				srcCounts[dispositionSourceDeterministic], srcCounts[dispositionSourceNRFallback],
+				srcCounts[dispositionSourceTriageFailed], srcCounts[dispositionSourceSuppressed],
+				srcCounts[dispositionSourceNetworkProbe])
 		}
 
 		// Include False Positive rationales
@@ -918,10 +980,11 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 	}
 
 	hc := state.HealthCheck
-	healthBlock := fmt.Sprintf("- **Health Check**: %d/100 (%s) — the authoritative security posture score\n- **Security Gate Verdict**: %s under `%s` policy (`fail_on=%s`)\n- **Health Check Breakdown**: %d active findings, %d ignored (False Positives), %d deduplicated; penalty %d, bonus %d\n",
+	healthBlock := fmt.Sprintf("- **Health Check**: %d/100 (%s) — the authoritative security posture score\n- **Security Gate Verdict**: %s under `%s` policy (%s)\n- **Health Check Breakdown**: %d active findings (%d confirmed, %d needs review, %d of them unclassified), %d ignored (False Positives), %d deduplicated; penalty %d, bonus %d\n",
 		hc.Score, hc.Grade,
-		strings.ToUpper(hc.Verdict.Status), hc.Policy.Profile, hc.Policy.FailOn,
-		hc.Breakdown.ActiveFindings, hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings,
+		strings.ToUpper(hc.Verdict.Status), hc.Policy.Profile, policyTerms(hc.Policy),
+		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings, hc.Breakdown.UnclassifiedFindings,
+		hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings,
 		hc.Breakdown.Penalty, hc.Breakdown.Bonus)
 	if len(hc.Verdict.BlockingReasons) > 0 {
 		var reasonLines []string
@@ -945,7 +1008,14 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 	response, usage, err := trackLLMStage(state, usageStageReport, llmClient).Chat(ctx, messages)
 	addUsage(&state.TotalUsage, usage)
 	if err != nil {
-		return fmt.Errorf("failed to generate report: %w", err)
+		if abortsRun(ctx, err) {
+			return fmt.Errorf("failed to generate report: %w", err)
+		}
+		reason := failureReason(err)
+		recordStageFailure(state, usageStageReport, stageStatusFailed, reason)
+		fmt.Fprintf(os.Stderr, "   ⚠️ Report LLM call failed (%s); rendering the report deterministically.\n", reason)
+		state.ReportMarkdown = buildDeterministicReport(state, stageFallbackNotice(state, "report"))
+		return nil
 	}
 
 	// The LLM output is advisory narrative. Append the authoritative finding
@@ -987,19 +1057,55 @@ type actionableFinding struct {
 	line        int
 	message     string
 	disposition string
+	// label is the status shown to readers, e.g. "Needs Manual Review
+	// (unclassified)"; disposition stays one of the three canonical values.
+	label             string
+	dispositionSource string
 }
 
-func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []actionableFinding, tp, fp, nr int) {
+// policyTerms renders the gate settings a reader needs to interpret the
+// verdict: fail_on, plus the confirmed severity floor when it applies.
+func policyTerms(policy healthcheck.Policy) string {
+	terms := fmt.Sprintf("`fail_on=%s`", policy.FailOn)
+	if policy.FailOn == healthcheck.FailOnConfirmed {
+		terms += fmt.Sprintf(", `confirmed_min_severity=%s`", healthcheck.NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity))
+	}
+	if policy.FPCriticalRequiresHighConfidence {
+		terms += ", `fp_critical_requires_high_confidence`"
+	}
+	return terms
+}
+
+func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []actionableFinding) {
 	hc := state.HealthCheck
 
 	sb.WriteString("## 🛡 Security Assessment\n\n")
+	if state.TriageFailed() {
+		sb.WriteString(triageIncompleteBanner(state))
+	} else if reason := providerFailure(state); reason != "" {
+		_, _ = fmt.Fprintf(sb, "> **Degraded run:** %s. Dispositions and the gate are complete; PoC traces, report and fix spec narrative may be missing (see `stage_failures` in `triage-findings.json`).\n\n", reason)
+	}
+	for _, failure := range state.StageFailures {
+		if failure.Status == stageStatusDegraded {
+			_, _ = fmt.Fprintf(sb, "> **Note:** %s.\n\n", failure.Reason)
+		}
+	}
 
 	verdict := "✅ PASSED"
 	if !hc.Verdict.Passed {
 		verdict = "❌ FAILED"
 	}
-	_, _ = fmt.Fprintf(sb, "**Score**: %d/100 (%s) | **Gate**: %s | **Policy**: `%s` (`fail_on=%s`)\n\n",
-		hc.Score, hc.Grade, verdict, hc.Policy.Profile, hc.Policy.FailOn)
+	_, _ = fmt.Fprintf(sb, "**Score**: %d/100 (%s) | **Gate**: %s | **Policy**: `%s` (%s)\n\n",
+		hc.Score, hc.Grade, verdict, hc.Policy.Profile, policyTerms(hc.Policy))
+
+	// The share of Needs Review the model never classified decides what to do
+	// next: review by hand, or re-run triage with more retries / smaller batches.
+	_, _ = fmt.Fprintf(sb, "**Needs Review**: %d", hc.Breakdown.NeedsReviewFindings)
+	if unclassified := hc.Breakdown.UnclassifiedFindings; unclassified > 0 {
+		_, _ = fmt.Fprintf(sb, " (%d unclassified: no model verdict — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`)",
+			unclassified, classifyMaxRetries(), GetBatchSize(state))
+	}
+	sb.WriteString("\n\n")
 
 	coverage := strings.ToUpper(strings.TrimSpace(state.ScannerCoverage))
 	if coverage == "" {
@@ -1054,8 +1160,27 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		sevByDisp["Needs Manual Review"]["CRITICAL"], sevByDisp["Needs Manual Review"]["HIGH"],
 		sevByDisp["Needs Manual Review"]["MEDIUM"], sevByDisp["Needs Manual Review"]["LOW"])
 
-	_, _ = fmt.Fprintf(sb, "> **%d** findings analyzed · **%d** true positives · **%d** needs review · **%d** false positives suppressed\n\n",
-		len(state.EnrichedFindings), tp, nr, fp)
+	// One source of numbers: the same breakdown the gate used, so this line can
+	// never disagree with a blocking reason. Network probe results are not
+	// repository findings and are counted separately below.
+	bd := hc.Breakdown
+	_, _ = fmt.Fprintf(sb, "> **%d** findings analyzed · **%d** true positives · **%d** needs review",
+		bd.ActiveFindings+bd.IgnoredFindings+bd.DedupedFindings, bd.ConfirmedFindings, bd.NeedsReviewFindings)
+	if bd.UnclassifiedFindings > 0 {
+		_, _ = fmt.Fprintf(sb, " (%d unclassified)", bd.UnclassifiedFindings)
+	}
+	_, _ = fmt.Fprintf(sb, " · **%d** false positives suppressed", bd.IgnoredFindings)
+	if bd.DedupedFindings > 0 {
+		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", bd.DedupedFindings)
+	}
+	sb.WriteString("\n\n")
+	if line := suppressionReasonsLine(state.Suppressions); line != "" {
+		_, _ = fmt.Fprintf(sb, "_Project decisions (`aitriage ignore`, audit log): %d finding(s) dismissed — %s. They are not sent to the LLM and not scored._\n\n",
+			state.Suppressions.Total, line)
+	}
+	if state.Suppressions.LoadError != "" {
+		_, _ = fmt.Fprintf(sb, "> **Project decisions not applied:** %s\n\n", state.Suppressions.LoadError)
+	}
 
 	// ── Top Critical Issues (max 5, CRITICAL first then HIGH) ─────────
 	if len(actionable) > 0 {
@@ -1119,6 +1244,39 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		}
 		sb.WriteString("\n")
 	}
+
+	writeNetworkProbeSummary(sb, state)
+}
+
+// maxNetworkProbeRows keeps the environment section from crowding out the
+// repository findings in a CI step summary.
+const maxNetworkProbeRows = 10
+
+// writeNetworkProbeSummary lists port-probe results separately from the
+// repository findings: they describe the host AITriage ran on.
+func writeNetworkProbeSummary(sb *strings.Builder, state *AgentState) {
+	var probes []EnrichedFinding
+	for _, f := range state.EnrichedFindings {
+		if isEnvironmentFinding(f) {
+			probes = append(probes, f)
+		}
+	}
+	if len(probes) == 0 {
+		return
+	}
+	sb.WriteString("### Network Probe (host environment)\n\n")
+	sb.WriteString("_These results describe the machine AITriage ran on, not the repository: they are not sent to the LLM and do not affect the score or the gate._\n\n")
+	sb.WriteString("| ID | Severity | Finding |\n")
+	sb.WriteString("|---|---|---|\n")
+	for i, f := range probes {
+		if i == maxNetworkProbeRows {
+			_, _ = fmt.Fprintf(sb, "\n_…and %d more (see `triage-findings.json`)._\n", len(probes)-maxNetworkProbeRows)
+			break
+		}
+		message := strings.ReplaceAll(strings.ReplaceAll(f.Message, "|", "\\|"), "\n", " ")
+		_, _ = fmt.Fprintf(sb, "| %s | %s | %s |\n", f.ID, f.Severity, message)
+	}
+	sb.WriteString("\n")
 }
 
 // ── Block 2: AI Agent Structured Data ───────────────────────────────────────
@@ -1160,7 +1318,7 @@ func writeAIRemediationPrompt(sb *strings.Builder, state *AgentState, actionable
 			_, _ = fmt.Fprintf(sb, "%d. [%s] %s | %s | %s\n",
 				i+1, strings.ToUpper(f.severity), f.vulnID, title, file)
 		}
-		_, _ = fmt.Fprintf(sb, "   Status: %s\n", f.disposition)
+		_, _ = fmt.Fprintf(sb, "   Status: %s\n", firstNonEmpty(f.label, f.disposition))
 	}
 
 	sb.WriteString("\n## OPERATING CONTRACT\n\n")
@@ -1192,6 +1350,12 @@ func writeAIRemediationPrompt(sb *strings.Builder, state *AgentState, actionable
 }
 
 func generateAIFixSpec(ctx context.Context, state *AgentState, llmClient llm.Client) error {
+	if reason := providerFailure(state); reason != "" {
+		recordStageFailure(state, usageStageFixSpec, stageStatusSkipped, reason)
+		state.AIFixSpec = buildDeterministicFixSpec(state, stageFallbackNotice(state, "fix specification"))
+		return nil
+	}
+
 	// Extract repository name from project path (last path component)
 	repoName := filepath.Base(state.ProjectPath)
 	if repoName == "." || repoName == "/" {
@@ -1223,7 +1387,14 @@ func generateAIFixSpec(ctx context.Context, state *AgentState, llmClient llm.Cli
 	response, usage, err := trackLLMStage(state, usageStageFixSpec, llmClient).Chat(ctx, messages)
 	addUsage(&state.TotalUsage, usage)
 	if err != nil {
-		return fmt.Errorf("failed to generate fix spec: %w", err)
+		if abortsRun(ctx, err) {
+			return fmt.Errorf("failed to generate fix spec: %w", err)
+		}
+		reason := failureReason(err)
+		recordStageFailure(state, usageStageFixSpec, stageStatusFailed, reason)
+		fmt.Fprintf(os.Stderr, "   ⚠️ Fix spec LLM call failed (%s); rendering the fix spec deterministically.\n", reason)
+		state.AIFixSpec = buildDeterministicFixSpec(state, stageFallbackNotice(state, "fix specification"))
+		return nil
 	}
 
 	// Append the authoritative active-findings brief so the fix spec always

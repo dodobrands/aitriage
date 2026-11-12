@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -183,6 +184,21 @@ func makeFindings(n int) []EnrichedFinding {
 	return fs
 }
 
+// countDispositions counts a raw disposition list by its three values.
+func countDispositions(dispositions []FindingDisposition) (tp, fp, nr int) {
+	for _, d := range dispositions {
+		switch d.Disposition {
+		case "True Positive":
+			tp++
+		case "False Positive":
+			fp++
+		default:
+			nr++
+		}
+	}
+	return tp, fp, nr
+}
+
 func pinConcurrency(t *testing.T) {
 	t.Helper()
 	t.Setenv("AITRIAGE_CONCURRENCY", "1")
@@ -278,8 +294,12 @@ func TestClassifyFindingsRejectsUnsupportedDisposition(t *testing.T) {
 	}
 }
 
-// Req: a malformed classification response is tolerated (NR fallback), not fatal.
-func TestClassifyFindingsToleratesMalformedClassification(t *testing.T) {
+// Req: a provider that never returns parseable classification output is a
+// provider failure, not a model judgement. Turning those findings into
+// ordinary NR fallbacks would let a broken provider pass a fail_on=confirmed
+// gate, so they are triage-failed and the triage is reported incomplete. (It
+// used to be tolerated silently as NR.)
+func TestClassifyFindingsMalformedClassificationEverywhereIsTriageFailure(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(2)
 	mock := &fakeLLM{
@@ -291,43 +311,104 @@ func TestClassifyFindingsToleratesMalformedClassification(t *testing.T) {
 	var usage llm.Usage
 
 	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
-	if err != nil {
-		t.Fatalf("malformed classification should be tolerated, got error: %v", err)
+	var incomplete *TriageIncompleteError
+	if !errors.As(err, &incomplete) || incomplete.Stage != usageStageClassification {
+		t.Fatalf("err = %v, want a classification-stage TriageIncompleteError", err)
+	}
+	if incomplete.Unclassified != 2 {
+		t.Fatalf("unclassified = %d, want 2", incomplete.Unclassified)
 	}
 	for i, d := range disps {
-		if d.Disposition != "Needs Manual Review" {
-			t.Fatalf("disps[%d] should be NR, got %q", i, d.Disposition)
+		if d.Disposition != "Needs Manual Review" || d.DispositionSource != dispositionSourceTriageFailed {
+			t.Fatalf("disps[%d] = %+v, want triage-failed Needs Manual Review", i, d)
 		}
 	}
 }
 
-// Req: a malformed THREAT MODEL response is fatal (don't mask a broken provider).
-func TestClassifyFindingsThreatModelParseErrorFails(t *testing.T) {
+// Req: one unparseable reply among parseable ones is an ordinary omission: the
+// halves are retried and the triage completes.
+func TestClassifyFindingsSingleMalformedReplyIsRetriedInHalves(t *testing.T) {
+	pinConcurrency(t)
+	findings := makeFindings(4)
+	var sizes []int
+	mock := &fakeLLM{
+		t: t,
+		classifyHandler: func(call int, batch []EnrichedFinding) (string, error) {
+			sizes = append(sizes, len(batch))
+			if call == 0 {
+				return `{"finding_dispositions":[{"finding_index":0,`, nil // truncated reply
+			}
+			return classifyAllByCount(len(batch), "True Positive"), nil
+		},
+	}
+	var usage llm.Usage
+
+	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
+	if err != nil {
+		t.Fatalf("one malformed reply must not fail the triage: %v", err)
+	}
+	if want := []int{4, 2, 2}; fmt.Sprint(sizes) != fmt.Sprint(want) {
+		t.Fatalf("request sizes = %v, want %v (full batch, then halves)", sizes, want)
+	}
+	for i, d := range disps {
+		if d.Disposition != "True Positive" || d.DispositionSource != dispositionSourceLLM {
+			t.Fatalf("disps[%d] = %+v, want LLM True Positive", i, d)
+		}
+	}
+}
+
+// Req: a malformed THREAT MODEL is repaired or skipped, never fatal: the
+// threat model is classification context, not a verdict. (It used to abort
+// the whole run.)
+func TestClassifyFindingsThreatModelParseErrorContinuesWithoutThreatModel(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(2)
 	mock := &fakeLLM{t: t, tmBody: "garbage, not json"}
 	var usage llm.Usage
 
-	_, _, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
-	if err == nil {
-		t.Fatal("expected error on malformed threat-model response")
+	res, err := classifyFindings(context.Background(), classifyRequest{projectPath: "p", findings: findings, client: mock, usage: &usage, batchSize: 150})
+	if err != nil {
+		t.Fatalf("malformed threat model must not fail classification: %v", err)
+	}
+	if res.ThreatModel != nil || res.ThreatModelSource != threatModelSourceFailedParse {
+		t.Fatalf("threat model = %+v source = %q, want nil/failed_parse", res.ThreatModel, res.ThreatModelSource)
+	}
+	if mock.tmCalls != threatModelMaxRetries+1 {
+		t.Fatalf("threat model calls = %d, want %d (first attempt + repair retries)", mock.tmCalls, threatModelMaxRetries+1)
+	}
+	for i, d := range res.Dispositions {
+		if d.DispositionSource != dispositionSourceLLM {
+			t.Fatalf("disps[%d] source = %q, want llm: classification must still run", i, d.DispositionSource)
+		}
 	}
 }
 
-// Req: transport failure building the threat model must fail the pipeline.
+// Req: a transport failure building the threat model ends the triage as
+// incomplete — but the dispositions are still complete, so the run can publish
+// them instead of losing everything.
 func TestClassifyFindingsThreatModelTransportErrorFails(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(2)
 	mock := &fakeLLM{t: t, tmErr: fmt.Errorf("network down")}
 	var usage llm.Usage
 
-	_, _, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
+	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
 	if err == nil {
 		t.Fatal("expected error on threat-model transport failure")
 	}
+	if !errors.Is(err, ErrTriageIncomplete) {
+		t.Fatalf("err = %v, want ErrTriageIncomplete", err)
+	}
+	if mock.classifyCalls != 0 {
+		t.Fatalf("classification calls = %d, want 0 after the provider failed", mock.classifyCalls)
+	}
+	if len(disps) != 2 || disps[0].DispositionSource != dispositionSourceTriageFailed || disps[1].DispositionSource != dispositionSourceTriageFailed {
+		t.Fatalf("dispositions = %+v, want two triage-failed entries", disps)
+	}
 }
 
-// Req: transport failure during classification must fail the pipeline (no masking).
+// Req: transport failure during classification is never masked: the triage
+// is reported incomplete and unclassified findings are marked triage-failed.
 func TestClassifyFindingsClassificationTransportErrorFails(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(2)
@@ -339,9 +420,20 @@ func TestClassifyFindingsClassificationTransportErrorFails(t *testing.T) {
 	}
 	var usage llm.Usage
 
-	_, _, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
+	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
 	if err == nil {
 		t.Fatal("expected error on classification transport failure")
+	}
+	if !errors.Is(err, ErrTriageIncomplete) {
+		t.Fatalf("err = %v, want ErrTriageIncomplete", err)
+	}
+	if mock.classifyCalls != 1 {
+		t.Fatalf("classification calls = %d, want 1: a provider failure must not be retried as an omission", mock.classifyCalls)
+	}
+	for i, d := range disps {
+		if d.Disposition != "Needs Manual Review" || d.DispositionSource != dispositionSourceTriageFailed {
+			t.Fatalf("disps[%d] = %+v, want triage-failed Needs Manual Review", i, d)
+		}
 	}
 }
 

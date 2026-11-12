@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,12 +24,21 @@ type DeployFinding struct {
 // AuditDeployFiles checks deployment files for security issues.
 func AuditDeployFiles(projectPath string) ([]DeployFinding, error) {
 	var findings []DeployFinding
+	// The same scope decision as every other scanner: .gitignore,
+	// .aitriageignore and vendored or generated trees.
+	scope := external.NewScopeFilter(projectPath)
 
 	err := filepath.WalkDir(projectPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
 				return filepath.SkipDir
 			}
+			if err == nil && d.IsDir() && !inScope(scope, projectPath, path) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !inScope(scope, projectPath, path) {
 			return nil
 		}
 
@@ -53,8 +64,10 @@ func AuditDeployFiles(projectPath string) ([]DeployFinding, error) {
 			}
 		}
 
-		// Nginx
-		if lowerName == "nginx.conf" || strings.HasSuffix(lowerName, ".conf") {
+		// Nginx. A .conf extension says nothing about the program that reads
+		// the file (Apache, supervisord, redis and PostgreSQL use it too), so
+		// auditNginx decides by content.
+		if strings.HasSuffix(lowerName, ".conf") {
 			if f, err := auditNginx(path); err == nil {
 				findings = append(findings, f...)
 			}
@@ -75,6 +88,18 @@ func AuditDeployFiles(projectPath string) ([]DeployFinding, error) {
 	}
 
 	return findings, nil
+}
+
+// inScope applies the project scope filter to a walked path. The filter gets
+// the root-relative path: where the checkout itself lives (a parent directory
+// called build or dist, as on some CI runners) must not decide what inside it
+// is in scope.
+func inScope(scope *external.ScopeFilter, root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return true
+	}
+	return scope.InScope(rel)
 }
 
 func auditDockerfile(path string) ([]DeployFinding, error) {
@@ -193,15 +218,51 @@ func auditCompose(path string) ([]DeployFinding, error) {
 	return findings, nil
 }
 
+var (
+	// nginxMarker matches blocks and directives that only nginx uses. Anchoring
+	// at the start of a line keeps comments ("# location of the log") out.
+	nginxMarker = regexp.MustCompile(`(?m)^\s*(?:(?:http|server)\s*\{|location\s+\S|upstream\s+\S+\s*\{|server_tokens\s)`)
+	// nginxHTTPBlock is the http block that only a main configuration has;
+	// conf.d snippets hold server blocks that the main file includes.
+	nginxHTTPBlock = regexp.MustCompile(`(?m)^\s*http\s*\{`)
+	// apacheMarker matches Apache httpd configuration. Apache directives are
+	// case-insensitive, and its ServerTokens has no underscore, unlike nginx's
+	// server_tokens.
+	apacheMarker = regexp.MustCompile(`(?mi)^\s*(?:<VirtualHost|<Directory|ServerTokens\s)`)
+)
+
+// classifyNginx reports whether a *.conf file is nginx configuration and, if
+// so, whether it is a main configuration (named nginx.conf or holding the http
+// block) rather than a snippet.
+func classifyNginx(path, content string) (isNginx, isMain bool) {
+	if apacheMarker.MatchString(content) {
+		return false, false
+	}
+	isMain = strings.EqualFold(filepath.Base(path), "nginx.conf") || nginxHTTPBlock.MatchString(content)
+	return isMain || nginxMarker.MatchString(content), isMain
+}
+
+// auditNginx checks an nginx configuration. Files that are not nginx
+// configuration return no findings: every *.conf used to be audited as nginx,
+// so an Apache or supervisord config was reported as missing nginx directives.
+//
+// Directives that are present but wrong (user root, server_tokens on) are
+// reported in any nginx file. Directives that are absent are reported only
+// for the main configuration: a conf.d snippet is not expected to repeat what
+// the http block already sets.
 func auditNginx(path string) ([]DeployFinding, error) {
-	var findings []DeployFinding
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = file.Close() }()
+	content := string(data)
+	isNginx, isMain := classifyNginx(path, content)
+	if !isNginx {
+		return nil, nil
+	}
 
-	scanner := bufio.NewScanner(file)
+	var findings []DeployFinding
+	scanner := bufio.NewScanner(strings.NewReader(content))
 	lineNum := 0
 	hasServerTokensOff := false
 	hasXFrameOptions := false
@@ -239,6 +300,9 @@ func auditNginx(path string) ([]DeployFinding, error) {
 		}
 	}
 
+	if !isMain {
+		return findings, nil
+	}
 	if !hasServerTokensOff {
 		findings = append(findings, DeployFinding{
 			File: path, Line: 1,

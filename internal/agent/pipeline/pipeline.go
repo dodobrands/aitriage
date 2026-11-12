@@ -28,6 +28,10 @@ type ScanOptions struct {
 	ForceStack   string
 	RunExternal  bool
 	FullPortScan bool
+	// ProbeCompose opts in to probing the hosts declared in docker-compose
+	// files. It inspects the network around the scanner, not the code, so it
+	// never runs unless asked for.
+	ProbeCompose bool `json:",omitempty"`
 }
 
 // LLMIdentity carries the resolved provider/model identity (never credentials).
@@ -94,22 +98,34 @@ type ScanSummary struct {
 // result. It is exposed so callers (CLI, MCP) can inspect raw findings and
 // build state without duplicating orchestrator wiring.
 func Scan(ctx context.Context, opts Options) llm.RichScanResult {
-	return orchestrator.RunAllScanners(ctx, orchestrator.Options{
+	return orchestrator.RunAllScanners(ctx, scannerOptions(opts))
+}
+
+// scannerOptions maps the pipeline options onto the scanner orchestrator.
+func scannerOptions(opts Options) orchestrator.Options {
+	return orchestrator.Options{
 		ProjectPath:  opts.ProjectPath,
 		ProbeHost:    opts.Scan.ProbeHost,
 		ForceStack:   opts.Scan.ForceStack,
 		RunExternal:  opts.Scan.RunExternal,
 		FullPortScan: opts.Scan.FullPortScan,
-	})
+		ProbeCompose: opts.Scan.ProbeCompose,
+	}
 }
 
 // BuildState assembles the graph.AgentState from a rich scan result. It applies
-// the optional single-finding target filter and never diverges from the CLI's
-// historical state construction, so both callers hit graph.Run identically.
+// the optional single-finding target filter and the project decisions, and
+// never diverges between callers, so the CLI and the host-agent workflow hit
+// graph.Run identically.
+//
+// Decisions are applied here rather than in Scan because the host-agent
+// workflow persists the raw scan and rebuilds the state on every turn: keeping
+// the raw result untouched lets each rebuild recount the decisions by reason.
 func BuildState(opts Options, rich llm.RichScanResult) *graph.AgentState {
 	if opts.Target.Enabled() {
 		rich = applyTarget(rich, opts.Target)
 	}
+	decisions := applyProjectDecisions(&rich, opts.ProjectPath)
 
 	coverage := "partial"
 	if len(rich.MissingRequiredScanners()) == 0 {
@@ -138,6 +154,7 @@ func BuildState(opts Options, rich llm.RichScanResult) *graph.AgentState {
 		Diagram:            rich.Diagram,
 		CriticalFiles:      rich.CriticalFiles,
 		HistoryLeaks:       rich.HistoryLeaks,
+		Suppressions:       decisions,
 	}
 }
 

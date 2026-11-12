@@ -1,6 +1,9 @@
 package healthpolicy
 
 import (
+	"log/slog"
+	"strings"
+
 	"github.com/dodobrands/aitriage/internal/config"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
@@ -12,6 +15,12 @@ type Overrides struct {
 	FailOnSet       bool
 	MinimumScore    int
 	MinimumScoreSet bool
+
+	ConfirmedMinSeverity    string
+	ConfirmedMinSeveritySet bool
+
+	FPCriticalRequiresHighConfidence    bool
+	FPCriticalRequiresHighConfidenceSet bool
 }
 
 // FromConfig converts .aitriage.yaml policy settings plus legacy top-level
@@ -49,6 +58,17 @@ func FromConfig(cfg *config.Config) healthcheck.Policy {
 	if len(cfg.HealthCheck.BlockClasses) > 0 {
 		policy.BlockClasses = cfg.HealthCheck.BlockClasses
 	}
+	if raw := strings.TrimSpace(cfg.HealthCheck.ConfirmedMinSeverity); raw != "" {
+		if _, ok := healthcheck.ParseConfirmedMinSeverity(raw); !ok {
+			// NormalizePolicy falls back to LOW, the strictest floor; say so
+			// instead of silently gating differently from what was written.
+			slog.Warn("Unknown health_check.confirmed_min_severity; using LOW", "value", raw)
+		}
+		policy.ConfirmedMinSeverity = raw
+	}
+	if v := cfg.HealthCheck.FPCriticalRequiresHighConfidence; v != nil {
+		policy.FPCriticalRequiresHighConfidence = *v
+	}
 
 	return healthcheck.NormalizePolicy(policy)
 }
@@ -74,8 +94,11 @@ func HasConfiguredGate(cfg *config.Config) bool {
 func ApplyOverrides(policy healthcheck.Policy, overrides Overrides) healthcheck.Policy {
 	if overrides.ProfileSet {
 		next := healthcheck.PolicyForProfile(overrides.Profile)
+		// Settings that no profile defines survive a profile switch.
 		next.BlockSources = policy.BlockSources
 		next.BlockClasses = policy.BlockClasses
+		next.ConfirmedMinSeverity = policy.ConfirmedMinSeverity
+		next.FPCriticalRequiresHighConfidence = policy.FPCriticalRequiresHighConfidence
 		policy = next
 	}
 	if overrides.FailOnSet {
@@ -83,6 +106,12 @@ func ApplyOverrides(policy healthcheck.Policy, overrides Overrides) healthcheck.
 	}
 	if overrides.MinimumScoreSet {
 		policy.MinimumScore = overrides.MinimumScore
+	}
+	if overrides.ConfirmedMinSeveritySet {
+		policy.ConfirmedMinSeverity = overrides.ConfirmedMinSeverity
+	}
+	if overrides.FPCriticalRequiresHighConfidenceSet {
+		policy.FPCriticalRequiresHighConfidence = overrides.FPCriticalRequiresHighConfidence
 	}
 	return healthcheck.NormalizePolicy(policy)
 }

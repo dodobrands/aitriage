@@ -37,6 +37,15 @@ type Finding struct {
 	// It still counts as active — an unreviewed finding is unresolved work — but
 	// the gate says so explicitly instead of implying the issue is proven.
 	NeedsReview bool
+	// Unclassified narrows NeedsReview to findings that never received a model
+	// verdict at all (retries exhausted, or the provider failed). "The model was
+	// unsure" and "the model never answered" call for different actions, so the
+	// report keeps them apart.
+	Unclassified bool
+	// TriageFailed marks an unclassified finding whose triage was cut short by
+	// a provider failure. Any such finding makes the gate fail, whatever the
+	// policy, because the verdict it would have produced is unknown.
+	TriageFailed bool
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -62,14 +71,24 @@ type Breakdown struct {
 	// ConfirmedFindings and NeedsReviewFindings partition ActiveFindings, so a
 	// report can say "0 confirmed, 25 unreviewed" instead of leaving a reader to
 	// wonder why a gate failed with nothing proven.
-	ConfirmedFindings   int            `json:"confirmed_findings"`
-	NeedsReviewFindings int            `json:"needs_review_findings"`
-	IgnoredFindings     int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
-	DedupedFindings     int            `json:"deduped_findings"`  // duplicates collapsed
-	PenaltyBySource     map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
-	CountBySeverity     map[string]int `json:"count_by_severity"` // active finding count per severity
-	CountBySource       map[string]int `json:"count_by_source"`   // active finding count per source
-	CountByClass        map[string]int `json:"count_by_class"`    // active finding count per class/rule
+	ConfirmedFindings   int `json:"confirmed_findings"`
+	NeedsReviewFindings int `json:"needs_review_findings"`
+	// UnclassifiedFindings is the subset of NeedsReviewFindings that never got
+	// a model verdict.
+	UnclassifiedFindings int `json:"unclassified_findings"`
+	// TriageFailedFindings counts active inputs whose triage a provider failure
+	// cut short. It is counted before deduplication, so collapsing a duplicate
+	// can never hide an incomplete triage from the gate.
+	TriageFailedFindings int            `json:"triage_failed_findings,omitempty"`
+	IgnoredFindings      int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
+	DedupedFindings      int            `json:"deduped_findings"`  // duplicates collapsed
+	PenaltyBySource      map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
+	CountBySeverity      map[string]int `json:"count_by_severity"` // active finding count per severity
+	// ConfirmedBySeverity counts only confirmed active findings, so a policy
+	// can block on confirmed findings above a severity floor.
+	ConfirmedBySeverity map[string]int `json:"confirmed_by_severity"`
+	CountBySource       map[string]int `json:"count_by_source"` // active finding count per source
+	CountByClass        map[string]int `json:"count_by_class"`  // active finding count per class/rule
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -153,11 +172,12 @@ func dedupKey(f Finding) string {
 // Evaluate runs the full Health Check and returns the score, grade and breakdown.
 func Evaluate(in Input) Result {
 	bd := Breakdown{
-		BaseScore:       100,
-		PenaltyBySource: map[string]int{},
-		CountBySeverity: map[string]int{},
-		CountBySource:   map[string]int{},
-		CountByClass:    map[string]int{},
+		BaseScore:           100,
+		PenaltyBySource:     map[string]int{},
+		CountBySeverity:     map[string]int{},
+		ConfirmedBySeverity: map[string]int{},
+		CountBySource:       map[string]int{},
+		CountByClass:        map[string]int{},
 	}
 
 	// 1. Deduplicate findings. If one duplicate is ignored and another is still
@@ -166,6 +186,9 @@ func Evaluate(in Input) Result {
 	seen := make(map[string]Finding, len(in.Findings))
 	keys := make([]string, 0, len(in.Findings))
 	for _, f := range in.Findings {
+		if f.TriageFailed && !f.Ignored {
+			bd.TriageFailedFindings++
+		}
 		key := dedupKey(f)
 		prev, ok := seen[key]
 		if ok {
@@ -203,8 +226,12 @@ func Evaluate(in Input) Result {
 		bd.ActiveFindings++
 		if f.NeedsReview {
 			bd.NeedsReviewFindings++
+			if f.Unclassified || f.TriageFailed {
+				bd.UnclassifiedFindings++
+			}
 		} else {
 			bd.ConfirmedFindings++
+			bd.ConfirmedBySeverity[sev]++
 		}
 
 		if sev == "CRITICAL" || sev == "HIGH" {

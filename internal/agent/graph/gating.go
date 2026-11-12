@@ -22,7 +22,22 @@ const (
 	dispositionSourceCache         = "cache"
 	dispositionSourceDeterministic = "deterministic"
 	dispositionSourceNRFallback    = "nr-fallback"
+	// dispositionSourceTriageFailed marks a finding the model never saw
+	// because the provider failed; the run's triage is incomplete.
+	dispositionSourceTriageFailed = "triage-failed"
+	// dispositionSourceSuppressed marks a finding dismissed by a recorded
+	// project decision; it is never sent to the LLM.
+	dispositionSourceSuppressed = "suppressed"
+	// dispositionSourceNetworkProbe marks a port-probe result about the
+	// scanning host; it is never sent to the LLM and never scored.
+	dispositionSourceNetworkProbe = "network-probe"
 )
+
+// isUnclassifiedSource reports whether a disposition carries no model verdict
+// at all, as opposed to a model that was unsure.
+func isUnclassifiedSource(source string) bool {
+	return source == dispositionSourceNRFallback || source == dispositionSourceTriageFailed
+}
 
 type gatingConfig struct {
 	enabled       bool

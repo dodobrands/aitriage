@@ -31,6 +31,11 @@ type Options struct {
 	ForceStack   string
 	RunExternal  bool
 	FullPortScan bool // scan all 65535 ports instead of common ones
+	// ProbeCompose opts into probing the services named in the project's
+	// Docker Compose file. Like ProbeHost it inspects the environment AITriage
+	// runs in, not the repository, so it never runs unless asked for. In CI
+	// the service names do not resolve at all.
+	ProbeCompose bool
 }
 
 // redactScannerError returns a short, safe scanner error string for the
@@ -52,6 +57,17 @@ func redactScannerError(err error) string {
 }
 
 var absPathRegex = regexp.MustCompile(`(/[^\s:]+){2,}`)
+
+// reportedFindings is the finding count an execution record carries. The NFR
+// and deploy records used to omit it, so the manifest and the summary table
+// showed 0 for both however much they found. A failed run contributes nothing
+// to the result, so its count is 0 even if it returned a partial list.
+func reportedFindings(n int, err error) int {
+	if err != nil {
+		return 0
+	}
+	return n
+}
 
 const externalScannerTimeout = 10 * time.Minute
 
@@ -203,7 +219,7 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 		if err != nil {
 			status = external.StatusFailed
 		}
-		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "nfr", Status: status, Error: redactScannerError(err)})
+		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "nfr", Status: status, Findings: reportedFindings(len(nfrFindings), err), Error: redactScannerError(err)})
 		mu.Unlock()
 		if err == nil {
 			if nfrFindings == nil {
@@ -225,7 +241,7 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 		if err != nil {
 			status = external.StatusFailed
 		}
-		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "deploy", Status: status, Error: redactScannerError(err)})
+		result.ScannerExecutions = append(result.ScannerExecutions, external.ScannerExecution{Scanner: "deploy", Status: status, Findings: reportedFindings(len(findings), err), Error: redactScannerError(err)})
 		mu.Unlock()
 		if err == nil {
 			mu.Lock()
@@ -297,9 +313,11 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 		defer wg.Done()
 		var netFindings []network.NetworkFinding
 
-		// Probe Docker Compose hosts if present
-		if composeFindings := network.ProbeDockerCompose(opts.ProjectPath, opts.FullPortScan); len(composeFindings) > 0 {
-			netFindings = append(netFindings, composeFindings...)
+		// Probe Docker Compose services only on request (see Options.ProbeCompose).
+		if opts.ProbeCompose {
+			if composeFindings := network.ProbeDockerCompose(opts.ProjectPath, opts.FullPortScan); len(composeFindings) > 0 {
+				netFindings = append(netFindings, composeFindings...)
+			}
 		}
 
 		// Probe specific target if provided
@@ -321,6 +339,9 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	sort.Slice(result.ScannerExecutions, func(i, j int) bool {
 		return result.ScannerExecutions[i].Scanner < result.ScannerExecutions[j].Scanner
 	})
+	// ignore.rules and inline directives apply to every source at once, before
+	// scoring, so the score and verdict describe what is reported.
+	applyProjectSuppressions(&result)
 	applyFullHealthCheck(&result)
 	return result
 }

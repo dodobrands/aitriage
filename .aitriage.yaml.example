@@ -16,10 +16,11 @@ llm:
 
 # ─── Ignore Rules ─────────────────────────────────────────────────────────────
 ignore:
-  # Rule IDs that the scanner should completely ignore (e.g., ["ENTR-04"])
+  # Rule IDs every scanner should completely ignore (e.g., ["ENTR-04", "B105"]).
+  # Qualify an id with its scanner to limit it: "gitleaks:generic-api-key", "trivy:CVE-2024-1234".
   rules: []
-  
-  # Paths the scanner should skip (supports glob-style prefix matching / you can also use .aitriageignore)
+
+  # Paths every scanner should skip: .gitignore syntax, relative to the project root (like .aitriageignore)
   paths:
     - "node_modules/"
     - ".git/"
@@ -49,6 +50,14 @@ health_check:
   # Expose block lists for specific rules/classes/sources
   block_sources: []  # e.g., ["gitleaks"]
   block_classes: []  # e.g., ["hardcoded-secret"]
+
+# ─── Bundled Scanner Options (optional) ──────────────────────────────────────
+# Trivy also reads the project's own .trivyignore (or .trivyignore.yaml) from
+# the repository root, for dependency and IaC scans alike.
+# scanners:
+#   trivy:
+#     ignore_unfixed: true        # report only vulnerabilities with a fixed version
+#     severity: [CRITICAL, HIGH]  # severities Trivy reports (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)
 
 # ─── Legacy Failure Thresholds (fallback) ─────────────────────────────────────
 # Still supported when the health_check block is not configured.

@@ -26,7 +26,7 @@ func TestGeneratedArtifactPath(t *testing.T) {
 }
 
 func TestGitleaksConfigExtendsDefaultsAndExcludesGeneratedArtifacts(t *testing.T) {
-	path, cleanup, err := newGitleaksConfig()
+	path, cleanup, err := newGitleaksConfig(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

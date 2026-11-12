@@ -66,8 +66,12 @@ func enforceArtifactIntegrity(state *AgentState) bool {
 	for _, v := range violations {
 		fmt.Fprintf(os.Stderr, "      · integrity: %s\n", v)
 	}
-	state.ReportMarkdown = buildDeterministicReport(state, len(violations))
-	state.AIFixSpec = buildDeterministicFixSpec(state, len(violations))
+	notice := integrityNotice(len(violations))
+	if state.TriageFailed() {
+		notice = triageIncompleteBanner(state) + notice
+	}
+	state.ReportMarkdown = buildDeterministicReport(state, notice)
+	state.AIFixSpec = buildDeterministicFixSpec(state, notice)
 	return true
 }
 
@@ -75,18 +79,53 @@ func integrityNotice(count int) string {
 	return fmt.Sprintf("> **Integrity notice:** the AI-generated narrative was withheld because it did not match the canonical triage results (%d issue(s) detected; see run logs). This document was rebuilt deterministically from the triage engine.\n\n", count)
 }
 
-func buildDeterministicReport(state *AgentState, violationCount int) string {
+// triageIncompleteBanner is the first thing a reader sees when AI triage did
+// not finish: what failed, what it means for the findings, and what to do.
+func triageIncompleteBanner(state *AgentState) string {
+	tally := tallyDispositions(state)
+	return fmt.Sprintf("> **AI triage did not complete: %s.** %d finding(s) have no verdict and are listed as Needs Manual Review (unclassified, `triage-failed`). The security gate cannot pass on an incomplete triage; re-run once the LLM provider is available.\n\n",
+		state.TriageFailureReason, tally.TriageFailed)
+}
+
+// stageFallbackNotice explains why a document was rendered without the LLM.
+func stageFallbackNotice(state *AgentState, document string) string {
+	if state.TriageFailed() {
+		return triageIncompleteBanner(state)
+	}
+	return fmt.Sprintf("> **AI narrative unavailable:** %s. This %s was rendered deterministically from the triage results; the findings and dispositions below are complete.\n\n",
+		providerFailure(state), document)
+}
+
+func buildDeterministicReport(state *AgentState, notice string) string {
 	var sb strings.Builder
 	sb.WriteString("# Security Report (deterministic)\n\n")
-	sb.WriteString(integrityNotice(violationCount))
+	sb.WriteString(notice)
+	sb.WriteString(deterministicGateSection(state))
 	sb.WriteString(buildCanonicalFindingsSection(state))
 	return sb.String()
 }
 
-func buildDeterministicFixSpec(state *AgentState, violationCount int) string {
+func buildDeterministicFixSpec(state *AgentState, notice string) string {
 	var sb strings.Builder
 	sb.WriteString("# AI Fix Specification (deterministic)\n\n")
-	sb.WriteString(integrityNotice(violationCount))
+	sb.WriteString(notice)
 	sb.WriteString(canonicalActiveFindingsBrief(state))
+	return sb.String()
+}
+
+// deterministicGateSection states the gate outcome without any model prose.
+func deterministicGateSection(state *AgentState) string {
+	hc := state.HealthCheck
+	var sb strings.Builder
+	sb.WriteString("## Security Gate\n\n")
+	_, _ = fmt.Fprintf(&sb, "- **Health Check**: %d/100 (%s)\n", hc.Score, hc.Grade)
+	_, _ = fmt.Fprintf(&sb, "- **Verdict**: %s under `%s` policy (%s)\n", strings.ToUpper(firstNonEmpty(hc.Verdict.Status, "unknown")), hc.Policy.Profile, policyTerms(hc.Policy))
+	_, _ = fmt.Fprintf(&sb, "- **Findings**: %d active (%d confirmed, %d needs review, %d of them unclassified), %d ignored, %d deduplicated\n",
+		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings,
+		hc.Breakdown.UnclassifiedFindings, hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings)
+	for _, reason := range hc.Verdict.BlockingReasons {
+		_, _ = fmt.Fprintf(&sb, "- Blocking `%s`: %s\n", reason.Code, reason.Message)
+	}
+	sb.WriteString("\n")
 	return sb.String()
 }

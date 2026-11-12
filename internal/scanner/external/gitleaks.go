@@ -19,7 +19,7 @@ func RunGitleaks(ctx context.Context, path string) ([]UnifiedFinding, error) {
 	if !IsInstalled("gitleaks") {
 		return nil, fmt.Errorf("gitleaks not installed")
 	}
-	config, cleanup, err := newGitleaksConfig()
+	config, cleanup, err := newGitleaksConfig(path)
 	if err != nil {
 		return nil, fmt.Errorf("prepare gitleaks generated-artifact exclusion: %w", err)
 	}

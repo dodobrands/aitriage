@@ -44,7 +44,12 @@ type CheckResult struct {
 
 // FileInfo holds metadata and cached content for a single file.
 type FileInfo struct {
-	Path      string
+	Path string
+	// RelPath is Path relative to the scanned project root, with forward
+	// slashes. Path-based decisions (vendored directories, rule exclude_paths)
+	// must use it: the root's own parent directories are not part of the
+	// project, and a checkout under e.g. /agent/build/ must not look vendored.
+	RelPath   string
 	Extension string
 	IsBinary  bool
 	IsTest    bool
@@ -307,6 +312,9 @@ func (ctx *ProjectContext) GetFile(relPath string) *FileInfo {
 }
 
 // defaultIgnoreDirs contains directories that should always be ignored.
+// "build" is not one of them, for the same reason the external scanners'
+// scope keeps it: generated build output is git-ignored, and a committed build
+// directory (Go's build/package, build/ci) is the project's own.
 var defaultIgnoreDirs = map[string]bool{
 	".git":             true,
 	"aitriage-reports": true, // AITriage's own scan/run artifacts — never re-scan them
@@ -316,7 +324,6 @@ var defaultIgnoreDirs = map[string]bool{
 	"__pycache__":      true,
 	".next":            true,
 	"dist":             true,
-	"build":            true,
 	".nuxt":            true,
 	"vendor":           true,
 }
@@ -381,6 +388,15 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 		aitriageIgnorer = ignoreFile
 	}
 
+	// ignore.paths uses .gitignore syntax on root-relative paths, the same
+	// matcher the external scanners' scope filter applies.
+	var userPatterns []string
+	if ws.Config != nil {
+		userPatterns = ws.Config.Ignore.Paths
+	}
+	ignorePaths := config.NewPathMatcher(userPatterns)
+	legacy := newLegacyIgnoreWarner(rootPath, userPatterns)
+
 	err := filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files we don't have permission to read
@@ -391,17 +407,20 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 
 		// Always skip hardcoded massive build directories as a fallback
 		if info.IsDir() {
+			// Exclusions describe paths inside the project. The project
+			// directory itself is never excluded, whatever it is called.
+			if relPath == "." {
+				legacy.checkRoot(path)
+				return nil
+			}
+
 			if defaultIgnoreDirs[info.Name()] {
 				return filepath.SkipDir
 			}
 
 			// Check user-defined ignored paths
-			if ws.Config != nil {
-				for _, ip := range ws.Config.Ignore.Paths {
-					if strings.Contains(path, strings.Trim(ip, "/")) {
-						return filepath.SkipDir
-					}
-				}
+			if ignorePaths.ExcludesTree(relPath) {
+				return filepath.SkipDir
 			}
 
 			// Check .aitriageignore for directory (priority)
@@ -414,6 +433,14 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 				return filepath.SkipDir
 			}
 
+			if !ignorePaths.Excludes(relPath, true) {
+				legacy.checkDir(path, relPath)
+			}
+			return nil
+		}
+
+		// Check user-defined ignored paths for file
+		if ignorePaths.Excludes(relPath, false) {
 			return nil
 		}
 
@@ -451,6 +478,7 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 
 		fi := &FileInfo{
 			Path:      path,
+			RelPath:   filepath.ToSlash(relPath),
 			Extension: ext,
 			IsTest:    pathpolicy.IsTestLike(relPath),
 		}

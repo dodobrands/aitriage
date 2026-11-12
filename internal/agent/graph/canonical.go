@@ -70,19 +70,32 @@ func buildCanonicalFindingsSection(state *AgentState) string {
 		if file == "" {
 			file = "N/A"
 		}
-		disp := "Needs Manual Review"
+		disp := "Needs Manual Review (unclassified)"
 		src := ""
 		if d, ok := dispByIndex[i]; ok {
-			disp = d.Disposition
+			disp = dispositionLabel(d)
 			src = d.DispositionSource
 		}
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %s | %s |\n",
 			f.VulnID, f.Severity, file, f.Line, disp, src))
 	}
 
-	tp, fp, nr := countDispositions(state.FindingDispositions)
+	tally := tallyDispositions(state)
 	sb.WriteString(fmt.Sprintf("\n**Dispositions:** %d True Positive · %d False Positive · %d Needs Manual Review · %d total\n",
-		tp, fp, nr, len(state.EnrichedFindings)))
+		tally.TruePositives, tally.FalsePositives, tally.NeedsReview, len(state.EnrichedFindings)))
+	var notes []string
+	if tally.Unclassified > 0 {
+		notes = append(notes, fmt.Sprintf("%d Needs Manual Review finding(s) are unclassified: the model gave no verdict (%d of them because the provider failed)", tally.Unclassified, tally.TriageFailed))
+	}
+	if tally.Suppressed > 0 {
+		notes = append(notes, fmt.Sprintf("%d False Positive finding(s) were dismissed by project decisions and never sent to the LLM", tally.Suppressed))
+	}
+	if tally.Network > 0 {
+		notes = append(notes, fmt.Sprintf("%d network probe finding(s) describe the scanning host; they are listed but never sent to the LLM or scored", tally.Network))
+	}
+	for _, note := range notes {
+		sb.WriteString("- " + note + ".\n")
+	}
 	return sb.String()
 }
 
@@ -101,15 +114,20 @@ func canonicalActiveFindingsBrief(state *AgentState) string {
 	}
 	var rows []row
 	for i, f := range state.EnrichedFindings {
+		if isEnvironmentFinding(f) {
+			// A port open on the scanning host is not something to fix in
+			// this repository.
+			continue
+		}
 		d, ok := dispByIndex[i]
-		disp := "Needs Manual Review"
+		disp := "Needs Manual Review (unclassified)"
 		rationale := ""
 		if ok {
-			disp = d.Disposition
+			if d.Disposition == "False Positive" {
+				continue
+			}
+			disp = dispositionLabel(d)
 			rationale = d.Rationale
-		}
-		if disp == "False Positive" {
-			continue
 		}
 		rows = append(rows, row{vulnID: f.VulnID, sev: strings.ToUpper(f.Severity), file: f.File, disp: disp, rationale: rationale, line: f.Line})
 	}

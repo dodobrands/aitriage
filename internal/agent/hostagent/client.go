@@ -105,6 +105,12 @@ func (e *ErrAwaitingHostResponse) Error() string {
 	return fmt.Sprintf("aitriage: awaiting host-agent response for run %s (request %s)", e.RunID, e.RequestID)
 }
 
+// SuspendsRun marks the error as a pause, not a provider failure (it
+// implements graph.RunSuspender). graph.Run absorbs provider failures into
+// deterministic fallbacks; a pending host answer must instead unwind the run
+// so it can be resumed once the host has replied.
+func (e *ErrAwaitingHostResponse) SuspendsRun() bool { return true }
+
 // IsAwaiting reports whether err is (or wraps) ErrAwaitingHostResponse.
 func IsAwaiting(err error) (*ErrAwaitingHostResponse, bool) {
 	for err != nil {

@@ -34,10 +34,25 @@ type PoCStats struct {
 	Refusals        int `json:"poc_refusals"`
 	ParseFailures   int `json:"poc_parse_failures"`
 	TransportErrors int `json:"poc_transport_errors"`
+	// Status is "completed", "failed" (the provider failed; the run went on
+	// without the missing traces), "skipped" (not attempted; Reason says why)
+	// or "cached" (restored from the artifact cache). PoC is advisory: it
+	// never changes a disposition or the gate.
+	Status string `json:"status,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
+// PoC status values.
+const (
+	pocStatusCompleted = "completed"
+	pocStatusFailed    = "failed"
+	pocStatusSkipped   = "skipped"
+	pocStatusCached    = "cached"
+)
+
 // verifyPoCs runs PoC verification over ALL true-positive findings (deduped),
-// returning the collected results. Transport/provider errors are fatal.
+// returning the collected results. On a provider failure the remaining batches
+// are cancelled and the results gathered so far are returned with the error.
 func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFinding, llmClient llm.Client, usage *llm.Usage) ([]PoCResult, PoCStats, error) {
 	if len(tpFindings) == 0 {
 		return nil, PoCStats{}, nil
@@ -58,7 +73,7 @@ func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFindi
 		batches = append(batches, unique[off:min(off+pocBatchSize, len(unique))])
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	batchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var (
@@ -72,13 +87,16 @@ func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFindi
 		wg       sync.WaitGroup
 	)
 	sem := make(chan struct{}, triageConcurrency())
+	// setErr keeps the first failure, except that an abort (cancellation or a
+	// suspended run) replaces a plain provider failure: the caller must see
+	// the abort to resume the run instead of publishing a degraded one.
 	setErr := func(e error) {
 		errMu.Lock()
-		if firstErr == nil {
+		defer errMu.Unlock()
+		if firstErr == nil || (abortsRun(ctx, e) && !abortsRun(ctx, firstErr)) {
 			firstErr = e
-			cancel()
 		}
-		errMu.Unlock()
+		cancel()
 	}
 
 	for _, batch := range batches {
@@ -88,7 +106,7 @@ func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFindi
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			res, u, batchStats, err := pocBatchLLM(ctx, language, batch, llmClient)
+			res, u, batchStats, err := pocBatchLLM(batchCtx, language, batch, llmClient)
 			usageMu.Lock()
 			addUsage(usage, u)
 			usageMu.Unlock()
@@ -112,7 +130,7 @@ func verifyPoCs(ctx context.Context, language string, tpFindings []EnrichedFindi
 	wg.Wait()
 
 	if firstErr != nil {
-		return nil, stats, firstErr
+		return results, stats, firstErr
 	}
 
 	// Budget overflow: never silently dropped — surfaced as Needs Manual Review.

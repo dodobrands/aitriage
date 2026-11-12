@@ -2,7 +2,6 @@ package external
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -47,6 +46,10 @@ var versionArgs = map[string][]string{
 
 // ToolVersion returns a best-effort version string for a scanner binary. It
 // never fails the run; an empty string means "version unknown".
+//
+// Only stdout is read: the bundled scanners print their version there, while
+// stderr carries notices (Semgrep's "A new version of Semgrep is available")
+// that used to be recorded as the version.
 func ToolVersion(ctx context.Context, name string) string {
 	args, ok := versionArgs[name]
 	if !ok {
@@ -54,7 +57,7 @@ func ToolVersion(ctx context.Context, name string) string {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, name, args...).CombinedOutput()
+	out, err := toolCommand(cctx, name, args...).Output()
 	if err != nil {
 		return ""
 	}

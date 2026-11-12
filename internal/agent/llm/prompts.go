@@ -27,6 +27,15 @@ type RichScanResult struct {
 	// was missing, failed, timed out, or was not applicable — so a full audit can
 	// never silently skip a mandatory scanner.
 	ScannerExecutions []external.ScannerExecution
+	// IgnoredByConfig counts findings removed by ignore.rules, keyed by the
+	// entry as written in the configuration, so a report can say what the
+	// project chose not to see. Rules the engine skipped before evaluating them
+	// produced nothing to count.
+	IgnoredByConfig map[string]int `json:"ignored_by_config,omitempty"`
+	// SuppressedInline counts external-scanner and deploy-audit findings
+	// silenced by an aitriage-ignore comment in the source, keyed by
+	// "source:rule".
+	SuppressedInline map[string]int `json:"suppressed_inline,omitempty"`
 }
 
 // MissingRequiredScanners returns the required external scanners that did not

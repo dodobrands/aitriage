@@ -507,8 +507,9 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		RunExternal:  req.External || containerFull,
 		// Port probing is opt-in. It inspects the machine AITriage runs on, not
 		// the code being audited, so it must never happen because someone asked
-		// for a source scan.
-		ProbeHost: requestedProbeHost(req.ProbeNetwork),
+		// for a source scan. The same request covers the Compose services.
+		ProbeHost:    requestedProbeHost(req.ProbeNetwork),
+		ProbeCompose: req.ProbeNetwork,
 	}
 
 	rich := orchestrator.RunAllScanners(ctx, opts)

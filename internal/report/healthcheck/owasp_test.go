@@ -14,9 +14,12 @@ func TestGetOWASP(t *testing.T) {
 			expected: "A02:2021 – Cryptographic Failures",
 		},
 		{
-			name:     "Known rule: ENTR-FRAGILE",
+			// The ENTR-FRAGILE heuristic never fired (it compared extensions
+			// without the dot) and was removed; no producer emits this id.
+			// The YAML rule ENTR-FRAGILE-LOGIC is a different rule.
+			name:     "Removed heuristic: ENTR-FRAGILE",
 			ruleID:   "ENTR-FRAGILE",
-			expected: "A04:2021 – Insecure Design",
+			expected: "",
 		},
 		{
 			name:     "Known rule: ENTR-04",

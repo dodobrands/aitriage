@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -57,24 +58,47 @@ func findingIdentity(f EnrichedFinding) string {
 	return f.ID
 }
 
-func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition) (FindingDisposition, string) {
+// validateLLMDisposition checks one model verdict. A non-empty reject reason
+// means the verdict is not trusted: the finding is retried and otherwise
+// defaults to Needs Manual Review. A non-empty note means the verdict was
+// accepted in a weaker form, such as a False Positive kept for manual review
+// by policy; the note is recorded in the classification audit.
+func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition, policy validationPolicy) (FindingDisposition, string, string) {
 	if raw.FindingID != findingIdentity(finding) {
-		return FindingDisposition{}, "finding_id does not match requested finding"
+		return FindingDisposition{}, "finding_id does not match requested finding", ""
 	}
 	if raw.Fingerprint != Fingerprint(finding) {
-		return FindingDisposition{}, "fingerprint does not match requested finding"
+		return FindingDisposition{}, "fingerprint does not match requested finding", ""
 	}
+	confidence := normalizeConfidence(raw.Confidence)
 	if raw.Disposition == "False Positive" {
 		if err := validateFalsePositiveEvidence(projectPath, finding, raw.Evidence); err != nil {
-			return FindingDisposition{}, err.Error()
+			return FindingDisposition{}, err.Error(), ""
+		}
+		if violatesCriticalConfidencePolicy(policy, finding, confidence) {
+			note := fmt.Sprintf("false positive for a CRITICAL finding kept as Needs Manual Review: policy fp_critical_requires_high_confidence requires high confidence, model reported %q", confidence)
+			return FindingDisposition{
+				Disposition: "Needs Manual Review",
+				Rationale:   "Kept for manual review: a CRITICAL finding is only dismissed with high model confidence (policy fp_critical_requires_high_confidence). Model rationale: " + raw.Rationale,
+				Confidence:  confidence,
+				Evidence:    raw.Evidence,
+			}, "", note
 		}
 	}
 	return FindingDisposition{
 		Disposition: raw.Disposition,
 		Rationale:   raw.Rationale,
-		Confidence:  normalizeConfidence(raw.Confidence),
+		Confidence:  confidence,
 		Evidence:    raw.Evidence,
-	}, ""
+	}, "", ""
+}
+
+// violatesCriticalConfidencePolicy reports whether a False Positive for a
+// CRITICAL finding lacks the high confidence the policy demands.
+func violatesCriticalConfidencePolicy(policy validationPolicy, finding EnrichedFinding, confidence string) bool {
+	return policy.fpCriticalRequiresHighConfidence &&
+		strings.EqualFold(strings.TrimSpace(finding.Severity), "CRITICAL") &&
+		normalizeConfidence(confidence) != "high"
 }
 
 func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
@@ -97,24 +121,112 @@ func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, 
 		}
 		return nil
 	case "code_mitigation":
-		if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(evidence.Observed)) < 4 {
-			return fmt.Errorf("code_mitigation evidence is incomplete")
-		}
-		path, err := matchingProjectFile(projectPath, finding.File, evidence.File)
-		if err != nil {
-			return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
-		}
-		line, err := readLine(path, evidence.Line)
-		if err != nil {
-			return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
-		}
-		if !strings.Contains(line, evidence.Observed) {
-			return fmt.Errorf("code_mitigation observed text is absent from source")
-		}
-		return nil
+		return validateCodeMitigation(projectPath, finding, evidence)
 	default:
 		return fmt.Errorf("false positive evidence basis %q is not deterministically verifiable", evidence.Basis)
 	}
+}
+
+// validateCodeMitigation accepts code_mitigation evidence only when it points
+// at code, other than the flagged statement itself, that exists on the cited
+// line. Quoting text that merely exists in the file was enough before: models
+// cited comments, configuration, and the vulnerable line itself.
+func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+	observed := evidence.Observed
+	if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(observed)) < 4 {
+		return fmt.Errorf("code_mitigation evidence is incomplete")
+	}
+	if isConfigOrDataFile(finding.File) {
+		return fmt.Errorf("code_mitigation evidence rejected: %s is a configuration or data file, which contains no code that mitigates", filepath.Base(normalizePath(finding.File)))
+	}
+	path, err := matchingProjectFile(projectPath, finding.File, evidence.File)
+	if err != nil {
+		return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
+	}
+	lines, err := readSourceLines(path)
+	if err != nil {
+		return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
+	}
+	if evidence.Line > len(lines) {
+		return fmt.Errorf("code_mitigation evidence is unreadable: line %d is outside source file", evidence.Line)
+	}
+	line := lines[evidence.Line-1]
+	if !strings.Contains(line, observed) {
+		return fmt.Errorf("code_mitigation observed text is absent from source")
+	}
+	kinds := lineRegions(lines, evidence.Line-1, syntaxForPath(path))
+	sameLine := finding.Line > 0 && evidence.Line == finding.Line
+	if sameLine && isCriticalOrHigh(finding.Severity) {
+		// A serious finding goes to a person rather than be dismissed by
+		// anything on its own line.
+		return fmt.Errorf("code_mitigation evidence rejected: a mitigation on the flagged line itself is not accepted for %s findings", strings.ToUpper(strings.TrimSpace(finding.Severity)))
+	}
+	if region := observedRegion(line, kinds, observed); region != "" {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text lies inside a %s, not in code", region)
+	}
+	if sameLine && coversStatement(statementText(line, kinds), observed) {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text is the flagged statement itself, which cannot be its own mitigation")
+	}
+	if !hasCodeTokens(observed) {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
+	}
+	return nil
+}
+
+func isCriticalOrHigh(severity string) bool {
+	switch strings.ToUpper(strings.TrimSpace(severity)) {
+	case "CRITICAL", "HIGH":
+		return true
+	default:
+		return false
+	}
+}
+
+// coversStatement reports whether observed is (most of) the flagged
+// statement. Whitespace is ignored so reformatting cannot dodge the check.
+func coversStatement(statement, observed string) bool {
+	stmt := stripWhitespace(statement)
+	obs := stripWhitespace(observed)
+	if stmt == "" || obs == "" {
+		return true
+	}
+	return obs == stmt || 2*len(obs) > len(stmt)
+}
+
+func stripWhitespace(text string) string {
+	return strings.Join(strings.Fields(text), "")
+}
+
+// codeTokenPatterns recognise text that is code rather than prose: an
+// operator or bracket, a dotted member access, a snake_case or camelCase
+// identifier.
+var codeTokenPatterns = []*regexp.Regexp{
+	regexp.MustCompile("[(){}\\[\\]=<>;$@&|`]|::|->|=>"),
+	regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_]`),
+	regexp.MustCompile(`[A-Za-z0-9]_[A-Za-z0-9]`),
+	regexp.MustCompile(`[a-z][A-Z]`),
+}
+
+func hasCodeTokens(observed string) bool {
+	for _, pattern := range codeTokenPatterns {
+		if pattern.MatchString(observed) {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfigOrDataFile reports whether a path holds configuration or data
+// rather than code. Such files can describe a mitigation but never perform
+// one, so code_mitigation evidence is not accepted for them.
+func isConfigOrDataFile(path string) bool {
+	base := strings.ToLower(filepath.Base(normalizePath(path)))
+	switch filepath.Ext(base) {
+	case ".yaml", ".yml", ".json", ".jsonc", ".json5", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".tfvars":
+		return true
+	}
+	return base == ".env" || strings.HasPrefix(base, ".env.") || base == ".htaccess" ||
+		strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose.")
 }
 
 func isTestPath(path string) bool {
@@ -179,14 +291,15 @@ func resolveProjectFile(projectPath, candidate string) (string, error) {
 	return path, nil
 }
 
-func readLine(path string, lineNumber int) (string, error) {
+// readSourceLines returns the file split into lines without line endings.
+func readSourceLines(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	lines := strings.Split(string(data), "\n")
-	if lineNumber > len(lines) {
-		return "", fmt.Errorf("line %d is outside source file", lineNumber)
+	for i, line := range lines {
+		lines[i] = strings.TrimSuffix(line, "\r")
 	}
-	return lines[lineNumber-1], nil
+	return lines, nil
 }

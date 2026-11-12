@@ -279,6 +279,7 @@ func generateAitrageConfig(stacks []detectedStack) string {
 
 	// Ignore section
 	sb.WriteString("ignore:\n")
+	sb.WriteString("  # .gitignore syntax, relative to the project root; applies to every scanner\n")
 	sb.WriteString("  paths:\n")
 
 	// Add stack-specific ignores

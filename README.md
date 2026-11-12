@@ -391,7 +391,9 @@ Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this dire
 
 AITriage audits the application you ship, not everything on disk. By default it skips
 files `git` ignores and directories holding third-party or generated code
-(`vendor`, `node_modules`, `dist`, `build`, `.next`, `__pycache__`, `venv`). The same
+(`vendor`, `node_modules`, `dist`, `.next`, `__pycache__`, `venv`). A `build` directory is
+scanned unless `git` ignores it: generated build output is ignored in practice, and a
+committed one, such as Go's `build/package/Dockerfile`, is your own. The same
 rules apply to the bundled Semgrep, Trivy, Gitleaks and Bandit, and to the git-history
 secret scan, so a vendored dependency is never reported as your vulnerability.
 
@@ -400,6 +402,7 @@ secret scan, so a vendored dependency is never reported as your vulnerability.
 | `AITRIAGE_RESPECT_GITIGNORE=false` | Audit ignored files too. Use when the question is "did a secret ever reach this working tree", not "is my application vulnerable" |
 | `AITRIAGE_SCAN_VENDORED=true` | Audit vendored and generated directories as if they were your own source |
 | `.aitriageignore` | Per-project excludes, same syntax as `.gitignore`, always honoured |
+| `ignore.paths` in `.aitriage.yaml` | Same syntax as `.gitignore`, relative to the project root, always honoured by every scanner |
 
 The two variables change what the bundled scanners and the git-history scan cover; the
 built-in engine always skips ignored files and those directories. They are read by the
@@ -412,6 +415,13 @@ Network findings describe the machine AITriage runs on rather than the repositor
 probes the services declared by a Compose file in the project root, and
 `aitriage agent --probe <host>` adds a host of your choice. These findings are reported but
 never counted in the repository's security score.
+
+Trivy applies the repository's own ignore file to both the dependency scan and the IaC
+scan: `.trivyignore`, or `.trivyignore.yaml` / `.trivyignore.yml`. Trivy reads one ignore
+file per run, so when both forms exist the YAML file is used and a warning names the one
+left out. The file is read from the repository root wherever AITriage runs, including the
+container. `scanners.trivy.ignore_unfixed` and `scanners.trivy.severity` in `.aitriage.yaml`
+narrow what Trivy reports; see the [configuration example](.aitriage.yaml.example).
 
 ### Why the gate can fail with nothing confirmed
 

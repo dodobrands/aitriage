@@ -14,7 +14,9 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'except\s+Exception(?:\s+as\s+\w+)?:\s*\n\s*pass\s*(?:#.*)?\n'
-    suggestion: "HIGH: Blanket except:pass silently swallows errors. Log the exception or re-raise."
+    # LOW, as Bandit rates the same pattern (B110 try_except_pass): swallowing
+    # errors is a reliability defect (CWE-703), not an exploitable flaw.
+    suggestion: "LOW: Blanket except:pass silently swallows errors. Log the exception or re-raise."
 
   - id: FAST-SYNC-ASYNC
     name: "Sync in Async Check"

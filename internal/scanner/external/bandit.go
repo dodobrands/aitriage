@@ -23,7 +23,7 @@ func RunBandit(ctx context.Context, path string) ([]UnifiedFinding, error) {
 	if !IsInstalled("bandit") {
 		return nil, fmt.Errorf("bandit not installed")
 	}
-	excluded := generatedArtifactPaths(path)
+	excluded := banditExcludePaths(path)
 	result, err := RunTool(ctx, "bandit", "-r", path, "-f", "json", "-q", "-x", strings.Join(excluded, ","))
 	if err != nil {
 		return nil, fmt.Errorf("bandit execution failed: %w", err)

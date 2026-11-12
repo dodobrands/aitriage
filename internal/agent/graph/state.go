@@ -2,6 +2,8 @@ package graph
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	agentcontext "github.com/dodobrands/aitriage/internal/agent/context"
 	"github.com/dodobrands/aitriage/internal/agent/llm"
@@ -70,11 +72,29 @@ type AgentState struct {
 	TriagedResults   []string            // Deprecated: runWorkers removed (June 2026)
 
 	// SecureCoder-enhanced fields
-	ThreatModel         *ThreatModel               // Structured threat model analysis
-	ThreatModelSource   string                     // "llm" | "cache_skipped" | "skipped_empty"
+	ThreatModel *ThreatModel // Structured threat model analysis
+	// ThreatModelSource is "llm" | "cache_skipped" | "skipped_empty" |
+	// "failed_parse" (unparseable after repair retries; triage ran without
+	// it) | "failed" (provider failure).
+	ThreatModelSource   string
 	FindingDispositions []FindingDisposition       // TP/FP/NR classification per finding
 	ClassificationAudit []ClassificationAuditEntry // Raw structured LLM responses and validation decisions
 	PoCResults          []PoCResult                // PoC verification results
+
+	// TriageStatus is TriageStatusComplete or TriageStatusFailed. A failed
+	// triage still carries one disposition per finding: the ones the model
+	// never classified are Needs Manual Review with source "triage-failed".
+	TriageStatus        string
+	TriageFailureReason string // redacted, single-line provider error
+	TriageFailureStage  string // "threat_model" | "classification"
+	// StageFailures lists LLM stages that degraded or fell back to a
+	// deterministic rendering instead of failing the run.
+	StageFailures []StageFailure
+
+	// Suppressions summarises the project decisions (.aitriage-suppressions.json
+	// and the audit log) applied before triage. Suppressed findings are never
+	// sent to the LLM.
+	Suppressions SuppressionSummary
 
 	// LLM usage tracking (accumulated across all Chat calls)
 	TotalUsage         llm.Usage
@@ -127,10 +147,38 @@ type ThreatModel struct {
 
 // EntryPoint describes a point where external data enters the system.
 type EntryPoint struct {
-	Endpoint   string `json:"endpoint"`
-	Type       string `json:"type"`
-	Trusted    bool   `json:"trusted"`
-	Validation string `json:"validation"`
+	Endpoint   string       `json:"endpoint"`
+	Type       string       `json:"type"`
+	Trusted    FlexibleBool `json:"trusted"`
+	Validation string       `json:"validation"`
+}
+
+// FlexibleBool decodes the boolean shapes models actually emit: true/false,
+// "true"/"false", "yes"/"no", 1/0, and null. One quoted boolean used to make
+// the whole threat model unparseable and abort the run. Anything that is not
+// recognisably true decodes as false, the conservative reading for "trusted".
+// It always encodes as a plain JSON boolean.
+type FlexibleBool bool
+
+// UnmarshalJSON implements json.Unmarshaler and never fails.
+func (b *FlexibleBool) UnmarshalJSON(data []byte) error {
+	*b = FlexibleBool(parseLooseBool(data))
+	return nil
+}
+
+func parseLooseBool(data []byte) bool {
+	text := strings.TrimSpace(string(data))
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		text = strings.TrimSpace(unquoted)
+	}
+	switch strings.ToLower(text) {
+	case "true", "yes", "y", "on", "1":
+		return true
+	}
+	if number, err := strconv.ParseFloat(text, 64); err == nil {
+		return number != 0
+	}
+	return false
 }
 
 // TrustBounds describes authentication/authorization assumptions.
@@ -181,6 +229,9 @@ type ClassificationAuditEntry struct {
 	ParseError             string           `json:"parse_error,omitempty"`
 	AcceptedFindingIndices []int            `json:"accepted_finding_indices,omitempty"`
 	Rejected               []AuditRejection `json:"rejected,omitempty"`
+	// Downgraded lists verdicts accepted in a weaker form than the model
+	// gave, for example a False Positive kept as Needs Manual Review by policy.
+	Downgraded []AuditRejection `json:"downgraded,omitempty"`
 }
 
 // AuditRejection records why an LLM item was not trusted and became NR.
@@ -198,7 +249,10 @@ type FindingDisposition struct {
 	// Confidence is the model's self-reported certainty: "high" | "medium" | "low".
 	Confidence string `json:"confidence,omitempty"`
 	// DispositionSource records how the disposition was produced for the audit
-	// trail: "llm" | "cache" | "deterministic" | "nr-fallback".
+	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model gave
+	// no verdict after retries) | "triage-failed" (the provider failed before
+	// the model could classify it) | "suppressed" (a recorded project
+	// decision) | "network-probe" (describes the scanning host, never scored).
 	DispositionSource string `json:"disposition_source,omitempty"`
 	// Fingerprint is the stable content hash used for dedup/caching.
 	Fingerprint string `json:"fingerprint,omitempty"`

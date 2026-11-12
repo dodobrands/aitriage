@@ -54,16 +54,28 @@ func generatedArtifactPaths(root string) []string {
 
 // newGitleaksConfig extends the built-in rules with a global path allowlist.
 // Gitleaks v8 has no CLI directory-exclude flag, so the config is the only way
-// to prevent generated reports from being read while keeping the default rules.
-func newGitleaksConfig() (string, func(), error) {
+// to prevent generated reports, vendored trees and ignore.paths entries from
+// being read while keeping the default rules. source is the --source argument
+// the allowlist will be matched against.
+func newGitleaksConfig(source string) (string, func(), error) {
 	f, err := os.CreateTemp("", "aitriage-gitleaks-*.toml")
 	if err != nil {
 		return "", func() {}, err
 	}
 	cleanup := func() { _ = os.Remove(f.Name()) }
+	allowlist := gitleaksAllowlistPaths(source)
+	quoted := make([]string, 0, len(allowlist))
+	for _, pattern := range allowlist {
+		// A TOML literal string cannot hold its own delimiter; such a pattern
+		// is left to the post-filter rather than breaking the whole config.
+		if strings.Contains(pattern, "'''") {
+			continue
+		}
+		quoted = append(quoted, "'''"+pattern+"'''")
+	}
 	content := fmt.Sprintf("[extend]\nuseDefault = true\n\n[allowlist]\n"+
 		"description = \"AITriage out-of-scope paths\"\n"+
-		"paths = ['''%s''']\n", GitleaksAllowlistPattern())
+		"paths = [%s]\n", strings.Join(quoted, ", "))
 	if err := f.Chmod(0o600); err != nil {
 		_ = f.Close()
 		cleanup()

@@ -13,6 +13,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/config"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/loader"
+	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/models"
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	"github.com/dodobrands/aitriage/rules"
@@ -345,14 +346,27 @@ func (e *Engine) matchesExtension(r Rule, f *core.FileInfo) bool {
 	return false
 }
 
-// matchesExcludedPath returns true if the file path contains any of the rule's ExcludePaths fragments.
+// matchesExcludedPath returns true if the file's project-relative path contains
+// any of the rule's ExcludePaths fragments. Matching the absolute path would
+// let the checkout location decide: a project cloned under .../seed-service/
+// or .../scripts/ would silently lose the rule for every file.
 func matchesExcludedPath(r Rule, f *core.FileInfo) bool {
+	rel := projectRelPath(f)
 	for _, frag := range r.ExcludePaths {
-		if strings.Contains(f.Path, frag) {
+		if strings.Contains(rel, frag) {
 			return true
 		}
 	}
 	return false
+}
+
+// projectRelPath returns the file's path relative to the project root with
+// forward slashes, falling back to Path for FileInfo values built without one.
+func projectRelPath(f *core.FileInfo) string {
+	if f.RelPath != "" {
+		return f.RelPath
+	}
+	return filepath.ToSlash(f.Path)
 }
 
 func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, results *[]core.CheckResult, mu *sync.Mutex) {
@@ -450,8 +464,6 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 	}
 }
 
-var placeholderRegex = regexp.MustCompile(`(?i)(todo|fixme|temporary|tempVar|result\d|var\d|placeholder)`)
-
 // entropyAllowedExts — code and .env files, where the keyword-guarded assignment
 // heuristic (`api_key = "…"`) is meaningful.
 var entropyAllowedExts = map[string]bool{
@@ -475,7 +487,7 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	if f.IsTest {
 		return nil
 	}
-	if isVendoredPath(f.Path) {
+	if isVendoredPath(projectRelPath(f)) {
 		return nil
 	}
 
@@ -527,58 +539,47 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	return results
 }
 
-// isVendoredPath reports whether a path is inside a dependency/VCS directory
-// where hits are noise rather than the user's own leaked credentials.
-func isVendoredPath(path string) bool {
-	for _, seg := range []string{"/node_modules/", "/vendor/", "/.git/", "/dist/", "/build/", "/.next/"} {
-		if strings.Contains(path, seg) {
+// isVendoredPath reports whether a project-relative path is inside a
+// dependency/VCS directory where hits are noise rather than the user's own
+// leaked credentials. Only segments inside the project count, so a checkout
+// under a directory such as /agent/build/ is still scanned. A committed build/
+// directory is the project's own (container and CI files live there); build
+// output is excluded through .gitignore instead, as in the scope filter.
+func isVendoredPath(relPath string) bool {
+	p := "/" + strings.TrimPrefix(filepath.ToSlash(relPath), "/")
+	for _, seg := range []string{"/node_modules/", "/vendor/", "/.git/", "/dist/", "/.next/"} {
+		if strings.Contains(p, seg) {
 			return true
 		}
 	}
 	return false
 }
 
+// evaluateEntropyPattern runs the file-level scaffolding-residue heuristic
+// (ENTR-SLOP-01, see slop.go).
 func (e *Engine) evaluateEntropyPattern(f *core.FileInfo) []core.CheckResult {
-	var results []core.CheckResult
-
+	if !slopExtensions[strings.ToLower(filepath.Ext(f.Path))] || isVendoredPath(projectRelPath(f)) {
+		return nil
+	}
 	content, err := f.GetContent()
 	if err != nil {
-		return results
+		return nil
 	}
-	s := string(content)
-
-	isCodeFile := false
-	exts := []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py"}
-	for _, ext := range exts {
-		if strings.HasSuffix(f.Path, ext) {
-			isCodeFile = true
-			break
-		}
+	src := string(content)
+	count, line := countScaffoldingResidue(src, f.Path)
+	if !excessiveResidue(count, lineCount(src)) {
+		return nil
 	}
-	isNodeModules := strings.Contains(f.Path, "node_modules")
-
-	if isCodeFile && !isNodeModules {
-		if matches := placeholderRegex.FindAllStringIndex(s, -1); len(matches) > 5 {
-			results = append(results, core.CheckResult{
-				ID: "ENTR-SLOP-01", Name: "Excessive AI Scaffolding Residue", Status: core.Absent,
-				File: f.Path, Evidence: fmt.Sprintf("Found %d placeholder patterns.", len(matches)),
-				Suggestion: "HIGH: Code contains high volume of scaffolding residue. Clean up placeholders.",
-				Severity:   "HIGH",
-			})
-		}
+	if e.isLineIgnored(f, line, "ENTR-SLOP-01") {
+		return nil
 	}
-
-	if (f.Extension == "go" || f.Extension == "js" || f.Extension == "ts") && !strings.Contains(s, "err") && !strings.Contains(s, "catch") {
-		if len(s) > 2000 {
-			results = append(results, core.CheckResult{
-				ID: "ENTR-FRAGILE", Name: "Brittle Logic Block", Status: core.Absent,
-				File: f.Path, Evidence: "Large file with NO error handling keywords.",
-				Suggestion: "HIGH: This file looks like an unstructured code dump. Implement robust error handling.",
-				Severity:   "HIGH",
-			})
-		}
-	}
-	return results
+	return []core.CheckResult{{
+		ID: "ENTR-SLOP-01", Name: "Excessive AI Scaffolding Residue", Status: core.Absent,
+		File: f.Path, Line: line,
+		Evidence:   fmt.Sprintf("Found %d scaffolding markers (TODO/FIXME notes, placeholder or temporary names); the first is on line %d.", count, line),
+		Suggestion: "LOW: Code contains a high volume of scaffolding residue. Finish or remove the TODO/FIXME notes and placeholder code; this is a code-quality signal, not a vulnerability.",
+		Severity:   "LOW",
+	}}
 }
 
 func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
@@ -727,57 +728,15 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 	return "", 0
 }
 
+// isLineIgnored reports whether an inline directive silences ruleID at line.
+// The directive grammar lives in the suppression package, which also applies it
+// to findings from the external scanners, so both read a comment identically.
 func (e *Engine) isLineIgnored(f *core.FileInfo, line int, ruleID string) bool {
 	content, err := f.GetContent()
 	if err != nil {
 		return false
 	}
-
-	lines := strings.Split(string(content), "\n")
-
-	// Check for file-level suppression (anywhere in the first 10 lines)
-	scanLimit := 10
-	if len(lines) < scanLimit {
-		scanLimit = len(lines)
-	}
-	for i := 0; i < scanLimit; i++ {
-		if containsSuppression(lines[i], "aitriage-ignore-file") || containsSuppression(lines[i], "aitriage:ignore-file") {
-			return true
-		}
-	}
-
-	if line < 1 || line > len(lines) {
-		return false
-	}
-
-	// Check same line and previous line for inline suppression
-	checkLines := []int{line - 1} // Current line (0-indexed)
-	if line > 1 {
-		checkLines = append(checkLines, line-2) // Previous line
-	}
-
-	for _, lIdx := range checkLines {
-		if lIdx < 0 || lIdx >= len(lines) {
-			continue
-		}
-		l := lines[lIdx]
-		// Support both syntaxes:
-		//   // aitriage-ignore: RULE-ID (reason)
-		//   // aitriage:ignore RULE-ID
-		//   # aitriage-ignore-next-line: RULE-ID
-		if containsSuppression(l, "aitriage-ignore") || containsSuppression(l, "aitriage:ignore") {
-			if strings.Contains(l, "all") || strings.Contains(l, ruleID) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// containsSuppression checks if a line contains a suppression directive.
-func containsSuppression(line, directive string) bool {
-	return strings.Contains(line, directive)
+	return suppression.Suppressed(content, line, ruleID, config.CoreRuleSources...)
 }
 
 // missingLockEcosystems returns the names of package ecosystems that the project

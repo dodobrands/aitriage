@@ -84,17 +84,20 @@ func TestClassifyFindingsAcceptsValidatedTestOnlyFalsePositive(t *testing.T) {
 	}
 }
 
+// The mitigation sits on a different line from the HIGH finding: a mitigation
+// on the flagged line itself is no longer accepted for CRITICAL/HIGH findings
+// (see TestCodeMitigationRejectsSameLineForCriticalAndHigh).
 func TestClassifyFindingsAcceptsValidatedCodeMitigationFalsePositive(t *testing.T) {
 	pinConcurrency(t)
 	project := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("verify_token()\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("def handler(request):\n    verify_token(request)\n    return load_profile(request)\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 1, Message: "missing auth"}}
+	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 3, Message: "missing auth"}}
 	mock := &fakeLLM{
 		t: t,
 		classifyHandler: func(_ int, _ []EnrichedFinding) (string, error) {
-			return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"guard exists","evidence":{"basis":"code_mitigation","file":"auth.py","line":1,"observed":"verify_token()"}}]}`, nil
+			return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"guard exists","evidence":{"basis":"code_mitigation","file":"auth.py","line":2,"observed":"verify_token(request)"}}]}`, nil
 		},
 	}
 	var usage llm.Usage

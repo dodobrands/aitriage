@@ -50,6 +50,25 @@ health_check:
 	}
 }
 
+func TestLoadConfigTrivyScannerOptions(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, `.aitriage.yaml`, `
+scanners:
+  trivy:
+    ignore_unfixed: true
+    severity: [CRITICAL, HIGH]
+`)
+
+	cfg := LoadConfig(dir)
+
+	if !cfg.Scanners.Trivy.IgnoreUnfixed {
+		t.Fatal("scanners.trivy.ignore_unfixed was not loaded")
+	}
+	if got := cfg.Scanners.Trivy.Severity; len(got) != 2 || got[0] != "CRITICAL" || got[1] != "HIGH" {
+		t.Fatalf("scanners.trivy.severity = %#v; want [CRITICAL HIGH]", got)
+	}
+}
+
 func writeConfig(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {

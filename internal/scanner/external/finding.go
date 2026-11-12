@@ -15,4 +15,13 @@ type UnifiedFinding struct {
 	EndLine            int    `json:"end_line,omitempty"`
 	StartColumn        int    `json:"start_column,omitempty"`
 	EndColumn          int    `json:"end_column,omitempty"`
+
+	// Dependency findings (Trivy vulnerabilities) name the affected package.
+	// Without these fields fifty CVEs in one outdated library read as fifty
+	// unrelated problems, and the upgrade that fixes them all is not visible.
+	Package          string `json:"package,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	FixedVersion     string `json:"fixed_version,omitempty"`
+	// PrimaryURL is the scanner's reference page for the rule or advisory.
+	PrimaryURL string `json:"primary_url,omitempty"`
 }

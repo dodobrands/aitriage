@@ -64,9 +64,54 @@ func isExactModuleVersion(version string) bool {
 // so that defers run and the error is testable.
 var ErrPolicyViolation = errors.New("security policy violation: see blocking reasons above")
 
+// ErrAuditIncomplete is returned when an audit could not be completed: the LLM
+// provider failed during triage, a required scanner did not run, or the run
+// could not finish for another operational reason. When triage was cut short
+// the artifacts are still written. It exits with status 2, so that status 1
+// keeps meaning exactly "the security policy gate failed" and CI can tell a
+// finding to fix from an outage to retry.
+var ErrAuditIncomplete = errors.New("audit incomplete")
+
+// Process exit statuses.
+const (
+	exitPolicyViolation = 1
+	exitAuditIncomplete = 2
+)
+
 // errSilentExit signals a non-zero exit whose user-facing message was already
 // rendered (e.g. setup failures). Execute exits 1 without printing anything more.
 var errSilentExit = errors.New("")
+
+// exitStatusError carries the exit status of a child process that already
+// printed its own output, such as the containerised agent, so the host CLI
+// exits the same way instead of collapsing every status to 1.
+type exitStatusError struct {
+	code int
+}
+
+func (e *exitStatusError) Error() string {
+	return fmt.Sprintf("child process exited with status %d", e.code)
+}
+
+func auditIncomplete(err error) error {
+	return fmt.Errorf("%w: %w", ErrAuditIncomplete, err)
+}
+
+// exitStatus maps a command error to the process exit status and reports
+// whether Execute still has to print the error.
+func exitStatus(err error) (int, bool) {
+	var child *exitStatusError
+	switch {
+	case errors.As(err, &child):
+		return child.code, false
+	case errors.Is(err, ErrPolicyViolation), errors.Is(err, errSilentExit):
+		return exitPolicyViolation, false
+	case errors.Is(err, ErrAuditIncomplete):
+		return exitAuditIncomplete, true
+	default:
+		return 1, true
+	}
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "aitriage [path]",
@@ -98,14 +143,17 @@ Running "aitriage" without a subcommand is equivalent to "aitriage scan .".`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
+//
+// Exit statuses: 0 success, 1 security policy violation (and command usage
+// errors), 2 audit incomplete (see ErrAuditIncomplete). A containerised agent's
+// status is passed through unchanged.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		if errors.Is(err, ErrPolicyViolation) || errors.Is(err, errSilentExit) {
-			// Message already printed by the command; just exit non-zero.
-			os.Exit(1)
+		code, report := exitStatus(err)
+		if report {
+			fmt.Fprintln(os.Stderr, err)
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 

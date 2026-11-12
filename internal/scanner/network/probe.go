@@ -64,6 +64,10 @@ var criticalPorts = map[int]bool{
 	21: true, 23: true, 25: true,
 }
 
+// lookupHost resolves a hostname. It is a variable so tests can stay off the
+// network.
+var lookupHost = net.LookupHost
+
 // TargetDiscovery searches for potential network targets in the project.
 func FindTargets(projectPath string) []string {
 	targets := make(map[string]bool)
@@ -140,26 +144,22 @@ func ProbeHost(target string, fullScan bool) []NetworkFinding {
 	var findings []NetworkFinding
 	var mu sync.Mutex
 
-	// DNS resolution for hostnames
+	// DNS resolution for hostnames. A name that does not resolve was not
+	// probed: there is nothing to connect to, which says nothing about the
+	// host's exposure. Reporting it as a MEDIUM finding put a "port-53" entry
+	// into every CI run, where Compose service names never resolve.
 	if target != "127.0.0.1" && net.ParseIP(target) == nil {
-		ips, err := net.LookupHost(target)
-		if err == nil && len(ips) > 0 {
-			findings = append(findings, NetworkFinding{
-				Target:   target,
-				Port:     53,
-				Service:  "DNS",
-				Severity: "INFO",
-				Message:  fmt.Sprintf("Resolved %s → %v", target, ips),
-			})
-		} else if err != nil {
-			findings = append(findings, NetworkFinding{
-				Target:   target,
-				Port:     53,
-				Service:  "DNS",
-				Severity: "MEDIUM",
-				Message:  fmt.Sprintf("Failed to resolve %s: %v", target, err),
-			})
+		ips, err := lookupHost(target)
+		if err != nil || len(ips) == 0 {
+			return nil
 		}
+		findings = append(findings, NetworkFinding{
+			Target:   target,
+			Port:     53,
+			Service:  "DNS",
+			Severity: "INFO",
+			Message:  fmt.Sprintf("Resolved %s → %v", target, ips),
+		})
 	}
 
 	timeout := 500 * time.Millisecond
