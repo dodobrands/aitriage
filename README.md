@@ -409,7 +409,7 @@ is never reported as your vulnerability.
 | `AITRIAGE_RESPECT_GITIGNORE=false` | Audit ignored files too. Use when the question is "did a secret ever reach this working tree", not "is my application vulnerable" |
 | `AITRIAGE_SCAN_VENDORED=true` | Audit vendored and generated directories as if they were your own source |
 | `.aitriageignore` | Per-project excludes, same syntax as `.gitignore`, always honoured |
-| `ignore.paths` in `.aitriage.yaml` | Same syntax as `.gitignore`, relative to the project root, always honoured by every scanner |
+| `ignore.paths` in `.aitriage.yaml` | Same syntax as `.gitignore`, relative to the project root, always honoured by every scanner. As in git, a pattern with a slash before its last character (`app/legacy/`) is anchored at the root; use `**/app/legacy/` for any depth |
 
 The built-in engine used to match `ignore.paths` as substrings, so `vendor` also hid
 `src/vendors/` and `.git` hid `.github/`. Such directories are scanned again; for one release
@@ -457,6 +457,8 @@ token = "fixture"  # aitriage-ignore: B105, gitleaks:generic-api-key (test data)
 
 `aitriage-ignore` (or `aitriage:ignore`) covers its own line and the next one;
 `-next-line` covers only the next one.
+A directive counts only when it opens a comment; a mention in prose, Markdown text or a string
+literal is ignored.
 
 Commit `.aitriage-suppressions.json`: `aitriage agent` (in CI too), AI IDE runs and the Web UI
 apply it, and a dismissed finding is not sent to the LLM. This is how to accept a specific CVE
