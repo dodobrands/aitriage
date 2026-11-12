@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,15 +22,20 @@ import (
 // hashes the class, the project-relative file, the content of the flagged line
 // and the occurrence of that content in the file, but never the line number.
 // Edits elsewhere in the file leave it unchanged; a change to the flagged line
-// gives a new identity, as it should.
+// gives a new identity, as it should. Whitespace inside the line does not
+// count, and neither does its indentation in brace languages; in Python and
+// YAML the indentation is part of the line (see indentationSensitive).
 //
 //   - Dependency advisories are identified by advisory, package and manifest.
 //   - File-scoped classes (a Dockerfile without USER) by class and file.
 //   - Project-level findings by rule: two rules of one class are two
 //     findings (see semanticFindingKey).
 //
-// Findings that still share an identity (two reports on one line that no
-// class merges) are told apart by their position in the canonical order.
+// Findings that still share an identity (two reports of one rule on one line
+// that no class merges) are told apart by what they report: the message and,
+// for advisories, the installed version. Only reports identical in that too
+// fall back to their position in the canonical order, so a report that is
+// added or removed never hands its identity to another one.
 
 const stableIDLength = 32
 
@@ -38,21 +44,34 @@ const stableIDLength = 32
 const minVulnIDHex = 6
 
 // assignStableIDs sets StableID on every finding. findings must already be in
-// canonical order, which makes the tie-break for shared identities
-// deterministic.
+// canonical order, which makes the last-resort tie-break deterministic.
 func assignStableIDs(projectPath string, findings []EnrichedFinding) {
 	lines := newLineIndex(projectPath)
+	bases := make([]string, len(findings))
+	shared := make(map[string]int, len(findings))
+	for i := range findings {
+		bases[i] = stableIdentity(findings[i], lines)
+		shared[bases[i]]++
+	}
 	seen := make(map[string]int, len(findings))
 	for i := range findings {
-		base := stableIdentity(findings[i], lines)
-		n := seen[base]
-		seen[base] = n + 1
-		if n > 0 {
-			base += "\x00#" + strconv.Itoa(n)
+		identity := bases[i]
+		if shared[identity] > 1 {
+			identity += "\x00report\x00" + reportDigest(findings[i])
 		}
-		sum := sha256.Sum256([]byte(base))
+		n := seen[identity]
+		seen[identity] = n + 1
+		if n > 0 {
+			identity += "\x00#" + strconv.Itoa(n)
+		}
+		sum := sha256.Sum256([]byte(identity))
 		findings[i].StableID = hex.EncodeToString(sum[:])[:stableIDLength]
 	}
+}
+
+// reportDigest is what tells apart reports that share a stable identity.
+func reportDigest(f EnrichedFinding) string {
+	return strings.Join(strings.Fields(f.Message), " ") + "\x00" + strings.TrimSpace(f.InstalledVersion)
 }
 
 func stableIdentity(f EnrichedFinding, lines *lineIndex) string {
@@ -140,7 +159,8 @@ func stableIDOf(f EnrichedFinding) string {
 // model judged, without line numbers: the stable identity (which covers the
 // flagged line), the rule and message, and the code window sent with the
 // finding. A pure line shift therefore reuses the verdict; editing the flagged
-// line or the code around it invalidates it.
+// line or the code around it invalidates it, and so does re-indenting it in a
+// language where indentation is code.
 func verdictCacheKey(f EnrichedFinding) string {
 	payload := strings.Join([]string{
 		"verdict-key-v1",
@@ -149,7 +169,7 @@ func verdictCacheKey(f EnrichedFinding) string {
 		strings.ToLower(strings.TrimSpace(f.Source)),
 		strings.ToLower(strings.TrimSpace(f.ID)),
 		strings.TrimSpace(f.Message),
-		normalizedSnippetWindow(f.Snippet),
+		normalizedSnippetWindow(f.Snippet, indentationSensitive(f.File)),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])[:stableIDLength]
@@ -160,22 +180,44 @@ func verdictCacheKey(f EnrichedFinding) string {
 var snippetLineRefs = regexp.MustCompile(`\((?:lines \d+-\d+|around line \d+)\)`)
 
 // normalizedSnippetWindow is the code window without its line numbers and
-// without whitespace differences.
-func normalizedSnippetWindow(snippet string) string {
+// without whitespace differences (except indentation where it is code).
+func normalizedSnippetWindow(snippet string, keepIndentation bool) string {
 	var out []string
 	for _, line := range strings.Split(snippet, "\n") {
 		line = snippetLineRefs.ReplaceAllString(line, "")
-		if normalized := normalizeLineContent(line); normalized != "" {
+		if normalized := normalizeLineContent(line, keepIndentation); normalized != "" {
 			out = append(out, normalized)
 		}
 	}
 	return strings.Join(out, "\n")
 }
 
-// normalizeLineContent collapses whitespace, so re-indenting a line does not
-// change its identity.
-func normalizeLineContent(line string) string {
-	return strings.Join(strings.Fields(line), " ")
+// indentationSensitiveExtensions are the languages in which leading
+// whitespace is code: re-indenting a statement moves it into or out of a
+// block. Dedenting a Python call out of its `if is_safe(path):` guard changes
+// nothing but the indentation; the line must not keep the identity, and the
+// cached verdict, it had inside the guard.
+var indentationSensitiveExtensions = stringSet(
+	".py", ".pyw", ".pyi", ".pyx", ".yaml", ".yml",
+	".coffee", ".nim", ".hs", ".pug", ".sass", ".haml", ".slim",
+)
+
+// indentationSensitive reports whether the indentation of a line in path is
+// part of its meaning.
+func indentationSensitive(path string) bool {
+	return indentationSensitiveExtensions[strings.ToLower(filepath.Ext(strings.TrimSpace(path)))]
+}
+
+// normalizeLineContent collapses whitespace, so reformatting a line does not
+// change its identity. With keepIndentation the leading whitespace is kept as
+// written: in an indentation-sensitive language it decides which block the
+// line belongs to. A blank line is empty either way.
+func normalizeLineContent(line string, keepIndentation bool) string {
+	content := strings.Join(strings.Fields(line), " ")
+	if content == "" || !keepIndentation {
+		return content
+	}
+	return line[:len(line)-len(strings.TrimLeft(line, " \t"))] + content
 }
 
 // maxIdentityFileBytes bounds the files read for line identities; the context
@@ -202,7 +244,7 @@ func (x *lineIndex) lineIdentity(file string, line int) (string, int) {
 	}
 	lines, ok := x.files[file]
 	if !ok {
-		lines = readNormalizedLines(x.paths.absolute(file))
+		lines = readNormalizedLines(x.paths.absolute(file), indentationSensitive(file))
 		x.files[file] = lines
 	}
 	if lines == nil || line > len(lines) {
@@ -219,7 +261,7 @@ func (x *lineIndex) lineIdentity(file string, line int) (string, int) {
 	return hex.EncodeToString(sum[:16]), occurrence
 }
 
-func readNormalizedLines(path string) []string {
+func readNormalizedLines(path string, keepIndentation bool) []string {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > maxIdentityFileBytes {
 		return nil
@@ -231,7 +273,7 @@ func readNormalizedLines(path string) []string {
 	raw := bytes.Split(data, []byte("\n"))
 	lines := make([]string, len(raw))
 	for i, line := range raw {
-		lines[i] = normalizeLineContent(string(line))
+		lines[i] = normalizeLineContent(string(line), keepIndentation)
 	}
 	return lines
 }
