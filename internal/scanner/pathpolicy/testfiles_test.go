@@ -16,6 +16,8 @@ func TestIsTestLikeUsesStructuralNames(t *testing.T) {
 		`C:\\repo\\__mocks__\\client.ts`,
 		"spec/auth_spec.rb",
 		"conftest.py",
+		"identity/tests.py",
+		"crapi/workshop/tests.py",
 	} {
 		if !IsTestLike(path) {
 			t.Errorf("IsTestLike(%q) = false, want true", path)
@@ -29,6 +31,8 @@ func TestIsTestLikeUsesStructuralNames(t *testing.T) {
 		"src/mockery.go",
 		"src/specification.go",
 		"production/auth.go",
+		"src/routes/tests.ts", // a "tests" resource in an application, not a test module
+		"src/contests.py",
 	} {
 		if IsTestLike(path) {
 			t.Errorf("IsTestLike(%q) = true, want false", path)

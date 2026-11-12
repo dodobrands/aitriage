@@ -1,40 +1,69 @@
 # ============================================================
 # AITRIAGE RULES: Universal — AI Code Residue Detection
 # ============================================================
-# These rules detect patterns unique to AI-generated code:
-# chat artifacts, scaffolding stubs, zombie code blocks,
-# and unreviewed LLM output left in production.
+# These rules detect leftovers of AI chat sessions in source
+# comments: apologies, "Certainly! Here is ..." preambles,
+# scaffolding markers and replaced code blocks. They are
+# code-quality signals (LOW), not vulnerabilities.
+#
+# All rules use `regions: comments`: the same words inside a
+# string literal are usually a real system prompt or UI copy,
+# not residue.
 # ============================================================
 
 rules:
   - id: ENTR-04
-    name: "Over-Apologetic Comments"
+    name: "AI Chat Residue in Comments (Apology / Self-Reference)"
     stack: universal
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
-    target: docs
-    pattern: "(?i)(I apologize|As an AI|I cannot modify|ChatGPT|my previous mistake)"
-    suggestion: "MEDIUM: AI conversational residue detected. This suggests unvetted AI code generation. Review and clean."
+    target: all
+    regions: comments
+    pattern: '(?i)\b(?:I apologi[sz]e(?: for|,? but)|as an AI language model\b|as an AI (?:assistant|model),? I\b|I cannot (?:modify|access|browse|execute)\b|my previous (?:mistake|response|answer)\b|as of my (?:last )?knowledge cutoff)'
+    severity: LOW
+    metadata:
+      cwe: "CWE-546"
+      confidence: high
+      subcategory: policy
+    suggestion: "A comment contains text from an AI chat session (an apology or \"as an AI language model\"). The surrounding code may not have been reviewed; review it and remove the comment."
 
   - id: ENTR-ZOMBIE-CODE
-    name: "Zombie Code"
+    name: "Zombie Code Left by an AI Edit"
     stack: universal
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
-    pattern: '(?s)/\*\s*OLD CODE.*?\*/|//\s*REPLACED BY AI.*?\n'
-    suggestion: "MEDIUM: Zombie code (AI-replaced blocks) found. Clean up your codebase."
+    regions: comments
+    pattern: '(?s)/\*\s*OLD CODE\b.*?\*/|(?://|#)\s*REPLACED BY AI\b[^\n]*'
+    severity: LOW
+    metadata:
+      cwe: "CWE-561"
+      confidence: high
+      subcategory: policy
+    suggestion: "A commented-out block marked as old or replaced code is still in the file. Delete it; version control keeps the history."
 
   - id: ENTR-AI-RESIDUE
-    name: "Chat Residue"
+    name: "AI Chat Preamble in Comments"
     stack: universal
-    extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx", ".md"]
+    extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
-    pattern: '(?i)(Revised plan:|Modified step:|As an AI assistant|Certainly! Here is)'
-    suggestion: "HIGH: AI chat artifacts found in production files. Verify code correctness manually."
+    regions: comments
+    pattern: '(?i)\b(?:Certainly|Sure|Of course|Absolutely)[!,.] Here(?:\x27s| is) (?:the|an?|your)\b|(?://+|#+|/?\*+)[ \t]*Here(?:\x27s| is) the (?:updated|revised|corrected) (?:code|implementation|version|file)\b'
+    severity: LOW
+    metadata:
+      cwe: "CWE-546"
+      confidence: high
+      subcategory: policy
+    suggestion: "A comment contains an AI chat preamble (\"Certainly! Here is the ...\"). The code was likely pasted from a chat; review it and remove the comment."
 
   - id: ENTR-SCAFFOLDING
-    name: "AI Scaffolding Residue"
+    name: "AI Scaffolding Marker"
     stack: universal
-    extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx", ".md"]
+    extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
-    pattern: '(?i)(//\s*TODO:?\s*AI|//\s*Agent generated|/\*\s*Refined by AI\s*\*/|//\s*Placeholder for logic)'
-    suggestion: "MEDIUM: AI scaffolding markers found. The logic may be incomplete. Complete the implementation and remove markers."
+    regions: comments
+    pattern: '(?i)(?://|#)\s*(?:TODO:?\s*AI\b|Agent[- ]generated\b|Placeholder for (?:the )?logic\b)|/\*\s*Refined by AI\s*\*/'
+    severity: LOW
+    metadata:
+      cwe: "CWE-546"
+      confidence: high
+      subcategory: policy
+    suggestion: "An AI scaffolding marker (\"TODO: AI\", \"Placeholder for logic\") is left in the code, so the logic may be incomplete. Finish the implementation and remove the marker."

@@ -1,0 +1,8 @@
+{"schema_version": 1, "findings": [
+  {"finding": {"id": "RULE-A", "source": "aitriage", "type": "core", "origins": [
+     {"rule_id": "RULE-A", "source": "aitriage", "type": "core"},
+     {"rule_id": "B101", "source": "bandit", "type": "external"}]},
+   "disposition": {"disposition": "False Positive", "disposition_source": "cache"}},
+  {"finding": {"id": "RULE-C", "source": "aitriage", "type": "core"},
+   "disposition": {"disposition": "Needs Manual Review", "disposition_source": "triage-failed"}}
+]}

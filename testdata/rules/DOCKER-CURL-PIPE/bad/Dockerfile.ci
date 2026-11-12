@@ -1,0 +1,4 @@
+FROM ubuntu:24.04
+# ruleid: DOCKER-CURL-PIPE
+RUN curl -fsSL https://deb.example.com/setup.sh \
+    | sudo -E bash -

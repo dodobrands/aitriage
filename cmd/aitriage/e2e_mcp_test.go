@@ -194,10 +194,10 @@ func TestE2E_RunStartOverProcessMCP(t *testing.T) {
 	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(proj, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE'\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(proj, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE';\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT';\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

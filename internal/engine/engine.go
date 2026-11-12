@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/models"
+	"github.com/dodobrands/aitriage/internal/regions"
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	"github.com/dodobrands/aitriage/rules"
 	"gopkg.in/yaml.v3"
@@ -23,10 +25,20 @@ import (
 type Rule = models.Rule
 
 func (e *Engine) compileRule(r *models.Rule) {
-	if r.Pattern != "" {
+	if r.Pattern != "" && r.Target != "ast" {
 		c, err := regexp.Compile(r.Pattern)
 		if err == nil {
 			r.CompiledPattern = c
+		} else {
+			slog.Warn("Rule pattern is not valid RE2; matching it as a literal string", "rule", r.ID, "error", err)
+		}
+	}
+	if r.PatternNot != "" {
+		c, err := regexp.Compile(r.PatternNot)
+		if err == nil {
+			r.CompiledNot = c
+		} else {
+			slog.Warn("Rule pattern-not is not valid RE2; ignoring it", "rule", r.ID, "error", err)
 		}
 	}
 	for i := range r.Patterns {
@@ -157,31 +169,13 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		return nil, fmt.Errorf("failed to load embedded rules: %w", err)
 	}
 
-	e := &Engine{
-		Config: cfg,
-	}
+	e := &Engine{Config: cfg}
 
-	// Precompile patterns and parse severity
-	for i, r := range loadedRules {
-		// Parse Severity from Suggestion if not set
-		if r.Severity == "" {
-			parts := strings.SplitN(r.Suggestion, ": ", 2)
-			if len(parts) == 2 {
-				sel := strings.ToUpper(parts[0])
-				if sel == "CRITICAL" || sel == "HIGH" || sel == "MEDIUM" || sel == "LOW" {
-					loadedRules[i].Severity = sel
-					loadedRules[i].Suggestion = parts[1]
-				}
-			}
-		}
-
-		if loadedRules[i].Severity == "" {
-			loadedRules[i].Severity = "LOW" // Default fallback
-		}
-
+	// Built-in rules carry an explicit severity (enforced by rules/catalog_test.go).
+	for i := range loadedRules {
+		resolveSeverity(&loadedRules[i], false)
 		e.compileRule(&loadedRules[i])
 	}
-	e.Rules = loadedRules
 
 	// Load rule packs from ~/.aitriage/packs/
 	if packRules, err := loadPackRules(); err == nil && len(packRules) > 0 {
@@ -192,6 +186,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		for i, r := range packRules {
 			if !seen[r.ID] {
 				seen[r.ID] = true
+				resolveSeverity(&packRules[i], true)
 				e.compileRule(&packRules[i])
 				loadedRules = append(loadedRules, packRules[i])
 			}
@@ -214,17 +209,36 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 				Suggestion: cr.Suggestion,
 				Severity:   cr.Severity,
 			}
-			if r.Pattern != "" {
-				c, err := regexp.Compile(r.Pattern)
-				if err == nil {
-					r.CompiledPattern = c
-				}
-			}
+			resolveSeverity(&r, true)
+			e.compileRule(&r)
 			loadedRules = append(loadedRules, r)
 		}
 	}
 
-	return &Engine{Rules: loadedRules, Config: cfg}, nil
+	e.Rules = loadedRules
+	return e, nil
+}
+
+// severities lists the values a rule severity may take.
+var severities = map[string]bool{"CRITICAL": true, "HIGH": true, "MEDIUM": true, "LOW": true}
+
+// resolveSeverity normalizes a rule's severity. Built-in rules must declare it
+// in the `severity` field. Rules from packs and project configuration predate
+// that field, so for them a legacy "SEVERITY: " prefix of the suggestion is
+// still honoured (and removed from the text). Anything else falls back to LOW
+// with a warning, so a rule never runs with an empty severity.
+func resolveSeverity(r *models.Rule, legacyPrefix bool) {
+	sev := strings.ToUpper(strings.TrimSpace(r.Severity))
+	if sev == "" && legacyPrefix {
+		if prefix, rest, ok := strings.Cut(r.Suggestion, ": "); ok && severities[strings.ToUpper(prefix)] {
+			sev, r.Suggestion = strings.ToUpper(prefix), rest
+		}
+	}
+	if !severities[sev] {
+		slog.Warn("Rule has no valid severity; using LOW", "rule", r.ID, "severity", r.Severity)
+		sev = "LOW"
+	}
+	r.Severity = sev
 }
 
 // Run executes the engine against a ProjectContext using a Single-Pass O(N) architecture.
@@ -283,15 +297,17 @@ func (e *Engine) Run(ctx *core.ProjectContext) []core.CheckResult {
 				if evidence != "" {
 					mu.Lock()
 					results = append(results, core.CheckResult{
-						ID:         rule.ID,
-						Name:       rule.Name,
-						Status:     core.Absent,
-						Evidence:   fmt.Sprintf("Rule %s found issue in %s", rule.ID, f.Path),
-						Suggestion: rule.Suggestion,
-						Framework:  ctx.Stack,
-						Severity:   rule.Severity,
-						Line:       line,
-						File:       f.Path,
+						ID:           rule.ID,
+						Name:         rule.Name,
+						Status:       core.Absent,
+						Evidence:     fmt.Sprintf("Rule %s found issue in %s", rule.ID, f.Path),
+						Suggestion:   rule.Suggestion,
+						Framework:    ctx.Stack,
+						Severity:     rule.Severity,
+						Line:         line,
+						File:         f.Path,
+						CWE:          rule.Metadata["cwe"],
+						OWASPMapping: rule.Metadata["owasp"],
 					})
 					mu.Unlock()
 				}
@@ -320,9 +336,22 @@ func (e *Engine) Run(ctx *core.ProjectContext) []core.CheckResult {
 }
 
 func (e *Engine) matchesExtension(r Rule, f *core.FileInfo) bool {
-	for _, ext := range r.Extensions {
-		if strings.EqualFold(ext, f.Extension) || strings.EqualFold(ext, filepath.Base(f.Path)) {
+	return matchesFileName(r.Extensions, f.Extension, filepath.Base(f.Path))
+}
+
+// matchesFileName reports whether a file matches one of a rule's extensions.
+// An entry is an extension (".py"), an exact base name ("Dockerfile"), or a
+// base-name glob ("Dockerfile.*", "*.dockerfile"); all compare case-insensitively.
+func matchesFileName(entries []string, ext, base string) bool {
+	lowerBase := strings.ToLower(base)
+	for _, entry := range entries {
+		if strings.EqualFold(entry, ext) || strings.EqualFold(entry, base) {
 			return true
+		}
+		if strings.ContainsAny(entry, "*?[") {
+			if ok, err := filepath.Match(strings.ToLower(entry), lowerBase); err == nil && ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -364,6 +393,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "No lockfile for " + strings.Join(missing, ", ") + " in " + ctx.RootPath,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}
@@ -392,6 +422,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Missing required file matching: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}
@@ -411,6 +442,13 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 					continue
 				}
 				examined++
+				if rule.Regions != "" {
+					if _, ok := e.regionMatch(rule, f, false); ok {
+						found = true
+						break
+					}
+					continue
+				}
 				var b []byte
 				switch rule.Target {
 				case "code":
@@ -440,6 +478,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Required pattern not found: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}
@@ -463,7 +502,10 @@ var secretConfigExts = map[string]bool{
 	".properties": true, ".xml": true,
 }
 
-// leakSinkRegexCache avoids recompiling the per-variable leak regex repeatedly.
+// evaluateEntropy runs the hardcoded-secret detector (secrets.go) over one file
+// and turns its hits into findings. Severity and advice come from the hit; a
+// secret that is also passed to a log or print call is reported as
+// SECRET-LEAK-LOG with the severity of the underlying hit.
 func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	// Skip test files — fixtures legitimately contain dummy tokens.
 	if f.IsTest {
@@ -472,38 +514,43 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	if isVendoredPath(projectRelPath(f)) {
 		return nil
 	}
-
-	base := strings.ToLower(filepath.Base(f.Path))
-	isEnv := strings.Contains(base, ".env")
-	scanAssign := entropyAllowedExts[f.Extension] || isEnv
-	scanSignatures := scanAssign || secretConfigExts[f.Extension]
-	if !scanSignatures {
+	kind, ok := secretScanKindFor(f.Path, f.Extension)
+	if !ok {
 		return nil
 	}
 
 	content, err := f.GetContent()
-	if err != nil {
+	if err != nil || f.IsBinary {
 		return nil
 	}
 	src := string(content)
 	lowerSrc := strings.ToLower(src)
+	mayLog := strings.Contains(lowerSrc, "log") || strings.Contains(lowerSrc, "print") ||
+		strings.Contains(lowerSrc, "console") || strings.Contains(lowerSrc, "puts")
 
 	var results []core.CheckResult
-	for _, h := range detectSecretHits(src, scanAssign) {
-		id, name, severity := h.id, h.name, h.severity
-		suggestion := "CRITICAL: hardcoded credential in source. Remove it, load the value from a secret manager or environment variable, and rotate the exposed credential."
-
-		// Escalate when the secret is not only hardcoded but written to a log/print sink.
-		if h.varName != "" && (strings.Contains(lowerSrc, "log") || strings.Contains(lowerSrc, "print") || strings.Contains(lowerSrc, "console")) {
-			leakRe := regexp.MustCompile(`(?i)(?:log|print|console)\w*\s*\([^)]*` + regexp.QuoteMeta(h.varName) + `[^)]*\)`)
-			if leakRe.MatchString(src) {
-				id, name, severity = "SECRET-LEAK-LOG", "Hardcoded Secret Leaked to Logger", "CRITICAL"
-				suggestion = "CRITICAL: secret is hardcoded AND passed to a log/print sink. Remove the secret, remove the log statement, and rotate the credential immediately."
-			}
+	for _, h := range detectSecretHits(src, kind) {
+		id, name, suggestion := h.id, h.name, h.advice
+		leaked := mayLog && h.varName != "" && leaksToLogger(src, h.varName)
+		if leaked {
+			id, name, suggestion = secretLeakLogID, "Hardcoded Secret Leaked to Logger", adviceLeakLog
 		}
 
-		// Inline suppression: honour both the specific id and the legacy alias.
-		if e.isLineIgnored(f, h.line, id) || e.isLineIgnored(f, h.line, "ENTROPY-SECRET") {
+		// Inline suppression: honour the reported id, the id of the
+		// underlying hit, and the legacy aliases ENTROPY-SECRET and
+		// ENTROPY-SECRET-LEAK.
+		aliases := []string{id, h.id, "ENTROPY-SECRET"}
+		if leaked {
+			aliases = append(aliases, "ENTROPY-SECRET-LEAK")
+		}
+		ignored := false
+		for _, alias := range aliases {
+			if e.isLineIgnored(f, h.line, alias) {
+				ignored = true
+				break
+			}
+		}
+		if ignored {
 			continue
 		}
 
@@ -515,7 +562,7 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 			Line:       h.line,
 			Evidence:   fmt.Sprintf("%s (%s)", name, h.evidence),
 			Suggestion: suggestion,
-			Severity:   severity,
+			Severity:   h.severity,
 		})
 	}
 	return results
@@ -599,11 +646,30 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 		return "", 0
 	}
 
+	// Region-aware regex rules run over the raw file and filter matches by
+	// where they start (code, comment, string literal).
+	if rule.Regions != "" && rule.Target != "ast" && rule.Target != "condition" && rule.Pattern != "" {
+		if !conditionAllows(rule, f) {
+			return "", 0
+		}
+		if rule.CompiledNot != nil {
+			if text, err := f.GetNonCommentContent(); err != nil || rule.CompiledNot.Match(text) {
+				return "", 0
+			}
+		}
+		if line, ok := e.regionMatch(rule, f, true); ok {
+			return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), line
+		}
+		return "", 0
+	}
+
 	// 3. Handle logical PatternNot
 	if rule.PatternNot != "" {
 		notRule := rule
 		notRule.Pattern = rule.PatternNot
+		notRule.CompiledPattern = rule.CompiledNot
 		notRule.PatternNot = ""
+		notRule.CompiledNot = nil
 		_, line := e.evaluateFile(notRule, f)
 		if line != 0 {
 			return "", 0 // Matched the negative pattern
@@ -646,17 +712,25 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 		tree, err2 := f.GetTree()
 		b, err3 := f.GetContent()
 		if err2 == nil && err3 == nil {
+			if !conditionAllows(rule, f) {
+				return "", 0
+			}
 			lang, _ := ast.GetLanguage(f.Extension)
 			matches, astErr := ast.MatchInTree(lang, tree, b, rule.Pattern)
-			if astErr == nil && len(matches) > 0 {
-				// Use the real line number from the matched AST node
-				node := matches[0].Node
-				if node != nil {
-					return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path),
-						int(node.StartPosition().Row) + 1 // tree-sitter rows are 0-indexed
-				}
-				return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), 1
+			if astErr != nil {
+				slog.Debug("AST rule query failed", "rule", rule.ID, "file", f.Path, "error", astErr)
 			}
+			for _, m := range matches {
+				line := 1
+				if m.Node != nil {
+					line = int(m.Node.StartPosition().Row) + 1 // tree-sitter rows are 0-indexed
+				}
+				// An inline directive silences one occurrence, not the file.
+				if !e.isLineIgnored(f, line, rule.ID) {
+					return fmt.Sprintf("Rule %s triggered on %s", rule.ID, f.Path), line
+				}
+			}
+			return "", 0
 		}
 		if err2 != nil {
 			err = err2
@@ -675,6 +749,10 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 
 	if token, ok := strings.CutPrefix(rule.Condition, "not_contains:"); ok &&
 		strings.Contains(strings.ToLower(targetStr), strings.ToLower(token)) {
+		return "", 0
+	}
+	if token, ok := strings.CutPrefix(rule.Condition, "contains:"); ok &&
+		!strings.Contains(strings.ToLower(targetStr), strings.ToLower(token)) {
 		return "", 0
 	}
 
@@ -708,6 +786,104 @@ func (e *Engine) evaluateFile(rule Rule, f *core.FileInfo) (string, int) {
 	}
 
 	return "", 0
+}
+
+// regionMatch returns the line of the first match of the rule's pattern that
+// starts in an allowed region and, when honourIgnore is set, is not silenced
+// by an inline directive. Later matches are considered when earlier ones are
+// rejected, so a comment or an ignored occurrence cannot hide a real one.
+func (e *Engine) regionMatch(rule Rule, f *core.FileInfo, honourIgnore bool) (int, bool) {
+	if rule.CompiledPattern == nil {
+		return 0, false
+	}
+	content, err := f.GetContent()
+	if err != nil {
+		return 0, false
+	}
+	kinds, err := f.GetRegions()
+	if err != nil || len(kinds) != len(content) {
+		return 0, false
+	}
+	line, pos, start, seen := 1, 0, 0, 0
+	for start < len(content) && seen < maxMatchesPerFile {
+		restart := -1
+		for _, loc := range rule.CompiledPattern.FindAllIndex(content[start:], maxMatchesPerFile-seen) {
+			seen++
+			from, to := start+loc[0], start+loc[1]
+			line += bytes.Count(content[pos:from], []byte{'\n'})
+			pos = from
+			allowed := from >= len(kinds) || regionAllows(rule.Regions, kinds[from])
+			if allowed && (!honourIgnore || !e.isLineIgnored(f, line, rule.ID)) {
+				return line, true
+			}
+			// A rejected match that runs over several lines may cover a real
+			// occurrence further down (a commented-out call followed by the
+			// live one): search again from the next line.
+			if nl := bytes.IndexByte(content[from:to], '\n'); nl >= 0 && from+nl+1 < len(content) {
+				restart = from + nl + 1
+				break
+			}
+		}
+		if restart < 0 {
+			break
+		}
+		start = restart
+	}
+	return 0, false
+}
+
+// maxMatchesPerFile bounds the work spent on one pattern in one file.
+const maxMatchesPerFile = 10000
+
+// regionAllows reports whether a match starting in region kind counts for the
+// rule's region filter.
+func regionAllows(filter string, kind regions.Kind) bool {
+	switch filter {
+	case RegionsCode:
+		return kind == regions.Code
+	case RegionsCodeAndStrings:
+		return kind != regions.Comment
+	case RegionsComments:
+		return kind == regions.Comment
+	default: // RegionsAll
+		return true
+	}
+}
+
+// Region filters a rule may declare in its `regions` field.
+const (
+	RegionsCode           = "code"
+	RegionsCodeAndStrings = "code_and_strings"
+	RegionsComments       = "comments"
+	RegionsAll            = "all"
+)
+
+// conditionAllows evaluates the file-level conditions of a rule over the file
+// without its comments: `not_contains:A|B` drops the file when any token is
+// present, `contains:A|B` keeps it only when one is. A comment that mentions
+// a token neither suppresses nor enables a rule.
+func conditionAllows(rule Rule, f *core.FileInfo) bool {
+	negate := false
+	tokens, ok := strings.CutPrefix(rule.Condition, "contains:")
+	if !ok {
+		if tokens, ok = strings.CutPrefix(rule.Condition, "not_contains:"); !ok {
+			return true
+		}
+		negate = true
+	}
+	text, err := f.GetNonCommentContent()
+	if err != nil {
+		return false
+	}
+	lower := bytes.ToLower(text)
+	found := false
+	for _, token := range strings.Split(tokens, "|") {
+		if token != "" && bytes.Contains(lower, []byte(strings.ToLower(token))) {
+			found = true
+			break
+		}
+	}
+	return found != negate
 }
 
 // isLineIgnored reports whether an inline directive silences ruleID at line.

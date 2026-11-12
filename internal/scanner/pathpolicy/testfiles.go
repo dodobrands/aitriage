@@ -23,7 +23,9 @@ func IsTestLike(path string) bool {
 	}
 
 	base := filepath.Base(clean)
-	if base == "conftest.py" {
+	// conftest.py holds pytest fixtures; tests.py is Django's per-app test
+	// module (startapp creates it next to models.py and views.py).
+	if base == "conftest.py" || base == "tests.py" {
 		return true
 	}
 	for _, marker := range []string{".test.", ".spec.", ".mock."} {

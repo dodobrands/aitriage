@@ -1,0 +1,5 @@
+{"project_path": "/new/place/app", "results": [
+ {"id": "R-KEEP", "severity": "HIGH", "file": "/new/place/app/main.py", "line": 3},
+ {"id": "R-SEV", "severity": "HIGH", "file": "/new/place/app/x.py", "line": 1},
+ {"id": "R-NEW", "severity": "MEDIUM", "file": "/new/place/app/y.py", "line": 2}
+]}

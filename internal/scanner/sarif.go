@@ -40,7 +40,8 @@ type SarifRule struct {
 }
 
 type SarifProperties struct {
-	SecuritySeverity string `json:"security-severity,omitempty"`
+	SecuritySeverity string   `json:"security-severity,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
 }
 
 type SarifResult struct {
@@ -126,6 +127,7 @@ func (r ScanReport) ToSARIF() ([]byte, error) {
 				},
 				Properties: &SarifProperties{
 					SecuritySeverity: convertSeverity(res.Severity),
+					Tags:             sarifTags(res),
 				},
 			}
 			run.Tool.Driver.Rules = append(run.Tool.Driver.Rules, rule)
@@ -190,4 +192,15 @@ func convertSeverity(sev string) string {
 	default:
 		return "5.0"
 	}
+}
+
+// sarifTags returns the code scanning tags of a rule: "security" and, when the
+// rule names one, its CWE as "external/cwe/cwe-<n>", the form GitHub uses to
+// group and filter alerts.
+func sarifTags(res core.CheckResult) []string {
+	tags := []string{"security"}
+	if n, ok := strings.CutPrefix(strings.ToUpper(strings.TrimSpace(res.CWE)), "CWE-"); ok && n != "" {
+		tags = append(tags, "external/cwe/cwe-"+n)
+	}
+	return tags
 }

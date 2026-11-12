@@ -10,6 +10,8 @@ import (
 
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+
+	"github.com/dodobrands/aitriage/internal/regions"
 )
 
 // ── The shape of a code mitigation ───────────────────────────────────────────
@@ -78,7 +80,7 @@ var errNoMitigationShape = errors.New("neither a guard nor a re-assignment throu
 // name or a re-assignment of one through a call, in the same function as the
 // flagged line. starts are the byte offsets of the cited text's code
 // occurrences on the cited line.
-func checkMitigationShape(path string, source []byte, lines []string, regions [][]regionKind, finding EnrichedFinding, evidence *DispositionEvidence, starts []int, shared map[string]bool) error {
+func checkMitigationShape(path string, source []byte, lines []string, lineKinds [][]regions.Kind, finding EnrichedFinding, evidence *DispositionEvidence, starts []int, shared map[string]bool) error {
 	lead := len(evidence.Observed) - len(strings.TrimLeft(evidence.Observed, " \t"))
 	points := make([]int, len(starts))
 	for i, start := range starts {
@@ -93,7 +95,7 @@ func checkMitigationShape(path string, source []byte, lines []string, regions []
 		return fmt.Errorf("code_mitigation evidence for a %s finding must be tied to the flagged statement's function, and AITriage has no parser for %s: %w",
 			strings.ToUpper(strings.TrimSpace(firstNonEmpty(finding.Severity, "unrated"))), filepath.Base(path), errPersonMustDecide)
 	}
-	if err := textMitigationCheck(lines[evidence.Line-1], regions[evidence.Line-1], shared); err != nil {
+	if err := textMitigationCheck(lines[evidence.Line-1], lineKinds[evidence.Line-1], shared); err != nil {
 		return shapeRejection(evidence.Line, shared, err)
 	}
 	return nil
@@ -543,7 +545,7 @@ var (
 // the code of the cited line opens a conditional, asserts, or exits under a
 // condition, naming a shared identifier, or re-assigns a shared name through
 // a call that takes it.
-func textMitigationCheck(line string, kinds []regionKind, shared map[string]bool) error {
+func textMitigationCheck(line string, kinds []regions.Kind, shared map[string]bool) error {
 	code := codeOnly(line, kinds)
 	names := map[string]bool{}
 	for _, span := range identifierSpans(code) {
@@ -606,13 +608,13 @@ func isCallee(before string) bool {
 }
 
 // codeOnly blanks the comment and string-literal bytes of a line.
-func codeOnly(line string, kinds []regionKind) string {
+func codeOnly(line string, kinds []regions.Kind) string {
 	if len(kinds) != len(line) {
 		return ""
 	}
 	out := []byte(line)
 	for i := range out {
-		if kinds[i] != regionCode {
+		if kinds[i] != regions.Code {
 			out[i] = ' '
 		}
 	}

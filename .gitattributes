@@ -1,6 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 
+# Rule fixtures are checked byte for byte; the fixture test also runs them
+# with CRLF line endings, so keep the checked-out copy LF on every platform.
+testdata/rules/** text eol=lf
+
 # Linguist overrides to keep language statistics accurate
 docs/design_mockups/**/* linguist-documentation
 testdata/**/* linguist-vendored

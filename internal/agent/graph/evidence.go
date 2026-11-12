@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/dodobrands/aitriage/internal/regions"
 )
 
 // classificationPromptFinding binds a model-visible batch position to a stable
@@ -197,8 +199,8 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 	if err := checkMitigationPlacement(finding.Line, evidence.Line); err != nil {
 		return err
 	}
-	syntax := syntaxForPath(path)
-	if syntax.leadingOnly {
+	syntax := regions.SyntaxForPath(path)
+	if !syntax.Known() {
 		return fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
 	}
 	source, err := os.ReadFile(path)
@@ -210,8 +212,8 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 		return fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
 	}
 	// The evidence line is above the flagged line, so both are scanned.
-	regions := fileRegions(lines, finding.Line-1+maxStatementLines, syntax)
-	line, kinds := lines[evidence.Line-1], regions[evidence.Line-1]
+	fileRegions := regions.Lines(lines, finding.Line-1+maxStatementLines, syntax)
+	line, kinds := lines[evidence.Line-1], fileRegions[evidence.Line-1]
 	if !strings.Contains(line, observed) {
 		return fmt.Errorf("code_mitigation observed text is absent from source")
 	}
@@ -223,12 +225,12 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
 	}
 	cited := citedIdentifiers(line, starts, len(observed))
-	flagged := statementIdentifiers(lines, regions, finding.Line-1)
+	flagged := statementIdentifiers(lines, fileRegions, finding.Line-1)
 	shared := sharedIdentifiers(cited, flagged)
 	if len(shared) == 0 {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
 	}
-	return checkMitigationShape(path, source, lines, regions, finding, evidence, starts, shared)
+	return checkMitigationShape(path, source, lines, fileRegions, finding, evidence, starts, shared)
 }
 
 // personOnlyFinding names why code_mitigation evidence can never dismiss a

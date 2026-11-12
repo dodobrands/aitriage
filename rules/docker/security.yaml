@@ -1,100 +1,229 @@
 # ============================================================
 # AITRIAGE RULES: Docker & Container Security
 # ============================================================
-# Covers Dockerfile best practices and docker-compose
-# misconfigurations: running as root, using :latest,
-# hardcoded secrets, privileged containers, and insecure
-# build patterns.
+# Covers Dockerfile best practices and docker-compose and
+# Kubernetes misconfigurations: running as root, unpinned
+# images, secrets in build instructions, privileged
+# containers, host namespaces, added capabilities, disabled
+# confinement and Docker socket mounts.
+#
+# Dockerfile patterns are anchored to the instruction at the
+# start of a line, and YAML patterns to the key, so comments,
+# descriptions and echo text do not match.
 #
 # Reference: Docker CIS Benchmark, Hadolint, Trivy.
 # ============================================================
 
 rules:
   - id: DOCKER-LATEST
-    name: "Using :latest Image Tag"
+    name: "Base image uses the :latest tag"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '^FROM\s+\S+:latest'
-    suggestion: "MEDIUM: Using :latest tag makes builds non-reproducible. Pin to a specific version (e.g., node:20-alpine)."
+    regions: code
+    pattern: '(?mi)^[ \t]*FROM[ \t]+(?:--platform=\S+[ \t]+)?\S+:latest(?:[ \t\r]|$)'
+    severity: LOW
+    metadata:
+      cwe: "CWE-1357"
+      owasp: "A03:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "The :latest tag can point to a different image on every build, so builds are not reproducible and can pick up unreviewed changes. Pin a version tag (node:20-alpine), or a digest for full reproducibility."
 
   - id: DOCKER-ADD
-    name: "Using ADD Instead of COPY"
+    name: "ADD used instead of COPY"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '^ADD\s+(?!https?://)'
-    suggestion: "MEDIUM: ADD can auto-extract archives and fetch URLs, introducing unexpected behavior. Use COPY for local files."
+    regions: code
+    pattern: '(?mi)^[ \t]*ADD[ \t]+(?:--(?:chown|chmod|link|exclude|keep-git-dir)\S*[ \t]+)*[^\s-]'
+    severity: LOW
+    metadata:
+      cwe: "CWE-829"
+      owasp: "A03:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "ADD also unpacks archives and downloads URLs without verifying them. Use COPY for local files; for a download, use ADD --checksum=sha256:... or fetch and verify it in a RUN step."
 
   - id: DOCKER-SECRET-ENV
-    name: "Secrets in Dockerfile ENV"
+    name: "Secret value set with ENV"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '(?i)^ENV\s+\S*(PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)\S*\s*='
-    suggestion: "CRITICAL: Secrets in ENV instructions persist in image layers. Use --mount=type=secret or runtime environment variables."
+    regions: code
+    pattern: '(?mi)^[ \t]*ENV[ \t]+(?:\S+[ \t]+)*?[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|SECRET_?KEY)(?:=|[ \t]+)["'']?[^\s"'']'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A value set with ENV is stored in the image and visible to anyone who can pull it (docker inspect, docker history). Pass secrets at runtime, or use RUN --mount=type=secret during the build."
 
   - id: DOCKER-SECRET-ARG
-    name: "Secrets in Dockerfile ARG"
+    name: "Secret passed as a build ARG"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '(?i)^ARG\s+\S*(PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)\S*='
-    suggestion: "HIGH: Secrets in ARG instructions can be exposed via docker history. Use multi-stage builds with --mount=type=secret."
+    regions: code
+    pattern: '(?mi)^[ \t]*ARG[ \t]+[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|SECRET_?KEY)(?:=|[ \t\r]*$)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-214"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Build arguments are recorded in the image history and build provenance, so a token passed with --build-arg can be read later. Use RUN --mount=type=secret,id=... and docker build --secret instead."
 
   - id: DOCKER-CURL-PIPE
-    name: "Curl Pipe to Shell"
+    name: "Downloaded script piped into a shell"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '(?i)(curl|wget)\s+.*\|\s*(sh|bash|zsh)'
-    suggestion: "HIGH: Piping curl/wget output to shell is risky. Download first, verify checksum, then execute."
+    regions: code
+    pattern: '(?mi)^[^#\n]*\b(?:curl|wget)\b(?:[^\n|]|\\\r?\n)*\|[ \t]*(?:sudo[ \t]+(?:-\S+[ \t]+)*)?(?:/(?:usr/)?bin/)?(?:env[ \t]+)?(?:ba|z|da|k|a)?sh\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-494"
+      owasp: "A08:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "A script is downloaded and executed without checking it, so a compromised server or mirror runs code in the build. Download it to a file, verify a pinned checksum (sha256sum -c), then run it, or install from a signed package repository."
 
   - id: DOCKER-PRIVILEGED
-    name: "Privileged Container"
+    name: "Privileged container"
     stack: universal
     extensions: [".yaml", ".yml"]
     target: all
-    pattern: 'privileged:\s*true'
-    suggestion: "CRITICAL: Privileged containers have near-host-level access. Remove privileged:true unless absolutely required."
+    regions: code
+    pattern: '(?m)^[ \t]*(?:-[ \t]+)?privileged:[ \t]*["'']?(?:true|True|TRUE)["'']?[ \t]*(?:#|\r?$)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-250"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "A privileged container has all capabilities and access to host devices, so escaping to the host is easy. Remove privileged: true and add only the specific capabilities or devices the workload needs."
 
   - id: DOCKER-HOST-NET
-    name: "Host Network Mode"
+    name: "Container uses the host network"
     stack: universal
     extensions: [".yaml", ".yml"]
     target: all
-    pattern: 'network_mode:\s*["\x27]?host'
-    suggestion: "HIGH: Host network mode bypasses container network isolation. The container can access host services and metadata APIs."
+    regions: code
+    pattern: '(?m)^[ \t]*(?:-[ \t]+)?(?:network_mode:[ \t]*["'']?host|hostNetwork:[ \t]*["'']?(?:true|True|TRUE))["'']?[ \t]*(?:#|\r?$)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-653"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "With the host network the container shares the host's interfaces, so it can reach services bound to localhost and bypass network policies. Use a container network and publish only the ports that are needed."
 
   - id: DOCKER-HOST-PID
-    name: "Host PID Namespace"
+    name: "Container uses the host PID namespace"
     stack: universal
     extensions: [".yaml", ".yml"]
     target: all
-    pattern: '(?:hostPID|pid):\s*["\x27]?(?:true|host)'
-    suggestion: "CRITICAL: Host PID namespace allows the container to see and interact with all host processes. Remove unless required for debugging."
+    regions: code
+    pattern: '(?m)^[ \t]*(?:-[ \t]+)?(?:pid:[ \t]*["'']?host|hostPID:[ \t]*["'']?(?:true|True|TRUE))["'']?[ \t]*(?:#|\r?$)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-653"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Sharing the host PID namespace lets the container see, signal and trace host processes. Remove it unless the workload is a node-level debugging or monitoring agent."
 
   - id: DOCKER-CAP-SYS-ADMIN
-    name: "SYS_ADMIN Capability"
+    name: "SYS_ADMIN or ALL capability added"
     stack: universal
     extensions: [".yaml", ".yml"]
     target: all
-    pattern: 'SYS_ADMIN'
-    suggestion: "CRITICAL: SYS_ADMIN capability grants near-root access. Drop this capability unless absolutely necessary."
+    regions: code
+    pattern: '(?m)^[ \t]*(?:-[ \t]+)?(?:cap_add|add):[ \t]*(?:\[[^\]\n]*\b(?:CAP_)?(?:SYS_ADMIN|ALL)\b|(?:#[^\n]*)?\r?\n(?:[ \t]*-[ \t]*["'']?\w+["'']?[ \t]*(?:#[^\n]*)?\r?\n)*?[ \t]*-[ \t]*["'']?(?:CAP_)?(?:SYS_ADMIN|ALL)\b)|--cap-add[= ]["'']?(?:CAP_)?(?:SYS_ADMIN|ALL)\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-250"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "SYS_ADMIN (and ALL, which includes it) gives the container near-root power over the host kernel, such as mounting file systems. Drop it and add only the narrow capability the workload needs."
 
+  # Project-level: fires when no Dockerfile in the project switches to a
+  # non-root user. USER root and USER 0 do not count.
   - id: DOCKER-NO-USER
-    name: "Missing USER Instruction"
+    name: "No non-root USER in the Dockerfile"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
+    regions: code
     condition: "required_pattern"
-    pattern: '(?m)^USER\s+'
-    suggestion: "HIGH: No USER instruction in Dockerfile. Container runs as root by default. Add USER nonroot."
+    pattern: '(?mi)^[ \t]*USER[ \t]+(?:[^\s0r$#]|\$\{?\w|r(?:[^o\s:]|o(?:[^o\s:]|o(?:[^t\s:]|t[^\s:]))))'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-250"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No Dockerfile switches to a non-root user, so the container process runs as root. Create a dedicated user (or use the image's existing non-root user) and switch to it with USER in the final stage."
 
   - id: DOCKER-EXPOSE-ALL
-    name: "Exposing Sensitive Ports"
+    name: "Administrative or database port exposed"
     stack: universal
-    extensions: ["Dockerfile"]
+    extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
-    pattern: '^EXPOSE\s+(22|3389|5432|3306|6379|27017)\b'
-    suggestion: "MEDIUM: Exposing administrative or database ports (SSH, RDP, Postgres, MySQL, Redis, MongoDB) in the container image."
+    regions: code
+    pattern: '(?mi)^[ \t]*EXPOSE[ \t]+(?:[^\n#]*[ \t])?(?:22|23|2375|3389|5432|3306|1433|6379|27017|9200|11211)(?:/(?:tcp|udp))?(?:[ \t\r]|$)'
+    severity: LOW
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "The image declares an SSH, Telnet, RDP, Docker daemon or database port. EXPOSE does not publish it by itself, but it signals that the service is meant to be reachable. Keep such ports on an internal network and do not publish them to the host."
+
+  - id: DOCKER-SOCKET-MOUNT
+    name: "Docker socket mounted into a container"
+    stack: universal
+    extensions: [".yaml", ".yml", ".sh"]
+    target: all
+    regions: code
+    pattern: '(?m)^[ \t]*-[ \t]*["'']?/(?:var/)?run/docker\.sock:|^[ \t]*(?:-[ \t]+)?(?:source|src|path):[ \t]*["'']?/(?:var/)?run/docker\.sock\b|(?:^|[ \t])(?:-v|--volume|--mount)[ \t=]+["'']?(?:type=bind,[ \t]*)?(?:source=|src=)?/(?:var/)?run/docker\.sock\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-250"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Access to the Docker socket is equivalent to root on the host: the container can start a privileged container that mounts the host file system. Remove the mount, or use a socket proxy that allows only the API calls the tool needs, or rootless Docker."
+
+  - id: DOCKER-SECURITY-OPT-UNCONFINED
+    name: "Seccomp, AppArmor or SELinux confinement disabled"
+    stack: universal
+    extensions: [".yaml", ".yml"]
+    target: all
+    regions: code
+    pattern: '(?m)^[ \t]*-[ \t]*["'']?(?:seccomp|apparmor)[:=]unconfined\b|^[ \t]*-[ \t]*["'']?label[:=]disable\b|--security-opt[ \t=]+["'']?(?:seccomp|apparmor)[:=]unconfined\b|^[ \t]*type:[ \t]*["'']?Unconfined\b|^[ \t]*["'']?(?:container\.apparmor\.security\.beta\.kubernetes\.io/[\w.-]+|seccomp\.security\.alpha\.kubernetes\.io/[\w./-]+)["'']?:[ \t]*["'']?unconfined\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The container runs without its seccomp, AppArmor or SELinux profile, which removes a layer that blocks dangerous system calls and file access. Keep the default profile (RuntimeDefault in Kubernetes) or write a custom profile that allows only what is needed."
+
+  - id: DOCKER-HOST-IPC
+    name: "Container uses the host IPC namespace"
+    stack: universal
+    extensions: [".yaml", ".yml"]
+    target: all
+    regions: code
+    pattern: '(?m)^[ \t]*(?:-[ \t]+)?(?:ipc:[ \t]*["'']?host|hostIPC:[ \t]*["'']?(?:true|True|TRUE))["'']?[ \t]*(?:#|\r?$)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-653"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Sharing the host IPC namespace lets the container read and write host shared memory and message queues. Remove ipc: host / hostIPC: true unless the workload needs it and is trusted."

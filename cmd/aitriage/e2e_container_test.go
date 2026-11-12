@@ -42,7 +42,7 @@ func TestE2E_ContainerRunFullScannerBundle(t *testing.T) {
 	// Minimal fixture that gives each scanner something to look at.
 	proj := t.TempDir()
 	writeFile(t, filepath.Join(proj, "app.py"),
-		"import subprocess\n\ndef run(cmd):\n    subprocess.call(cmd, shell=True)\n\nAWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"\n")
+		"import subprocess\n\ndef run(cmd):\n    subprocess.call(cmd, shell=True)\n\nAWS_KEY = \"AKIA"+"Z7Q4XWVB3NMK2PLT\"\n")
 	writeFile(t, filepath.Join(proj, "requirements.txt"), "flask==0.5\n")
 	writeFile(t, filepath.Join(proj, ".env"), "DATABASE_URL=postgres://admin:S3cretDbPass@db:5432/app\n")
 	writeFile(t, filepath.Join(proj, "xss_unsafe.py"), `from fastapi import FastAPI

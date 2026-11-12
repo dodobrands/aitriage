@@ -1,284 +1,381 @@
 # ============================================================
 # AITRIAGE RULES: Next.js / React — Security
 # ============================================================
-# Covers: XSS, SQLi, CSRF, JWT, auth, input validation,
-# rate limiting, error boundaries, path traversal,
-# command injection, and prototype pollution.
+# Covers: client-side secret exposure, SQL and NoSQL injection,
+# SSRF, open redirect, permissive CORS, unauthenticated Server
+# Actions, and the security-header / rate-limit policy checks.
+#
+# Generic JavaScript rules (JWT, XSS sinks, path traversal,
+# command injection, prototype pollution) use `stack: universal`
+# so they also run on Express, NestJS, Fastify and React SPAs.
 # ============================================================
 
 rules:
   - id: ENTR-03
-    name: "Unverified JWT Decoding"
-    stack: nextjs
-    extensions: [".ts", ".js"]
-    target: ast
-    pattern: |
-      (call_expression
-        function: (member_expression
-          object: (identifier) @obj
-          property: (property_identifier) @prop)
-        (#eq? @obj "jwt")
-        (#eq? @prop "decode"))
-    suggestion: "CRITICAL: `jwt.decode()` does NOT verify the signature. Use `jwt.verify()` instead."
+    name: "JWT Decoded Without Signature Verification"
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\b(?:jwt|jsonwebtoken)\.decode\s*\('
+    condition: "not_contains:.verify("
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "jwt.decode() does not check the signature, so its claims can be forged. Use jwt.verify() with an explicit algorithms list before trusting any claim. Decoding only to read the header (for example the kid of a JWKS key) is fine when jwt.verify() follows."
 
   - id: ENTR-07
-    name: "TypeScript Surrender"
+    name: "TypeScript Type Checking Bypassed"
     stack: nextjs
-    extensions: [".ts", ".tsx"]
-    target: lines_percentage
+    extensions: [".ts", ".tsx", ".mts", ".cts"]
+    target: all
+    regions: all
     exclude_tests: true
-    pattern: '(?i)//\s*@ts-ignore|:\s*any\b'
-    condition: "threshold:0.02"
-    suggestion: "HIGH: Excessive @ts-ignore or 'any' types. Fix type safety."
+    pattern: '(?m)@ts-(?:ignore|nocheck)\b|:\s*any\s*(?:[,;)=|&>\]{}]|\[\]|$)|\bas\s+any\s*[).;,\]}]'
+    severity: LOW
+    metadata:
+      cwe: "CWE-710"
+      confidence: medium
+      subcategory: audit
+    suggestion: "@ts-ignore, @ts-nocheck and the any type turn off type checking, so type errors around request data go unnoticed. Use precise types, unknown with a runtime check, or @ts-expect-error with a reason. This is a code-quality signal, not a vulnerability."
 
   - id: ENTR-09
-    name: "Client-Side Secret Leak"
+    name: "Secret Environment Variable Read in a Client Component"
     stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"]
     target: all
-    condition: "contains:'use client'"
-    pattern: 'process\.env\.(DATABASE_URL|AUTH_SECRET|API_KEY|TOKEN\w*)'
-    suggestion: "CRITICAL: Never use raw process.env inside 'use client'. Prefix with NEXT_PUBLIC_."
+    regions: code_and_strings
+    condition: "contains:\"use client\"|'use client'"
+    pattern: '\bprocess\.env\.(?:(?:[A-MO-Z_]|N[A-DF-Z0-9_]|NE[A-WYZ0-9_]|NEX[A-SU-Z0-9_]|NEXT[A-Z0-9]|NEXT_[A-OQ-Z0-9_])[A-Z0-9_]*)?(?:SECRET|PRIVATE|PASSWORD|PASSWD|TOKEN|API_KEY|APIKEY|DATABASE_URL|DB_URL|SERVICE_ROLE|ACCESS_KEY)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Read secrets only in server code (Server Components, Route Handlers, Server Actions, or modules that import 'server-only'). In a 'use client' file the value is undefined in the browser but is set during server rendering, so rendering it can put the secret into the HTML. Never rename a secret to NEXT_PUBLIC_."
 
-  - id: NEXT-AUTH
-    name: "Missing Auth Middleware"
-    stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
-    target: filename
-    pattern: 'middleware\.(ts|js)'
-    condition: "missing"
-    suggestion: "HIGH: Missing Next.js middleware. Routes may be unauthenticated."
+  # Retired: NEXT-AUTH — a missing middleware file is not a vulnerability; Next.js recommends auth checks in each handler and data layer.
 
   - id: NEXT-CORS
-    name: "Missing CORS"
+    name: "CORS Origin Reflected in Route Handler"
     stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
+    extensions: [".ts", ".js", ".mjs"]
     target: all
-    pattern: 'export\s+(?:async\s+)?function\s+(?:GET|POST|PUT|DELETE|PATCH)'
-    condition: "not_contains:Access-Control-Allow-Origin"
-    suggestion: "MEDIUM: Route handler missing CORS headers."
+    regions: code_and_strings
+    pattern: 'Access-Control-Allow-Origin["\x27]\s*[,:]\s*(?:req|request)\.headers\.get\s*\(\s*["\x27]origin["\x27]\s*\)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The route copies the request Origin header into Access-Control-Allow-Origin, so any site can read the response (with cookies, if credentials are allowed). Compare the origin with a fixed allowlist and set the header only for allowed origins. Route handlers without CORS headers are same-origin only, which is the safe default."
 
-  - id: NEXT-CSRF
-    name: "Missing CSRF"
-    stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
-    target: all
-    pattern: 'export\s+(?:async\s+)?function\s+(?:POST|PUT|DELETE|PATCH)'
-    condition: "not_contains:csrf"
-    suggestion: "HIGH: Missing CSRF token validation on mutative route."
+  # Retired: NEXT-CSRF — Server Actions check Origin and SameSite cookies cover most route handlers; a missing "csrf" string is not evidence.
 
   - id: NEXT-SQLI
-    name: "SQL Injection Risk"
+    name: "SQL Query Built With Interpolation"
     stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(db\.query|db\.execute|sql)\s*`.*?\$\{.*?\}.*?`'
-    suggestion: "CRITICAL: Raw SQL interpolation detected. Use parameterized queries."
+    regions: code
+    pattern: '(?:\.(?:query|execute|raw|unsafe)|\$(?:queryRawUnsafe|executeRawUnsafe))\s*\(\s*(?:\x60(?:[^\x60]*\b(?i:select|insert|update|delete|where|from)\b[^\x60]*\$\{|[^\x60]*\$\{[^\x60]*\b(?i:select|insert|update|delete|where|from)\b)|["\x27][^"\x27\n]*\b(?i:select|insert|update|delete|where)\b[^"\x27\n]*["\x27]\s*\+)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "The SQL text is built with a template literal or string concatenation inside the query call. Pass values as parameters ($1 or ?), or use a tagged template that parameterizes (sql`...`, prisma.$queryRaw`...`). Do not pass interpolated text to $queryRawUnsafe, sql.raw or sql.unsafe."
 
   - id: REACT-XSS
-    name: "Dangerous Property (XSS Risk)"
-    stack: nextjs
+    name: "dangerouslySetInnerHTML Without Sanitizer"
+    stack: universal
     extensions: [".tsx", ".jsx", ".js"]
     target: ast
     pattern: |
       (jsx_attribute
-        name: (property_identifier) @attr_name
-        (#eq? @attr_name "dangerouslySetInnerHTML"))
-    suggestion: "CRITICAL: Direct use of `dangerouslySetInnerHTML` bypasses XSS protection."
+        (property_identifier) @attr_name
+        (jsx_expression) @value
+        (#eq? @attr_name "dangerouslySetInnerHTML")
+        (#not-match? @value "(?i)(sanitize|purify|xss)"))
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "dangerouslySetInnerHTML inserts raw HTML and bypasses React's escaping. Render text as JSX children instead, or sanitize the HTML first (for example with DOMPurify.sanitize). For JSON-LD script tags, escape '<' in the serialized JSON."
 
   - id: JWT-HARDCODED
     name: "Hardcoded JWT Secret"
-    stack: nextjs
-    extensions: [".ts", ".js"]
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx"]
     target: ast
     pattern: |
       (call_expression
         function: (member_expression
           object: (identifier) @obj
           property: (property_identifier) @prop)
-        arguments: (arguments (_) (string) @secret)
-        (#eq? @obj "jwt")
-        (#eq? @prop "sign"))
-    suggestion: "CRITICAL: Hardcoded string used as a JWT secret. Use environment variables."
+        arguments: (arguments . (_) . [
+          (string)
+          (template_string)
+          (binary_expression right: (string))
+        ] @secret)
+        (#match? @obj "^(jwt|jsonwebtoken)$")
+        (#match? @prop "^(sign|verify)$")
+        (#not-match? @secret "\\$\\{"))
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "A string literal is used as the JWT signing or verification key, either directly or as a fallback (process.env.X || \"...\"). Anyone with the source can forge tokens. Load the key from a secret store or environment variable, fail at startup when it is missing, and rotate the exposed value."
 
-  - id: REACT-HAPPY-PATH
-    name: "Missing Async Error Handling"
-    stack: nextjs
-    extensions: [".tsx", ".ts", ".js"]
-    target: ast
-    pattern: |
-      (arrow_function
-        (modifier) @async
-        (#eq? @async "async")
-        body: (statement_block
-          (expression_statement
-            (await_expression)) @stmt)
-        (#not-has-ancestor? @stmt try_statement))
-    suggestion: "HIGH: Async function missing `try/catch`. Will crash on network errors."
-
-  - id: NEXT-AUTHZ
-    name: "Missing Authorization Checks"
-    stack: nextjs
-    extensions: [".ts", ".tsx", ".js", ".jsx"]
-    target: all
-    condition: "required_pattern"
-    pattern: '(?i)(role|permission|authorize|casl|ability)'
-    suggestion: "HIGH: No role/permission authorization patterns detected."
-
-  - id: NEXT-VAL
-    name: "Missing Input Validation"
-    stack: nextjs
-    extensions: [".json"]
-    target: raw
-    condition: "required_pattern"
-    pattern: '"(?i)(zod|yup|joi|class-validator)"'
-    suggestion: "HIGH: Input validation libraries missing."
+  # Retired: REACT-HAPPY-PATH — its query never compiled; an unguarded await is a reliability concern, not a security finding.
+  # Retired: NEXT-AUTHZ — any "role" or "permission" string satisfied it; absence of the word is not missing authorization.
+  # Retired: NEXT-VAL — a validation library name in any JSON file (lockfiles included) says nothing about validated input.
 
   - id: NEXT-RATELIMIT
-    name: "Missing Rate Limiting"
+    name: "No Rate Limiting Library"
     stack: nextjs
-    extensions: [".json"]
-    target: raw
+    extensions: ["package.json"]
+    target: all
+    regions: all
     condition: "required_pattern"
-    pattern: '"(?i)(@upstash/ratelimit|rate-limiter-flexible|express-rate-limit)"'
-    suggestion: "HIGH: No rate limit libraries detected."
+    pattern: '"(?:@upstash/ratelimit|rate-limiter-flexible|express-rate-limit|@arcjet/next|@arcjet/node|next-rate-limit|@unkey/ratelimit|limiter)"\s*:'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-770"
+      owasp: "A06:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No rate limiting library is declared in package.json. Rate-limit authentication, signup and other costly endpoints, for example with @upstash/ratelimit or @arcjet/next. Limits enforced at the edge, a gateway or a WAF also satisfy this control; if so, suppress this finding with a note."
 
-  - id: NEXT-ERROR
-    name: "Missing Global Error Handling"
-    stack: nextjs
-    extensions: [".tsx", ".jsx"]
-    target: filename
-    condition: "missing"
-    pattern: 'error\.(tsx|jsx)'
-    suggestion: "HIGH: Missing error.tsx boundary."
+  # Retired: NEXT-ERROR — production builds already hide server error details; a missing error.tsx is not information exposure.
 
   - id: NEXT-HEADERS
-    name: "Missing Security Headers"
+    name: "No Security Headers Configured"
     stack: nextjs
-    extensions: [".js", ".mjs"]
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json", "package.json"]
     target: all
+    regions: code_and_strings
     condition: "required_pattern"
-    pattern: '(?i)(headers\(\)|securityHeaders)'
-    suggestion: "HIGH: No explicit security headers defined in next.config."
+    pattern: '(?i)X-Frame-Options|frame-ancestors|Strict-Transport-Security|X-Content-Type-Options|Referrer-Policy|Permissions-Policy|next-secure-headers|@next-safe/middleware'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No security headers (X-Frame-Options or frame-ancestors, Strict-Transport-Security, X-Content-Type-Options, Referrer-Policy) are set in next.config, middleware, proxy or vercel.json. Add them with the headers() option in next.config or in middleware. Headers added by a CDN or reverse proxy are not visible to this check; if so, suppress this finding with a note."
 
-  - id: NEXT-SECRETS
-    name: "Missing Secrets Config"
-    stack: nextjs
-    extensions: [".env.example", ".env.local.example"]
-    target: filename
-    condition: "missing"
-    pattern: '.*'
-    suggestion: "MEDIUM: Missing .env.example template."
-
-  - id: NEXT-ORM
-    name: "Missing ORM (Parameterized Queries)"
-    stack: nextjs
-    extensions: [".json"]
-    target: raw
-    condition: "required_pattern"
-    pattern: '"(?i)(prisma|drizzle-orm|typeorm|sequelize)"'
-    suggestion: "HIGH: No ORM found. Raw queries risk SQLi."
-
-  - id: NEXT-LOGGING
-    name: "Missing Security Logging"
-    stack: nextjs
-    extensions: [".json"]
-    target: raw
-    condition: "required_pattern"
-    pattern: '"(?i)(winston|pino|morgan)"'
-    suggestion: "MEDIUM: No dedicated logging library found."
+  # Retired: NEXT-SECRETS — a missing .env.example file is project hygiene, not a security issue.
+  # Retired: NEXT-ORM — not using an ORM is not SQL injection; NEXT-SQLI checks the actual queries.
+  # Retired: NEXT-LOGGING — a logger dependency name says nothing about security event logging.
 
   - id: JS-PATH-TRAVERSAL
-    name: "Path Traversal Risk (JS/TS)"
-    stack: nextjs
-    extensions: [".ts", ".js", ".tsx", ".jsx"]
-    target: ast
-    pattern: |
-      (call_expression
-        function: (member_expression
-          object: (identifier) @obj
-          property: (property_identifier) @prop)
-        arguments: (arguments (template_string) @arg)
-        (#match? @obj "^(fs|path)$")
-        (#match? @prop "^(readFile|writeFile|join|resolve)$"))
-    suggestion: "CRITICAL: User input in file system operations. Sanitize paths."
+    name: "File Path From Request Input"
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\b(?:fs(?:\.promises)?|fsp|fse)\.(?:readFile|readFileSync|writeFile|writeFileSync|appendFile|appendFileSync|createReadStream|createWriteStream|unlink|unlinkSync|rm|rmSync|readdir|readdirSync)\s*\(\s*(?:path\.(?:join|resolve)\s*\((?:[^()\n;]|\([^()\n]*\))*?)?(?:\x60[^\x60]*\$\{\s*)?(?:(?:req|request)\.(?:query|params|body)\b|(?:\w+\.)?searchParams\.get\s*\()|\bres\.(?:sendFile|download)\s*\(\s*(?:path\.(?:join|resolve)\s*\((?:[^()\n;]|\([^()\n]*\))*?)?(?:\x60[^\x60]*\$\{\s*)?(?:req|request)\.(?:query|params|body)\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "A file system call uses a path taken from the request, so '../' sequences can reach files outside the intended folder. Resolve the path against a fixed base directory and check that the result still starts with that directory, or map the input to an allowlist of file names."
 
   - id: JS-COMMAND-INJECTION
-    name: "Command Injection Risk (JS/TS)"
-    stack: nextjs
-    extensions: [".ts", ".js"]
+    name: "Shell Command Built From Dynamic Text"
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx"]
     target: ast
     exclude_tests: true
     pattern: |
       (call_expression
         function: (identifier) @func
-        arguments: (arguments (template_string
-          (template_substitution) @interp))
-        (#match? @func "^(exec|spawn|execSync|spawnSync)$"))
-    suggestion: "HIGH: Shell command built with dynamic interpolation. Use execFile() with argument arrays."
+        arguments: (arguments . [
+          (template_string (template_substitution))
+          (binary_expression)
+        ] @cmd)
+        (#match? @func "^(exec|execSync)$"))
+      (call_expression
+        function: (member_expression
+          object: (identifier) @mod
+          property: (property_identifier) @func)
+        arguments: (arguments . [
+          (template_string (template_substitution))
+          (binary_expression)
+        ] @cmd)
+        (#match? @mod "^(child_process|childProcess|cp)$")
+        (#match? @func "^(exec|execSync)$"))
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "exec() and execSync() run the command through a shell, and this command string is built with interpolation or concatenation. Use execFile() or spawn() without shell: true and pass arguments as an array, so shell metacharacters in a value are not interpreted."
 
   - id: ENTR-PROTO-POLLUTION
-    name: "Prototype Pollution Risk"
-    stack: nextjs
-    extensions: [".ts", ".js"]
+    name: "Deep Merge of Untrusted Object"
+    stack: universal
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(Object\.assign|JSON\.parse).*?\[.*?\]\s*='
-    suggestion: "HIGH: Potential Prototype Pollution. Verify input before merging."
+    regions: code
+    pattern: '(?:\b(?:_|lodash)\.(?:merge|mergeWith|defaultsDeep|set|setWith|zipObjectDeep)|\b(?:merge|mergeWith|defaultsDeep|deepmerge|deepMerge|mergeDeep))\s*\(\s*[^,()]*,\s*(?:(?:req|request|ctx\.request)\.(?:body|query|params)\b|await\s+(?:req|request)\.json\s*\(\s*\)|JSON\.parse\s*\()'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-1321"
+      owasp: "A08:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A deep merge or path setter receives request data, so keys such as __proto__ or constructor.prototype can change Object.prototype for the whole process. Validate the input against a strict schema first (zod .strict(), ajv with additionalProperties: false), or copy only known keys."
 
   - id: NEXT-UNSAFE-HREF
-    name: "XSS via javascript: href"
+    name: "javascript: URL in href"
     stack: nextjs
     extensions: [".tsx", ".jsx", ".js"]
     target: all
-    pattern: 'href\s*=\s*\{?\s*[`"\x27]javascript:'
-    suggestion: "CRITICAL: javascript: URI in href enables XSS. Validate URL protocols (allow only http/https/mailto)."
+    regions: code
+    pattern: '\bhref\s*=\s*\{?\s*["\x27\x60]\s*javascript:'
+    severity: LOW
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "A javascript: URL in href runs script when the link is followed, and React 19 blocks such URLs. Use a button with an onClick handler instead. For user-supplied links, allow only the http, https and mailto schemes."
 
   - id: NEXT-SSRF
-    name: "SSRF Risk in API Route"
+    name: "Server-Side Fetch of a URL From Search Params or Form Data"
     stack: nextjs
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs"]
     target: all
-    pattern: '(?i)(?:fetch|axios)\s*\(\s*(?:req\.|request\.|searchParams|params)'
-    suggestion: "HIGH: User-controlled URL in server-side fetch. Validate against an allowlist."
+    regions: code
+    pattern: '\b(?:fetch|axios(?:\.(?:get|post|put|patch|delete|head|request))?|got|ky)\s*\(\s*(?:new\s+URL\s*\(\s*)?(?:(?:req|request)\.)?(?:(?:url|nextUrl)\.)?(?:searchParams|formData)\.get\s*\('
+    severity: HIGH
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The server fetches a URL taken directly from search params or form data, so a caller can make it request internal services or cloud metadata endpoints. Parse the URL, require https, and compare the host with a fixed allowlist before fetching."
 
   - id: NEXT-SERVER-ACTION-EXPOSED
-    name: "Server Action Without Auth Check"
+    name: "Server Action File Without Auth Check"
     stack: nextjs
-    extensions: [".ts", ".tsx"]
+    extensions: [".ts", ".tsx", ".js", ".jsx"]
     target: all
-    pattern: "^['\"]use server['\"]"
-    condition: "not_contains:session"
-    suggestion: "HIGH: Server Action file without authentication check. Anyone can invoke these functions. Verify session/auth at the top."
+    regions: code_and_strings
+    pattern: '(?m)^[ \t]*["\x27]use server["\x27][ \t]*;?[ \t]*\r?$'
+    condition: "not_contains:session|auth(|currentUser(|getUser(|requireUser(|validateRequest(|getToken("
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-862"
+      owasp: "A01:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "Every Server Action is a public POST endpoint, and this file has no visible session or auth call. Check the current user and their permission at the start of each action (for example with auth(), currentUser() or getUser()). Actions that are public on purpose, such as a contact form, can be suppressed with a note."
 
-  - id: NEXT-MATH-RANDOM
-    name: "Insecure Randomness"
-    stack: nextjs
-    extensions: [".ts", ".js", ".tsx", ".jsx"]
-    target: all
-    pattern: 'Math\.random\s*\(\)'
-    suggestion: "HIGH: Math.random() is predictable. Use crypto.randomUUID() for tokens, IDs, and security-sensitive values."
+  # Retired: NEXT-MATH-RANDOM — duplicate of ENTR-INSECURE-RANDOM, which reports the same Math.random() calls.
 
   - id: NEXT-CSP-MISSING
-    name: "Missing Content Security Policy"
+    name: "No Content Security Policy Configured"
     stack: nextjs
-    extensions: [".js", ".mjs", ".ts"]
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json", "package.json"]
     target: all
+    regions: code_and_strings
     condition: "required_pattern"
-    pattern: '(?i)(Content-Security-Policy|contentSecurityPolicy|CSP)'
-    suggestion: "HIGH: No Content Security Policy configured. CSP prevents XSS and data injection attacks."
+    pattern: '(?i)Content-Security-Policy|contentSecurityPolicy|@next-safe/middleware|next-secure-headers'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No Content-Security-Policy header is set in next.config, middleware, proxy or vercel.json. A CSP limits the damage of an XSS bug. Add one in middleware (with a per-request nonce) or in the headers() option of next.config. A CSP added by a CDN or reverse proxy is not visible to this check; if so, suppress this finding with a note."
 
   - id: NEXT-PUBLIC-LEAK
-    name: "Sensitive Data in NEXT_PUBLIC_ Variable"
+    name: "Secret-Like Name With NEXT_PUBLIC_ Prefix"
     stack: nextjs
-    extensions: [".env", ".env.local"]
+    extensions: [".env", ".env.*", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)NEXT_PUBLIC_\S*(SECRET|PASSWORD|PRIVATE|TOKEN|API_KEY|DATABASE)'
-    suggestion: "CRITICAL: NEXT_PUBLIC_ variables are exposed to the browser. Never prefix secrets with NEXT_PUBLIC_."
+    regions: code_and_strings
+    pattern: '\bNEXT_PUBLIC_[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|PRIVATE|SERVICE_ROLE|DATABASE_URL|DB_URL|DB_PASS|ACCESS_KEY|AUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|ADMIN_KEY|SIGNING_KEY|ENCRYPTION_KEY)[A-Z0-9_]*\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Variables with the NEXT_PUBLIC_ prefix are copied into the browser JavaScript bundle, and this name looks like a secret (secret, password, private or service-role key, database URL). Remove the prefix, read the value only in server code, and rotate it if it was ever deployed. Publishable keys meant for browsers are fine."
 
   - id: NEXT-NOSQL
-    name: "NoSQL Injection Risk"
+    name: "MongoDB Query Built From Request Body"
     stack: nextjs
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs"]
     target: all
-    pattern: '(?i)\.(find|findOne|aggregate)\s*\(\s*(?:req\.|searchParams|body|params)'
-    suggestion: "CRITICAL: User input passed directly to MongoDB query. Sanitize and validate input schema."
+    regions: code
+    pattern: '\.(?:find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|updateOne|updateMany|deleteOne|deleteMany|countDocuments|aggregate)\s*\(\s*(?:(?:req|request)\.(?:body|query|params)\b|body\s*[,)]|\{[^{}]*?:\s*(?:(?:(?:req|request)\.(?:body|query|params))|body)\.\w+\s*[,}])'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A MongoDB filter is built from the parsed request body, so a value such as {\"$ne\": null} becomes a query operator and can bypass a login check. Validate the body with a schema that only accepts strings or numbers, cast values (String(x)), or use $eq. Mongoose sanitizeFilter also strips operators."
+
+  - id: NEXT-CONFIG-ENV-SECRET
+    name: "Secret Inlined Through next.config env"
+    stack: nextjs
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts"]
+    target: all
+    regions: code
+    pattern: '(?s)\benv\s*:\s*\{(?:[^}]*?[,\n])?\s*["\x27]?[A-Za-z0-9_]*(?i:secret|password|passwd|private|token|api_?key|database_url|service_role)[A-Za-z0-9_]*["\x27]?\s*:'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Every value in the env option of next.config is inlined into the JavaScript bundle sent to browsers, and this key looks like a secret. Remove it from env and read process.env only in server code (Route Handlers, Server Components, Server Actions). Rotate the value if it was ever deployed."
+
+  - id: NEXT-OPEN-REDIRECT
+    name: "Redirect to a URL From Search Params"
+    stack: nextjs
+    extensions: [".ts", ".tsx", ".js", ".jsx"]
+    target: all
+    regions: code
+    pattern: '\b(?:redirect|permanentRedirect|NextResponse\.redirect|Response\.redirect|router\.(?:push|replace))\s*\(\s*(?:new\s+URL\s*\(\s*)?(?:(?:(?:req|request)\.nextUrl\.)?searchParams\.get\s*\(|(?:searchParams|sp|params|query)\.(?:callbackUrl|redirect\w*|returnTo|return_to|next|url|continue)\b)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "The redirect target comes straight from the query string, so a link to your site can send users to any other site (useful for phishing). Accept only a relative path that starts with '/' and not '//', or compare the host with an allowlist, and fall back to '/'."
+
+  - id: NEXT-IMAGE-UNSAFE-CONFIG
+    name: "Unsafe next/image Configuration"
+    stack: nextjs
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts"]
+    target: all
+    regions: code
+    pattern: '\bdangerouslyAllowSVG\s*:\s*true\b|\bdangerouslyAllowLocalIP\s*:\s*true\b|\bhostname\s*:\s*["\x27]\*\*["\x27]|\bdomains\s*:\s*\[[^\]]*["\x27]\*["\x27]'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "The image optimizer is configured to fetch from any host, from local or private IPs, or to serve SVG. Anyone can then use your server to fetch other URLs, reach the internal network, or serve script-bearing SVG from your origin. List exact hostnames (and pathnames) in remotePatterns, keep dangerouslyAllowLocalIP off, and set contentSecurityPolicy and contentDispositionType: 'attachment' if SVG is required."

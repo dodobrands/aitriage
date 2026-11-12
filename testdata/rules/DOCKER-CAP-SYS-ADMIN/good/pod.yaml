@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web
+spec:
+  containers:
+    - name: web
+      image: example/web:1.0
+      securityContext:
+        capabilities:
+          drop: ["ALL", "SYS_ADMIN"]
+          add: ["NET_BIND_SERVICE"]
+    - name: sidecar
+      image: example/sidecar:1.0
+      securityContext:
+        capabilities:
+          drop:
+            - ALL
+            - SYS_ADMIN
+          add:
+            - NET_BIND_SERVICE

@@ -1,0 +1,3 @@
+# SESSION_COOKIE_SECURE = False only in settings/dev.py
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_HTTPONLY = True

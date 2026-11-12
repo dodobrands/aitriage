@@ -1,0 +1,7 @@
+services:
+  fuse:
+    image: example/fuse:2.1
+    # ruleid: DOCKER-CAP-SYS-ADMIN
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN

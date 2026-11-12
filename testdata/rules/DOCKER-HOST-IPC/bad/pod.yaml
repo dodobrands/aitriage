@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shm-worker
+spec:
+  # ruleid: DOCKER-HOST-IPC
+  hostIPC: true
+  containers:
+    - name: worker
+      image: example/shm-worker:1.0

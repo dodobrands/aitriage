@@ -1,0 +1,5 @@
+<article>
+  <h2>{{ comment.author }}</h2>
+  {# ruleid: FLASK-TEMPLATE-SAFE #}
+  <p>{{ comment.body|safe }}</p>
+</article>

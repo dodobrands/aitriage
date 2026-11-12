@@ -1,0 +1,4 @@
+jobs:
+  build:
+    steps:
+      - run: sudo chown root:root /usr/local/bin/tool

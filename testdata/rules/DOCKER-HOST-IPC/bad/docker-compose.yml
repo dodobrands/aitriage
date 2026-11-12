@@ -1,0 +1,5 @@
+services:
+  shm:
+    image: example/shm-worker:1.0
+    # ruleid: DOCKER-HOST-IPC
+    ipc: host

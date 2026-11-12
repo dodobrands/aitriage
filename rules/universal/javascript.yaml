@@ -1,0 +1,70 @@
+# ============================================================
+# AITRIAGE RULES: JavaScript / TypeScript — any stack
+# ============================================================
+# Generic Node.js rules that do not depend on a framework, so
+# they run on Next.js, Express, NestJS, Fastify, Koa and plain
+# Node projects alike.
+# ============================================================
+
+rules:
+  - id: JS-TLS-VERIFY-OFF
+    name: "TLS Certificate Verification Disabled"
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    target: all
+    regions: code_and_strings
+    exclude_tests: true
+    pattern: '\b(?:rejectUnauthorized|strictSSL)\s*:\s*false\b|\bNODE_TLS_REJECT_UNAUTHORIZED\b["\x27]?\s*\]?\s*=\s*["\x27]?0\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A04:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "TLS certificate checks are turned off (rejectUnauthorized: false, strictSSL: false or NODE_TLS_REJECT_UNAUTHORIZED=0), so anyone on the network path can intercept or change the traffic. Keep verification on; for a private or self-signed certificate, pass its CA with the ca option or NODE_EXTRA_CA_CERTS."
+
+  - id: JS-VM-CODE-EXEC
+    name: "Code Execution With node:vm"
+    stack: universal
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    exclude_tests: true
+    pattern: '\bvm\.(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\.Script\s*\('
+    severity: HIGH
+    metadata:
+      cwe: "CWE-94"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "The node:vm module runs code with the rights of the process; its contexts are not a security boundary, so untrusted code can escape them. Do not run user-supplied code this way. Use a dedicated expression evaluator (for example mathjs.evaluate) or an isolated sandbox process."
+
+  - id: JS-UNSAFE-DESERIALIZE
+    name: "Unsafe Deserialization Library"
+    stack: universal
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\b(?:require\s*\(\s*|from\s+)["\x27](?:node-serialize|serialize-to-js|funcster|cryo)["\x27]'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "This library can revive functions while deserializing, so untrusted input can run code (node-serialize: CVE-2017-5941). Store and exchange plain data with JSON.parse, and validate its shape with a schema."
+
+  - id: JS-REGEX-INJECTION
+    name: "Regular Expression Built From Request Input"
+    stack: universal
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\bnew\s+RegExp\s*\(\s*(?:(?:req|request)\.(?:query|body|params)\b|(?:\w+\.)?searchParams\.get\s*\()'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-1333"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "A regular expression is compiled from request input, so a caller can send a pattern that takes exponential time (ReDoS) or matches more than intended. Escape the input (for example with lodash escapeRegExp) or use a plain substring search."

@@ -1,33 +1,45 @@
+# Severities are explicit and pinned by TestNFRRuleSeverities.
+#
+# NFR-API-001 and NFR-API-003 report missing hardening, often enforced at a
+# gateway instead of in the application, so they are MEDIUM. Their presence
+# patterns name concrete libraries and identifiers: a bare "auth" matched
+# __author__ and "Copyright authors", so NFR-API-003 almost never fired, and a
+# case-sensitive "rate.?limit" missed RateLimiter while matching "accurate
+# limit". The applies_pattern route form needs a path literal, so
+# `app.get('config')` is not an endpoint.
+
 - id: NFR-API-001
   name: Rate Limiting Missing
-  severity: HIGH
+  severity: MEDIUM
   check: file_contains
-  pattern: "rate.?limit|ratelimit|RateLimit|throttle"
+  pattern: "(?i)\\b(?:rate[_-]?limit\\w*|ratelimit\\w*|throttl\\w*|slowapi|limiter\\b|express-rate-limit|x/time/rate|tollbooth|RateLimiter)"
   files: ["*.go", "*.py", "*.ts", "*.js"]
-  applies_pattern: "(?i)(FastAPI\\s*\\(|APIRouter\\s*\\(|express\\s*\\(|http\\.HandleFunc|HandleFunc\\s*\\(|(?:app|router)\\.(?:get|post|put|patch|delete)\\s*\\()"
+  applies_pattern: "(?i)(FastAPI\\s*\\(|APIRouter\\s*\\(|express\\s*\\(|http\\.HandleFunc|HandleFunc\\s*\\(|(?:app|router)\\.(?:get|post|put|patch|delete)\\s*\\(\\s*[\"'`]/)"
   applies_files: ["*.go", "*.py", "*.ts", "*.js"]
   message: "No rate limiting detected in source files"
-  advice: "Implement rate limiting middleware. For Go: golang.org/x/time/rate. For Express: express-rate-limit."
+  advice: "Implement rate limiting middleware, or confirm that the gateway in front of the service enforces it. For Go: golang.org/x/time/rate. For Express: express-rate-limit. For FastAPI: slowapi."
 
 - id: NFR-API-003
   name: Authentication Middleware Missing
-  severity: HIGH
+  severity: MEDIUM
   check: file_contains
-  pattern: "auth|Auth|jwt|JWT|bearer|Bearer|middleware"
+  pattern: "(?i)(?:\\b(?:authenticat\\w*|authoriz\\w*|requireAuth\\w*|isAuthenticated|ensureAuthenticated|login_required|Depends\\(\\s*get_current_\\w*|OAuth2PasswordBearer|HTTPBearer|passport|express-jwt|jsonwebtoken|jwt\\.(?:verify|decode|Parse\\w*)|next-auth|getServerSession|BasicAuth|bearer|\\w*(?:auth|jwt)[_-]?(?:middleware|guard|required)\\w*)\\b|@clerk/)"
   files: ["*.go", "*.py", "*.ts", "*.js"]
-  applies_pattern: "(?i)(FastAPI\\s*\\(|APIRouter\\s*\\(|express\\s*\\(|http\\.HandleFunc|HandleFunc\\s*\\(|(?:app|router)\\.(?:get|post|put|patch|delete)\\s*\\()"
+  applies_pattern: "(?i)(FastAPI\\s*\\(|APIRouter\\s*\\(|express\\s*\\(|http\\.HandleFunc|HandleFunc\\s*\\(|(?:app|router)\\.(?:get|post|put|patch|delete)\\s*\\(\\s*[\"'`]/)"
   applies_files: ["*.go", "*.py", "*.ts", "*.js"]
   message: "No authentication middleware detected"
-  advice: "Implement authentication middleware for all protected routes."
+  advice: "Implement authentication middleware for all protected routes, or confirm that the gateway in front of the service authenticates every request."
 
+# Documentation hygiene: any of the common template names counts.
 - id: NFR-ENV-001
   name: .env.example Missing
-  severity: MEDIUM
+  severity: LOW
   check: file_exists
   pattern: ".env.example"
+  files: [".env.example", ".env.sample", ".env.template", "example.env", ".env.dist"]
   applies_pattern: "(?i)(os\\.(?:getenv|environ)|process\\.env|GetEnvironmentVariable\\s*\\(|env::var\\s*\\(|viper\\.(?:Get|BindEnv)|BaseSettings|pydantic_settings)"
   applies_files: ["*.go", "*.py", "*.ts", "*.js", "*.rs"]
-  message: ".env.example file is missing"
+  message: "No .env.example (or .env.sample, .env.template, example.env, .env.dist) documents the environment variables the code reads"
   advice: "Create .env.example with all required env variables (without values) for documentation."
 
 - id: NFR-ENV-002
@@ -35,5 +47,6 @@
   severity: HIGH
   check: file_tracked_by_git
   pattern: ".env"
-  message: ".env is tracked by git or not covered by .gitignore, so its secrets can reach the repository"
-  advice: "Add .env to .gitignore. If it was ever committed, remove it from history and rotate every secret it held."
+  files: [".env", ".env.local", ".env.production"]
+  message: "A .env file is tracked by git or not covered by .gitignore, so its secrets can reach the repository"
+  advice: "Add .env, .env.local and .env.production to .gitignore. If one was ever committed, remove it from history and rotate every secret it held."

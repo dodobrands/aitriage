@@ -1,0 +1,7 @@
+services:
+  api:
+    image: example/api:2.0
+    # seccomp:unconfined is not needed with the custom profile.
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp.json

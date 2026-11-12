@@ -26,6 +26,11 @@ var (
 	loadRulesErr  error
 )
 
+// Rule is one NFR check. Files means, for file_contains, basename globs to
+// inspect recursively; for the other checks, names at the project root, any
+// one of which counts: file_exists is satisfied by any of them,
+// file_not_exists and file_tracked_by_git fire on any of them. Without Files
+// those checks look at Pattern.
 type Rule struct {
 	ID                     string   `yaml:"id"`
 	Name                   string   `yaml:"name"`
@@ -33,8 +38,8 @@ type Rule struct {
 	Message                string   `yaml:"message"`
 	Advice                 string   `yaml:"advice"`
 	Check                  string   `yaml:"check"`   // "file_contains" | "file_exists" | "file_not_exists" | "file_tracked_by_git"
-	Pattern                string   `yaml:"pattern"` // regex for file_contains
-	Files                  []string `yaml:"files"`   // basename globs to inspect recursively
+	Pattern                string   `yaml:"pattern"` // regex for file_contains, a file name for the other checks
+	Files                  []string `yaml:"files"`
 	AppliesPattern         string   `yaml:"applies_pattern"`
 	AppliesFiles           []string `yaml:"applies_files"`
 	compiledRegex          *regexp.Regexp
@@ -101,16 +106,20 @@ func CheckNFR(projectPath string) ([]NFRFinding, error) {
 
 	var findings []NFRFinding
 	for _, rule := range allRules {
-		triggered, err := evaluateRule(projectPath, rule)
+		triggered, detail, err := evaluateRule(projectPath, rule)
 		if err != nil {
 			continue
 		}
 		if triggered {
+			message := rule.Message
+			if detail != "" {
+				message += " (" + detail + ")"
+			}
 			findings = append(findings, NFRFinding{
 				RuleID:   rule.ID,
 				Name:     rule.Name,
 				Severity: rule.Severity,
-				Message:  rule.Message,
+				Message:  message,
 				Advice:   rule.Advice,
 			})
 		}
@@ -119,11 +128,30 @@ func CheckNFR(projectPath string) ([]NFRFinding, error) {
 	return findings, nil
 }
 
-func evaluateRule(projectPath string, rule Rule) (bool, error) {
+// evaluateRule reports whether rule is violated, with a short detail for the
+// finding message (the exposed file names for file_tracked_by_git).
+func evaluateRule(projectPath string, rule Rule) (bool, string, error) {
 	applies, err := ruleApplies(projectPath, rule)
 	if err != nil || !applies {
-		return false, err
+		return false, "", err
 	}
+	if rule.Check == "file_tracked_by_git" {
+		// Violated only when a file is actually exposed: either git tracks
+		// it, or it sits in the tree with nothing ignoring it. A developer's
+		// local .env that .gitignore covers is correct practice, not a leak.
+		var exposed []string
+		for _, name := range ruleFileNames(rule) {
+			if fileIsExposedToGit(projectPath, name) {
+				exposed = append(exposed, name)
+			}
+		}
+		return len(exposed) > 0, strings.Join(exposed, ", "), nil
+	}
+	triggered, err := evaluateCheck(projectPath, rule)
+	return triggered, "", err
+}
+
+func evaluateCheck(projectPath string, rule Rule) (bool, error) {
 	switch rule.Check {
 	case "file_contains":
 		var re *regexp.Regexp
@@ -155,19 +183,30 @@ func evaluateRule(projectPath string, rule Rule) (bool, error) {
 		}
 		return true, nil // NFR violated if pattern is NOT found
 	case "file_exists":
-		_, err := os.Stat(filepath.Join(projectPath, rule.Pattern))
-		return os.IsNotExist(err), nil // violated if file does NOT exist
+		return !anyFileExists(projectPath, ruleFileNames(rule)), nil // violated if none exists
 	case "file_not_exists":
-		_, err := os.Stat(filepath.Join(projectPath, rule.Pattern))
-		return err == nil, nil // violated if file EXISTS
-	case "file_tracked_by_git":
-		// Violated only when the file is actually exposed: either git tracks it,
-		// or it sits in the tree with nothing ignoring it. A developer's local
-		// .env that .gitignore covers is correct practice, not a critical leak.
-		return fileIsExposedToGit(projectPath, rule.Pattern), nil
+		return anyFileExists(projectPath, ruleFileNames(rule)), nil // violated if one exists
 	default:
 		return false, nil
 	}
+}
+
+// ruleFileNames returns the root-level file names a file check looks at:
+// files when the rule lists them, otherwise pattern.
+func ruleFileNames(rule Rule) []string {
+	if len(rule.Files) > 0 {
+		return rule.Files
+	}
+	return []string{rule.Pattern}
+}
+
+func anyFileExists(projectPath string, names []string) bool {
+	for _, name := range names {
+		if _, err := os.Stat(filepath.Join(projectPath, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func ruleApplies(projectPath string, rule Rule) (bool, error) {
@@ -263,14 +302,18 @@ func GetAllRulesAsText() string {
 
 // fileIsExposedToGit reports whether a sensitive file would reach the
 // repository. It asks git itself, because only git knows what is tracked; when
-// the project is not a git repository at all, the presence of the file is the
-// only signal available and is reported as exposure.
+// the project is not inside a git work tree at all, the presence of the file
+// is the only signal available and is reported as exposure.
+//
+// Every query runs in the project directory, so a project scanned as a
+// subdirectory of a repository (no .git of its own) is judged by the work tree
+// that contains it, including the .gitignore files above it.
 func fileIsExposedToGit(projectPath, name string) bool {
 	if _, err := os.Stat(filepath.Join(projectPath, name)); err != nil {
 		return false // nothing to expose
 	}
 
-	if _, err := os.Stat(filepath.Join(projectPath, ".git")); err != nil {
+	if !insideGitWorkTree(projectPath) {
 		return true // not a repository: cannot prove the file is ignored
 	}
 
@@ -286,6 +329,19 @@ func fileIsExposedToGit(projectPath, name string) bool {
 
 	// Untracked and not ignored: one `git add .` away from being committed.
 	return true
+}
+
+// insideGitWorkTree reports whether dir is inside a git work tree, at any
+// depth below its root.
+func insideGitWorkTree(dir string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = dir
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // runGitQuiet runs a git query in the project and reports only success.

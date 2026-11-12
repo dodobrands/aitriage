@@ -167,6 +167,47 @@ const placeholderData = [];
 	}
 }
 
+// A to-do app names its domain model Todo. In code, todo and fixme are
+// identifiers; only notes in comments are scaffolding.
+func TestSlopCountsTodoOnlyInComments(t *testing.T) {
+	model := `export interface Todo { id: number; title: string; done: boolean }
+export function addTodo(list: Todo[], todo: Todo): Todo[] {
+  return [...list, todo];
+}
+export function toggle(todo: Todo): Todo {
+  return { ...todo, done: !todo.done };
+}
+export function removeTodo(list: Todo[], todo: Todo): Todo[] {
+  return list.filter((t) => t.id !== todo.id);
+}
+export function rename(todo: Todo, title: string): Todo {
+  return { ...todo, title };
+}
+`
+	if count, _ := countScaffoldingResidue(model, "todos.ts"); count != 0 {
+		t.Errorf("count = %d; want 0, a Todo model is not scaffolding", count)
+	}
+	if got := slopResults(t, "todos.ts", model); len(got) != 0 {
+		t.Errorf("a Todo domain model was reported as scaffolding: %+v", got)
+	}
+
+	goModel := "package todo\n\ntype Todo struct{ Title string }\n\n// TODO: paginate\nfunc List(todo Todo, fixme int) []Todo { return nil }\n"
+	if count, line := countScaffoldingResidue(goModel, "todo.go"); count != 1 || line != 5 {
+		t.Errorf("count, line = %d, %d; want only the TODO comment on line 5", count, line)
+	}
+
+	pyNotes := "class Todo:\n    pass\n\n# TODO: one\n# FIXME: two\ntodo = Todo()  # todo three\n"
+	if count, _ := countScaffoldingResidue(pyNotes, "models.py"); count != 3 {
+		t.Errorf("count = %d; want the 3 notes in comments, not the Todo class or variable", count)
+	}
+
+	notes := "// TODO: a\n// TODO: b\n/* FIXME: c */\n// TODO: d\n// todo e\n// FIXME f\nexport const x = 1;\n"
+	got := slopResults(t, "notes.ts", notes)
+	if len(got) != 1 || got[0].Severity != "LOW" {
+		t.Errorf("six notes in comments must still be reported once as LOW, got %+v", got)
+	}
+}
+
 func TestSlopHonoursInlineSuppression(t *testing.T) {
 	src := "// aitriage-ignore-file\n" + strings.Repeat("// TODO: later\n", 8)
 	if got := slopResults(t, "notes.js", src); len(got) != 0 {

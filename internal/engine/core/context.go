@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/dodobrands/aitriage/internal/config"
+	"github.com/dodobrands/aitriage/internal/regions"
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	"github.com/dodobrands/aitriage/internal/scanner/entropy"
 	"github.com/dodobrands/aitriage/internal/scanner/pathpolicy"
@@ -38,6 +39,7 @@ type CheckResult struct {
 	File           string      `json:"file"`
 	Confidence     float64     `json:"confidence"`
 	OWASPMapping   string      `json:"owasp_mapping,omitempty"`
+	CWE            string      `json:"cwe,omitempty"`
 	ReasoningChain []string    `json:"reasoning_chain,omitempty"`
 }
 
@@ -59,6 +61,9 @@ type FileInfo struct {
 	strippedCache []byte
 	docsCache     []byte
 	treeCache     *tree_sitter.Tree
+	regionsCache  []regions.Kind
+	noCommentText []byte
+	hasRegions    bool
 	hasRaw        bool
 	hasStripped   bool
 	hasDocs       bool
@@ -192,6 +197,57 @@ func (fi *FileInfo) GetDocsOnlyContent() ([]byte, error) {
 	return fi.docsCache, nil
 }
 
+// GetRegions classifies every byte of the file as code, comment or string
+// literal. Configuration formats that SyntaxForPath leaves unknown (YAML,
+// .env, TOML, INI) are read with "#" comments.
+func (fi *FileInfo) GetRegions() ([]regions.Kind, error) {
+	content, err := fi.GetContent()
+	if err != nil {
+		return nil, err
+	}
+	fi.mu.Lock()
+	defer fi.mu.Unlock()
+	if !fi.hasRegions {
+		fi.regionsCache = regions.Bytes(content, ruleSyntax(fi.Path))
+		fi.noCommentText = make([]byte, len(content))
+		for i, b := range content {
+			if fi.regionsCache[i] == regions.Comment && b != '\n' {
+				b = ' '
+			}
+			fi.noCommentText[i] = b
+		}
+		fi.hasRegions = true
+	}
+	return fi.regionsCache, nil
+}
+
+// GetNonCommentContent returns the file with every comment byte replaced by a
+// space, so offsets and line numbers match the raw content.
+func (fi *FileInfo) GetNonCommentContent() ([]byte, error) {
+	if _, err := fi.GetRegions(); err != nil {
+		return nil, err
+	}
+	fi.mu.Lock()
+	defer fi.mu.Unlock()
+	return fi.noCommentText, nil
+}
+
+// ruleSyntax picks the comment and string syntax used by detection rules.
+func ruleSyntax(path string) regions.Syntax {
+	if s := regions.SyntaxForPath(path); s.Known() {
+		return s
+	}
+	base := strings.ToLower(filepath.Base(path))
+	if strings.HasPrefix(base, ".env") || base == "containerfile" || strings.HasPrefix(base, "containerfile.") {
+		return regions.HashComments
+	}
+	switch filepath.Ext(base) {
+	case ".yaml", ".yml", ".env", ".toml", ".properties", ".ini", ".cfg", ".conf", ".txt", ".in":
+		return regions.HashComments
+	}
+	return regions.SyntaxForPath(path)
+}
+
 // GetTree parses the file and returns the tree-sitter AST tree.
 func (fi *FileInfo) GetTree() (*tree_sitter.Tree, error) {
 	fi.mu.Lock()
@@ -268,20 +324,36 @@ type ProjectContext struct {
 // FindFilesByExtension returns all files matching the given extensions in the project.
 func (ctx *ProjectContext) FindFilesByExtension(extensions ...string) []*FileInfo {
 	extMap := make(map[string]bool)
+	var globs []string
 	for _, ext := range extensions {
-		extMap[strings.ToLower(ext)] = true
+		lower := strings.ToLower(ext)
+		extMap[lower] = true
+		if strings.ContainsAny(lower, "*?[") {
+			globs = append(globs, lower)
+		}
 	}
 
 	var matched []*FileInfo
 	for _, f := range ctx.Files {
 		// Most rules match extensions (for example, ".go"), but some
 		// configuration files such as Dockerfile have no extension. Let those
-		// rules match the filename without changing FileInfo.Extension semantics.
-		if extMap[strings.ToLower(f.Extension)] || extMap[strings.ToLower(filepath.Base(f.Path))] {
+		// rules match the filename, or a base-name glob such as "Dockerfile.*",
+		// without changing FileInfo.Extension semantics.
+		base := strings.ToLower(filepath.Base(f.Path))
+		if extMap[strings.ToLower(f.Extension)] || extMap[base] || matchesAnyGlob(globs, base) {
 			matched = append(matched, f)
 		}
 	}
 	return matched
+}
+
+func matchesAnyGlob(globs []string, base string) bool {
+	for _, g := range globs {
+		if ok, err := filepath.Match(g, base); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GetFile expects a relative path relative to the PROJECT root and returns its FileInfo if it exists.

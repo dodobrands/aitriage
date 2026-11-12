@@ -14,10 +14,10 @@ import (
 func TestScanDetectsHardcodedSecrets(t *testing.T) {
 	dir := t.TempDir()
 	src := strings.Join([]string{
-		`const AWS = "AKIAIOSFODNN7EXAMPLE";`,
+		`const AWS = "AKIA` + `Z7Q4XWVB3NMK2PLT";`,
 		`const GH  = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";`,
 		`const DB  = "postgres://admin:S3cretDbPass@db.internal:5432/app";`,
-		`const OAI = "sk-abcdefghijklmnopqrstuvwxyz1234";`,
+		`const OAI = "sk-Xq7Lm2Np9Rt4Vw8Yz1Ab` + `T3BlbkFJCd5Ef6Gh7Ij8Kl9Mn0Op";`,
 		`const apiKey = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6";`,
 		"",
 	}, "\n")
@@ -53,7 +53,7 @@ func TestScanDetectsHardcodedSecrets(t *testing.T) {
 func TestScanRelativePathDetectsSecrets(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.js"),
-		[]byte(`const k = "AKIAIOSFODNN7EXAMPLE";`+"\n"), 0o644); err != nil {
+		[]byte(`const k = "AKIA`+`Z7Q4XWVB3NMK2PLT";`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(dir) // scan with a relative "." root

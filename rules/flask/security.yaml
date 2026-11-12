@@ -1,120 +1,244 @@
 # ============================================================
-# AITRIAGE RULES: Flask (Python) — Security
+# AITRIAGE RULES: Flask (Python) - Security
 # ============================================================
-# Covers: CSRF, auth, rate limiting, security headers,
-# ORM, secret management, and debug mode detection.
+# Rules for Flask/Werkzeug/Jinja APIs. Rules that match an API only
+# Flask and Jinja use run on every Python project (stack: universal),
+# because Flask apps without a requirements file are detected as
+# "unknown". The four presence checks (CSRF, auth, rate limit, headers)
+# run only on projects detected as Flask.
 # ============================================================
+
+# Retired: FLASK-ORM - "no ORM" is not a vulnerability; SQL injection is covered by FLASK-RAW-SQL and PY-SQL-STRING-BUILD.
+# Retired: FLASK-SECRETS - could never run, and a missing SECRET_KEY is not a vulnerability; FLASK-SECRET-HARDCODED covers hardcoded keys.
 
 rules:
   - id: FLASK-CSRF
-    name: "Missing CSRF Protection"
+    name: "No CSRF protection library or control found"
     stack: flask
-    files: ["requirements.txt", "pyproject.toml", "Pipfile"]
-    target: code
-    pattern_not: '(?i)(flask-wtf|flask_wtf|wtforms|csrf|crsf)'
-    suggestion: "HIGH: No CSRF protection found. Install Flask-WTF and use CSRFProtect(app)."
+    extensions: [".py", "requirements*.txt", "requirements*.in", "pyproject.toml", "Pipfile", "setup.cfg"]
+    target: all
+    regions: code_and_strings
+    pattern: '(?i)\b(?:flask[-_]wtf|CSRFProtect|wtforms|FlaskForm|flask[-_]seasurf|SeaSurf|csrf)'
+    condition: "required_pattern"
+    severity: LOW
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "No CSRF control was found. Apps that use cookie sessions and HTML forms should enable Flask-WTF CSRFProtect(app). JSON APIs authenticated with bearer tokens do not need it."
 
   - id: FLASK-AUTH
-    name: "Missing Authentication"
+    name: "No authentication library or control found"
     stack: flask
-    files: ["requirements.txt", "pyproject.toml", "Pipfile"]
-    target: code
-    pattern_not: '(?i)(flask-login|flask_login|flask-jwt|flask_jwt|flask-security|authlib)'
-    suggestion: "HIGH: No authentication library found. Use Flask-Login or flask-jwt-extended."
+    extensions: [".py", "requirements*.txt", "requirements*.in", "pyproject.toml", "Pipfile", "setup.cfg"]
+    target: all
+    regions: code_and_strings
+    pattern: '(?i)\b(?:flask[-_]login|login_required|login_user|flask[-_]jwt(?:[-_]extended)?|jwt_required|verify_jwt_in_request|flask[-_]security|flask[-_]httpauth|HTTPBasicAuth|HTTPTokenAuth|authlib|flask[-_]praetorian|flask[-_]user|flask[-_]oidc|jwt\.decode|check_password_hash)\b'
+    condition: "required_pattern"
+    severity: LOW
+    metadata:
+      cwe: "CWE-306"
+      owasp: "A07:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "No authentication library or check was found. If the app has non-public endpoints, protect them with Flask-Login, flask-jwt-extended, Authlib or an equivalent check."
 
   - id: FLASK-RATELIMIT
-    name: "Missing Rate Limiting"
+    name: "No rate limiting found"
     stack: flask
-    files: ["requirements.txt", "pyproject.toml", "Pipfile"]
-    target: code
-    pattern_not: '(?i)(flask-limiter|flask_limiter|slowapi|limits)'
-    suggestion: "HIGH: No rate limiter found. Use Flask-Limiter."
+    extensions: [".py", "requirements*.txt", "requirements*.in", "pyproject.toml", "Pipfile", "setup.cfg"]
+    target: all
+    regions: code_and_strings
+    pattern: '(?i)\b(?:flask[-_]limiter|Limiter\s*\(|limiter\.limit|ratelimit)'
+    condition: "required_pattern"
+    severity: LOW
+    metadata:
+      cwe: "CWE-770"
+      owasp: "A06:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "No rate limiter was found. Limit login and other expensive endpoints with Flask-Limiter, or confirm that a gateway or proxy enforces limits."
 
   - id: FLASK-HEADERS
-    name: "Missing Security Headers"
+    name: "No security headers configuration found"
     stack: flask
-    files: ["requirements.txt", "pyproject.toml", "Pipfile"]
-    target: code
-    pattern_not: '(?i)(flask-talisman|talisman|flask-seasurf|flask_talisman)'
-    suggestion: "HIGH: No security headers middleware. Use Flask-Talisman for HSTS, CSP, X-Frame-Options."
-
-  - id: FLASK-ORM
-    name: "Missing ORM (Parameterized Queries)"
-    stack: flask
-    files: ["requirements.txt", "pyproject.toml", "Pipfile"]
-    target: code
-    pattern_not: '(?i)(sqlalchemy|flask-sqlalchemy|flask_sqlalchemy|peewee|tortoise|piccolo)'
-    suggestion: "HIGH: No ORM detected. Use Flask-SQLAlchemy to prevent SQL injection."
-
-  - id: FLASK-SECRETS
-    name: "Missing Secret Key Config"
-    stack: flask
-    extensions: [".py"]
-    target: code
-    pattern_not: '(?i)(os\.environ|os\.getenv|SECRET_KEY\s*=\s*os)'
-    files: ["app.py", "config.py", "settings.py", "__init__.py"]
-    suggestion: "CRITICAL: No env-based SECRET_KEY found. Hardcoded secret keys compromise session security."
+    extensions: [".py", "requirements*.txt", "requirements*.in", "pyproject.toml", "Pipfile", "setup.cfg"]
+    target: all
+    regions: code_and_strings
+    pattern: '(?i)\b(?:flask[-_]talisman|Talisman\s*\(|Content-Security-Policy|X-Frame-Options|Strict-Transport-Security|X-Content-Type-Options|flask[-_]secure[-_]headers)'
+    condition: "required_pattern"
+    severity: LOW
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "No security headers were found. Set HSTS, CSP, X-Frame-Options and X-Content-Type-Options with Flask-Talisman, an after_request hook, or the reverse proxy."
 
   - id: FLASK-DEBUG
-    name: "Debug Mode in Production"
-    stack: flask
+    name: "Flask or Werkzeug debug mode enabled in code"
+    stack: universal
     extensions: [".py"]
-    target: code
-    pattern: '(?i)app\.run\s*\([^)]*debug\s*=\s*True'
-    suggestion: "CRITICAL: app.run(debug=True) enables an interactive debugger with arbitrary code execution."
+    target: all
+    regions: code
+    pattern: '\b(?:\w+_)?app(?:lication)?\.run\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bdebug\s*=\s*True\b|\bsocketio\.run\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bdebug\s*=\s*True\b|\brun_simple\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\buse_debugger\s*=\s*True\b|\b(?:\w+_)?app(?:lication)?\.debug\s*=\s*True\b|\.config\s*\[\s*["\x27]DEBUG["\x27]\s*\]\s*=\s*True\b|\.config\.(?:update|from_mapping)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bDEBUG\s*=\s*True\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The Werkzeug debugger lets anyone who reaches it run code. Do not enable debug in code: use flask run --debug locally and a WSGI server such as gunicorn in production."
 
   - id: FLASK-SSTI
-    name: "Server-Side Template Injection"
-    stack: flask
+    name: "Template rendered from a non-constant template string"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: 'render_template_string\s*\('
-    suggestion: "CRITICAL: render_template_string() with user input enables SSTI (Remote Code Execution). Use render_template() with .html files."
+    regions: code
+    pattern: '(?m)(?:\brender_template_string|\bjinja2\.Template|(?:^|[^.\w])Template|\.from_string)\s*\(\s*(?:(?:[^\s"\x27)bBrRuU]|[bBrRuU][^\s"\x27bBrRuU]|[bBrRuU]{2}[^\s"\x27])|[bBrRuU]{0,2}"(?:[^"\\\n]|\\.)*"\s*(?:\+|%|\.format|\.join)|[bBrRuU]{0,2}\x27(?:[^\x27\\\n]|\\.)*\x27\s*(?:\+|%|\.format|\.join))'
+    condition: "contains:jinja|render_template_string|django.template|tornado.template"
+    severity: HIGH
+    metadata:
+      cwe: "CWE-1336"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Keep the template text constant and pass user data as context variables, for example render_template_string(TEMPLATE, name=name), or use render_template() with a template file."
 
   - id: FLASK-PICKLE
-    name: "Insecure Deserialization"
-    stack: flask
+    name: "Request data deserialized with pickle"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: '(?i)(pickle\.loads?\(|marshal\.loads?\()'
-    suggestion: "CRITICAL: pickle/marshal deserialization from untrusted sources enables RCE. Use JSON."
+    regions: code
+    pattern: '\b(?:c?[Pp]ickle|_pickle|dill|cloudpickle|marshal)\.(?:loads?|Unpickler)\s*\([^\n]*\brequest\.(?:data|get_data|body|files|FILES|form|args|values|cookies|COOKIES|json|get_json|stream|headers|GET|POST)\b|\bjsonpickle\.decode\s*\([^\n]*\brequest\.'
+    severity: CRITICAL
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Request data is unpickled, so any client can run code on the server. Accept JSON and validate it against a schema."
 
   - id: FLASK-OPEN-REDIRECT
-    name: "Open Redirect"
-    stack: flask
+    name: "Redirect to a URL taken from the request"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: '(?i)redirect\s*\(\s*request\.(args|form|values)\.get'
-    suggestion: "HIGH: User-controlled redirect URL. Validate against an allowlist to prevent phishing."
+    regions: code
+    pattern: '\bredirect\s*\(\s*request\.(?:args|form|values|cookies|headers|referrer)\b'
+    condition: "not_contains:is_safe_url|url_has_allowed_host_and_scheme|is_safe_redirect"
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Redirect only to relative paths or hosts on an allowlist. Check the target (for example with url_has_allowed_host_and_scheme or an is_safe_url helper) before calling redirect()."
 
   - id: FLASK-RAW-SQL
-    name: "Raw SQL Query"
-    stack: flask
+    name: "SQL formatted inside execute(), text() or read_sql()"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: '(?i)db\.engine\.execute\s*\(|db\.session\.execute\s*\(\s*(?:f"|text\(f")'
-    suggestion: "CRITICAL: Raw SQL with string interpolation. Use SQLAlchemy ORM or text() with bound parameters."
+    regions: code
+    pattern: '(?m)\.(?:execute|executemany|executescript|exec_driver_sql)\s*\(\s*(?:(?:sa\.|sqlalchemy\.)?text\s*\(\s*)?(?:(?:[fF][rR]?|[rR][fF])(?:"(?:[^"\\\n]|\\.)*?\{|\x27(?:[^\x27\\\n]|\\.)*?\{|"""[^"]*\{|\x27\x27\x27[^\x27]*\{)|[bBrRuU]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27|"""[^"]*"""|\x27\x27\x27[^\x27]*\x27\x27\x27)\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\())|(?:^|[^.\w])(?:sa\.|sqlalchemy\.)?text\s*\(\s*(?:(?:[fF][rR]?|[rR][fF])(?:"\s*(?i:select|insert|update|delete|with)\s(?:[^"\\\n]|\\.)*?\{|\x27\s*(?i:select|insert|update|delete|with)\s(?:[^\x27\\\n]|\\.)*?\{)|[bBrRuU]{0,2}(?:"\s*(?i:select|insert|update|delete|with)\s(?:[^"\\\n]|\\.)*"|\x27\s*(?i:select|insert|update|delete|with)\s(?:[^\x27\\\n]|\\.)*\x27)\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\())|\b(?:pd|pandas)\.read_sql(?:_query)?\s*\(\s*(?:(?:[fF][rR]?|[rR][fF])(?:"(?:[^"\\\n]|\\.)*?\{|\x27(?:[^\x27\\\n]|\\.)*?\{|"""[^"]*\{|\x27\x27\x27[^\x27]*\{)|[bBrRuU]{0,2}(?:"(?:[^"\\\n]|\\.)*"|\x27(?:[^\x27\\\n]|\\.)*\x27|"""[^"]*"""|\x27\x27\x27[^\x27]*\x27\x27\x27)\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\())'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "Do not format values into SQL. Use bound parameters: cursor.execute(sql, params), or text(... :id) with a params dict. Engine.execute() was removed in SQLAlchemy 2.0; use a Connection or Session."
 
   - id: FLASK-SECRET-HARDCODED
-    name: "Hardcoded Secret Key"
-    stack: flask
+    name: "Hardcoded Flask secret key"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: "app\\.(?:secret_key|config\\[.SECRET_KEY.\\])\\s*=\\s*['\"][^'\"]{8,}['\"]"
-    suggestion: "CRITICAL: SECRET_KEY hardcoded. Load from environment variable: app.secret_key = os.environ['SECRET_KEY']."
+    regions: code
+    pattern: '(?m)\b(?:\w+_)?app(?:lication)?\.secret_key\s*=\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]|\.config\s*\[\s*["\x27]\w*SECRET_KEY["\x27]\s*\]\s*=\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]|\.config\.(?:update|from_mapping)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\b\w*SECRET_KEY\s*=\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]|\{[^{}]*?["\x27]\w*SECRET_KEY["\x27]\s*:\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]|^[ \t]+\w*SECRET_KEY\s*(?::\s*str\s*)?=\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]|\b(?:getenv|environ\.get)\s*\(\s*["\x27]\w*SECRET_KEY["\x27]\s*,\s*[bBrRuU]{0,2}["\x27][^"\x27\n]+["\x27]'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Read SECRET_KEY from the environment or a secret store, for example os.environ['SECRET_KEY'], with no default value, and rotate any key that was committed."
 
   - id: FLASK-SEND-FILE
-    name: "Path Traversal via send_file"
-    stack: flask
+    name: "send_file() with a path from the request"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: 'send_file\s*\(\s*(?:request\.|os\.path\.join\s*\(.*request\.)'
-    suggestion: "HIGH: User-controlled path in send_file(). Validate and sanitize filename. Use send_from_directory() with a fixed base path."
+    regions: code
+    pattern: '\bsend_file\s*\(\s*(?:request\.|[fF][rR]?["\x27][^"\x27\n]*\{[^}\n]*\brequest\.|os\.path\.join\s*\([^\n]*\brequest\.|[^\n,()]*\+\s*request\.)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Use send_from_directory() with a fixed base directory, or werkzeug.utils.safe_join(), and never pass request data to send_file() directly."
 
   - id: FLASK-UNSAFE-COOKIE
-    name: "Insecure Session Cookie"
-    stack: flask
+    name: "Session or cookie flag Secure or HttpOnly disabled"
+    stack: universal
     extensions: [".py"]
     target: all
-    pattern: "SESSION_COOKIE_SECURE\\s*=\\s*False|SESSION_COOKIE_HTTPONLY\\s*=\\s*False"
-    suggestion: "HIGH: Session cookies missing Secure or HttpOnly flag. Set both to True in production."
+    regions: code
+    pattern: '(?m)\.config\s*\[\s*["\x27](?:SESSION|REMEMBER)_COOKIE_(?:SECURE|HTTPONLY)["\x27]\s*\]\s*=\s*False\b|\.config\.update\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\b(?:SESSION|REMEMBER)_COOKIE_(?:SECURE|HTTPONLY)\s*=\s*False\b|^[ \t]+(?:SESSION|REMEMBER)_COOKIE_(?:SECURE|HTTPONLY)\s*=\s*False\b|\bset_cookie\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\b(?:secure|httponly)\s*=\s*False\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "In production set SESSION_COOKIE_SECURE=True, SESSION_COOKIE_HTTPONLY=True and SESSION_COOKIE_SAMESITE=Lax, and pass secure=True, httponly=True to set_cookie()."
+
+  - id: FLASK-CSRF-DISABLED
+    name: "Flask-WTF CSRF protection disabled or a view exempted"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?m)\.config\s*\[\s*["\x27]WTF_CSRF_(?:ENABLED|CHECK_DEFAULT)["\x27]\s*\]\s*=\s*False\b|\.config\.(?:update|from_mapping)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bWTF_CSRF_(?:ENABLED|CHECK_DEFAULT)\s*=\s*False\b|\{[^{}]*?["\x27]WTF_CSRF_(?:ENABLED|CHECK_DEFAULT)["\x27]\s*:\s*False\b|^[ \t]*WTF_CSRF_(?:ENABLED|CHECK_DEFAULT)\s*=\s*False\b|^[ \t]*@[ \t]*\w*csrf\w*\.exempt\b|\b\w*csrf\w*\.exempt\s*\(\s*\w'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Keep WTF_CSRF_ENABLED on outside tests. With WTF_CSRF_CHECK_DEFAULT=False, call csrf.protect() in every state-changing view. Exempt a view only when it is authenticated by a header token, not a cookie."
+
+  - id: FLASK-PATH-TRAVERSAL-OPEN
+    name: "open() with a path from the request"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?m)(?:^|[^.\w])open\s*\(\s*(?:request\.(?:args|form|values|cookies|headers|json|get_json|view_args)\b|[fF][rR]?["\x27][^"\x27\n]*\{[^}\n]*\brequest\.(?:args|form|values|cookies|headers|json|get_json|view_args)\b|os\.path\.join\s*\([^\n]*\brequest\.(?:args|form|values|cookies|headers|json|get_json|view_args)\b|[^\n,()]*\+\s*request\.(?:args|form|values|cookies|headers|json|get_json|view_args)\b)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Do not build file paths from request data. Map the request to a known file, or join it with werkzeug.utils.safe_join() under a fixed base directory and reject None."
+
+  - id: FLASK-TEMPLATE-SAFE
+    name: "Autoescaping bypassed in a Jinja template (|safe, autoescape false)"
+    stack: universal
+    extensions: [".html", ".htm", ".jinja", ".jinja2", ".j2"]
+    target: all
+    regions: all
+    pattern: '\{\{[^}\n]*\|\s*safe\s*-?(?:\}\}|\|)|\{%-?\s*autoescape\s+(?:false|False)\s*-?%\}'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Remove |safe and {% autoescape false %} from values that can contain user input. Sanitize HTML with a library such as nh3 or bleach before marking it safe."

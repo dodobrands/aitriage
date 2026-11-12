@@ -1,0 +1,200 @@
+package rules
+
+import (
+	"bytes"
+	"io/fs"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/dodobrands/aitriage/internal/models"
+	"github.com/dodobrands/aitriage/internal/scanner/ast"
+	tree_sitter "github.com/tree-sitter/go-tree-sitter"
+	"gopkg.in/yaml.v3"
+)
+
+// retiredRuleIDs are ids of rules removed from the catalog. Baselines,
+// suppressions and inline directives may still name them, so an id must never
+// be given to a different rule.
+var retiredRuleIDs = map[string]string{
+	"ENTR-PRIVATE-KEY":       "duplicate of the SECRET-PRIVATE-KEY detector, which also requires a key body",
+	"DJANGO-HOSTS":           "an empty ALLOWED_HOSTS rejects requests; it is not a vulnerability",
+	"DJANGO-LOGGING":         "Django logs by default; absence of a LOGGING setting is not a vulnerability",
+	"FAST-ORM":               "a database driver without an ORM is not SQL injection",
+	"FAST-TEMPFILE":          "duplicate of PY-TEMPFILE",
+	"FAST-SUBPROCESS":        "duplicate of PY-SUBPROCESS",
+	"FAST-PICKLE":            "duplicate of PY-PICKLE",
+	"FAST-YAML":              "duplicate of PY-YAML-LOAD",
+	"FAST-EVAL":              "duplicate of PY-EXEC",
+	"FAST-SSTI":              "duplicate of FLASK-SSTI, which covers every Python stack",
+	"ENTR-21":                "third copy of the weak-hash finding; ENTR-WEAK-CRYPTO and PY-HASHLIB-WEAK cover it",
+	"ENTR-HALLUCINATION":     "a fixed list of four made-up package names; registry checks belong in the dependency scanner",
+	"ENTR-FRAGILE-LOGIC":     "matched idiomatic Go error handling",
+	"ENTROPY-SECRET":         "documented an id the engine never emitted; the detector reports SECRET-* ids",
+	"ENTROPY-SECRET-LEAK":    "documented an id the engine never emitted; the detector reports SECRET-LEAK-LOG",
+	"FLASK-ORM":              "absence of an ORM is not SQL injection; the rule never ran",
+	"FLASK-SECRETS":          "duplicate of FLASK-SECRET-HARDCODED; the rule never ran",
+	"NEXT-AUTH":              "absence of a middleware file is not a vulnerability; Next.js advises auth checks in each route",
+	"NEXT-CSRF":              "Server Actions check the Origin header and cookies default to SameSite=Lax",
+	"NEXT-AUTHZ":             "absence of the word role is not a vulnerability",
+	"NEXT-VAL":               "absence of a validation library is not a vulnerability",
+	"NEXT-ORM":               "absence of an ORM is not SQL injection",
+	"NEXT-LOGGING":           "absence of a logging library is not a vulnerability",
+	"NEXT-ERROR":             "a missing error.tsx is not a vulnerability",
+	"NEXT-SECRETS":           "a missing .env.example is documentation hygiene",
+	"NEXT-MATH-RANDOM":       "duplicate of ENTR-INSECURE-RANDOM",
+	"REACT-HAPPY-PATH":       "reliability, not security; the query never compiled",
+	"EXPRESS-MONGO-SANITIZE": "fired on projects without MongoDB; NoSQL injection rules cover the defect",
+}
+
+var (
+	knownTargets = map[string]bool{"all": true, "ast": true, "docs": true, "filename": true, "condition": true, "entropy-analysis": true}
+	knownRegions = map[string]bool{"code": true, "code_and_strings": true, "comments": true, "all": true}
+	knownConds   = map[string]bool{"required_pattern": true, "missing": true, "missing_lockfile": true, "large_file": true}
+)
+
+// TestCatalogRulesAreWellFormed rejects rules that cannot work as written: a
+// misspelled key (YAML drops unknown keys silently), a pattern RE2 or
+// tree-sitter cannot compile (the engine used to swallow both errors, so such
+// rules never fired), an unimplemented target or condition, a file rule with
+// no extensions or pattern, a regex rule without a region filter, or the reuse
+// of a retired id.
+func TestCatalogRulesAreWellFormed(t *testing.T) {
+	err := fs.WalkDir(FS, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || (!strings.HasSuffix(p, ".yaml") && !strings.HasSuffix(p, ".yml")) {
+			return nil
+		}
+		data, err := fs.ReadFile(FS, p)
+		if err != nil {
+			return err
+		}
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		var rs models.Ruleset
+		if err := dec.Decode(&rs); err != nil {
+			t.Errorf("%s: %v", p, err)
+			return nil
+		}
+		for _, r := range rs.Rules {
+			checkRule(t, p, r)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func checkRule(t *testing.T, file string, r models.Rule) {
+	t.Helper()
+	where := file + ": " + r.ID
+	if reason, ok := retiredRuleIDs[r.ID]; ok {
+		t.Errorf("%s: id is retired (%s) and must not be reused", where, reason)
+	}
+	if r.Target == "entropy-analysis" {
+		return
+	}
+	checkMetadata(t, where, r)
+	if r.IsTaint() {
+		return
+	}
+	if !knownTargets[r.Target] {
+		t.Errorf("%s: target %q is not implemented (use all, ast, docs, filename or condition)", where, r.Target)
+	}
+	if c := r.Condition; c != "" && !knownConds[c] && !strings.HasPrefix(c, "not_contains:") && !strings.HasPrefix(c, "contains:") {
+		t.Errorf("%s: condition %q is not implemented", where, c)
+	}
+	if len(r.Extensions) == 0 && r.Condition != "missing_lockfile" {
+		t.Errorf("%s: no extensions, so the rule never reads a file", where)
+	}
+	if len(r.Files) > 0 && r.Condition != "missing_lockfile" {
+		t.Errorf("%s: files is only read by missing_lockfile", where)
+	}
+	if r.Pattern == "" && r.Condition != "missing_lockfile" && r.Condition != "large_file" {
+		t.Errorf("%s: no pattern", where)
+	}
+	switch r.Target {
+	case "ast":
+		for _, ext := range r.Extensions {
+			lang, err := ast.GetLanguage(ext)
+			if err != nil || lang == nil {
+				t.Errorf("%s: no tree-sitter grammar for %s", where, ext)
+				continue
+			}
+			q, qerr := tree_sitter.NewQuery(lang, r.Pattern)
+			if qerr != nil {
+				t.Errorf("%s: query does not compile for %s: %v", where, ext, qerr)
+				continue
+			}
+			for i := uint(0); i < q.PatternCount(); i++ {
+				for _, pred := range q.GeneralPredicates(i) {
+					t.Errorf("%s: predicate #%s is not supported and would be ignored", where, pred.Operator)
+				}
+			}
+			q.Close()
+		}
+	case "all", "docs", "filename":
+		if r.Pattern != "" {
+			if _, err := regexp.Compile(r.Pattern); err != nil {
+				t.Errorf("%s: pattern is not valid RE2: %v", where, err)
+			}
+		}
+		if r.PatternNot != "" {
+			if _, err := regexp.Compile(r.PatternNot); err != nil {
+				t.Errorf("%s: pattern-not is not valid RE2: %v", where, err)
+			}
+		}
+		if r.Target == "all" && !knownRegions[r.Regions] {
+			t.Errorf("%s: regions must be code, code_and_strings, comments or all (got %q)", where, r.Regions)
+		}
+	}
+}
+
+var (
+	cweID      = regexp.MustCompile(`^CWE-[1-9][0-9]*$`)
+	owaspID    = regexp.MustCompile(`^(?:A(?:0[1-9]|10)|LLM(?:0[1-9]|10)):2025$`)
+	metaValues = map[string]map[string]bool{
+		"confidence":  {"high": true, "medium": true, "low": true},
+		"subcategory": {"vuln": true, "audit": true, "policy": true},
+	}
+	metaKeys = map[string]bool{"cwe": true, "owasp": true, "confidence": true, "subcategory": true, "category": true}
+)
+
+// checkMetadata requires the fields reports and SARIF rely on: how much to
+// trust a finding (confidence), what kind of finding it is (subcategory),
+// and for vulnerabilities their CWE and OWASP Top 10 2025 category.
+func checkMetadata(t *testing.T, where string, r models.Rule) {
+	t.Helper()
+	for k := range r.Metadata {
+		if !metaKeys[k] {
+			t.Errorf("%s: unknown metadata key %q", where, k)
+		}
+	}
+	for k, allowed := range metaValues {
+		if !allowed[r.Metadata[k]] {
+			t.Errorf("%s: metadata.%s = %q is not one of %v", where, k, r.Metadata[k], keysOf(allowed))
+		}
+	}
+	if r.Metadata["subcategory"] != "vuln" {
+		return
+	}
+	if !cweID.MatchString(r.Metadata["cwe"]) {
+		t.Errorf("%s: a vulnerability rule needs metadata.cwe such as CWE-89 (got %q)", where, r.Metadata["cwe"])
+	}
+	if !owaspID.MatchString(r.Metadata["owasp"]) {
+		t.Errorf("%s: a vulnerability rule needs metadata.owasp such as A05:2025 or LLM01:2025 (got %q)", where, r.Metadata["owasp"])
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
