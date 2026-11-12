@@ -45,6 +45,10 @@ var scanCmd = &cobra.Command{
 	Short: "Scan a directory for security presence checks",
 	Long:  `Scan a directory to identify missing architectural security practices.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Arguments and flags are valid by now; a policy failure or a runtime
+		// error must not be followed by the full usage text in CI logs.
+		cmd.SilenceUsage = true
+
 		path := "."
 		if len(args) > 0 {
 			path = args[0]

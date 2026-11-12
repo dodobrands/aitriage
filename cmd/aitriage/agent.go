@@ -224,7 +224,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return auditIncomplete(err)
 		}
-		if err := os.WriteFile(agentManifestOut, append(data, '\n'), 0o600); err != nil {
+		if err := os.WriteFile(agentManifestOut, append(data, '\n'), artifactFileMode()); err != nil {
 			return auditIncomplete(fmt.Errorf("write scanner manifest: %w", err))
 		}
 	}
@@ -235,7 +235,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return auditIncomplete(fmt.Errorf("build SARIF: %w", err))
 		}
-		if err := os.WriteFile(agentSARIFOut, data, 0o600); err != nil {
+		if err := os.WriteFile(agentSARIFOut, data, artifactFileMode()); err != nil {
 			return auditIncomplete(fmt.Errorf("write SARIF: %w", err))
 		}
 	}
@@ -310,19 +310,19 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 // writeAgentArtifacts writes every requested output file from a finished run.
 func writeAgentArtifacts(state *graph.AgentState) error {
 	if agentReportOut != "" {
-		if err := os.WriteFile(agentReportOut, []byte(state.ReportMarkdown), 0o600); err != nil {
+		if err := os.WriteFile(agentReportOut, []byte(state.ReportMarkdown), artifactFileMode()); err != nil {
 			return fmt.Errorf("failed to write report to %s: %w", agentReportOut, err)
 		}
 		fmt.Fprintf(os.Stderr, "   ✓ Report written to %s\n", agentReportOut)
 	}
 	if agentFixSpecOut != "" {
-		if err := os.WriteFile(agentFixSpecOut, []byte(state.AIFixSpec), 0o600); err != nil {
+		if err := os.WriteFile(agentFixSpecOut, []byte(state.AIFixSpec), artifactFileMode()); err != nil {
 			return fmt.Errorf("failed to write fix spec to %s: %w", agentFixSpecOut, err)
 		}
 		fmt.Fprintf(os.Stderr, "   ✓ Fix spec written to %s\n", agentFixSpecOut)
 	}
 	if agentSummaryOut != "" {
-		if err := os.WriteFile(agentSummaryOut, []byte(state.SummaryMarkdown), 0o600); err != nil {
+		if err := os.WriteFile(agentSummaryOut, []byte(state.SummaryMarkdown), artifactFileMode()); err != nil {
 			return fmt.Errorf("failed to write summary to %s: %w", agentSummaryOut, err)
 		}
 		fmt.Fprintf(os.Stderr, "   ✓ Summary written to %s\n", agentSummaryOut)
