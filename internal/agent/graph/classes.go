@@ -40,6 +40,21 @@ func semanticFindingClass(f EnrichedFinding) string {
 	return ""
 }
 
+// isHardcodedSecret reports whether a finding, or any detector merged into it,
+// reports a hardcoded secret.
+func isHardcodedSecret(f EnrichedFinding) bool {
+	if semanticFindingClass(f) == healthcheck.ClassHardcodedSecret {
+		return true
+	}
+	for _, origin := range f.Origins {
+		class, ok := healthcheck.ClassifyRule(healthcheck.RuleRef{Type: origin.Type, Source: origin.Source, RuleID: origin.RuleID})
+		if ok && class.Key == healthcheck.ClassHardcodedSecret {
+			return true
+		}
+	}
+	return false
+}
+
 // semanticFindingKey is the identity under which findings merge: one defect,
 // whichever detectors reported it.
 //   - Classified findings merge with the other findings of their class at the

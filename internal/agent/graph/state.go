@@ -277,10 +277,12 @@ type FindingDisposition struct {
 	// Confidence is the model's self-reported certainty: "high" | "medium" | "low".
 	Confidence string `json:"confidence,omitempty"`
 	// DispositionSource records how the disposition was produced for the audit
-	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model gave
-	// no verdict after retries) | "triage-failed" (the provider failed before
-	// the model could classify it) | "suppressed" (a recorded project
-	// decision) | "network-probe" (describes the scanning host, never scored).
+	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model
+	// answered the request but gave this finding no accepted verdict after
+	// retries) | "triage-failed" (the provider failed, or every reply about
+	// the finding was malformed, empty or rejected) | "suppressed" (a
+	// recorded project decision) | "network-probe" (describes the scanning
+	// host, never scored).
 	DispositionSource string `json:"disposition_source,omitempty"`
 	// Fingerprint is the stable content hash used for dedup/caching.
 	Fingerprint string `json:"fingerprint,omitempty"`

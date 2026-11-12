@@ -18,8 +18,8 @@ import (
 )
 
 // fakeHost answers deferred SecureCoder requests the way a host coding agent's
-// model would, delegating purely off the request messages. It classifies every
-// finding as a False Positive so the graph completes without PoC turns, which
+// model would, delegating purely off the request messages. It leaves every
+// finding for manual review so the graph completes without PoC turns, which
 // keeps the integration deterministic while still exercising every real stage
 // (threat model, classification, report, fix spec) through the deferred client.
 func fakeHostAnswer(messages []llm.Message) string {
@@ -36,18 +36,24 @@ func fakeHostAnswer(messages []llm.Message) string {
 	case strings.Contains(system, "Threat Model & Finding Classification"):
 		return `{"component_overview":"test app","priority_areas":["input handling"]}`
 	case strings.Contains(system, "Finding Classification"):
-		return classifyAllFP(user)
+		return classifyAllForReview(user)
 	case strings.Contains(system, "PoC Verification"):
 		return `[]`
 	default:
 		// Report / summary / fix spec are free-form markdown.
-		return "## Security Report\n\n### Summary\nNo exploitable issues confirmed.\n\nAll reviewed findings were classified as false positives.\n"
+		return "## Security Report\n\n### Summary\nNo exploitable issues confirmed.\n\nAll reviewed findings were left for manual review.\n"
 	}
 }
 
-// classifyAllFP builds a valid finding_dispositions response marking every
-// finding in the classification prompt as a False Positive.
-func classifyAllFP(user string) string {
+// classifyAllForReview builds a valid finding_dispositions response leaving
+// every finding in the classification prompt for manual review. The answer
+// must be one the triage accepts: a reply that classifies nothing (or only
+// unverifiable False Positives) leaves the triage incomplete. The rationale
+// quotes the fixture's credential, as a model reviewing it would, and the
+// verdict cache never stores such a verdict: runs in this package share one
+// cache directory once the manager sets it, and must not reuse each other's
+// verdicts.
+func classifyAllForReview(user string) string {
 	marker := strings.Index(user, "## Findings to classify")
 	if marker < 0 {
 		return `{"finding_dispositions":[]}`
@@ -72,9 +78,9 @@ func classifyAllFP(user string) string {
 			"finding_index": i,
 			"finding_id":    fid,
 			"fingerprint":   fp,
-			"disposition":   "False Positive",
-			"confidence":    "high",
-			"rationale":     "not reachable in this context",
+			"disposition":   "Needs Manual Review",
+			"confidence":    "medium",
+			"rationale":     "a person should confirm whether AKIAIOSFODNN7EXAMPLE is a live credential",
 		})
 		sb.Write(b)
 	}

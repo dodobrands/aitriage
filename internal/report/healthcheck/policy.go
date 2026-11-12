@@ -140,7 +140,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 	if res.Breakdown.TriageFailedFindings > 0 {
 		reasons = append(reasons, BlockingReason{
 			Code: ReasonTriageIncomplete,
-			Message: fmt.Sprintf("AI triage did not complete: %d finding(s) have no verdict because the LLM provider failed. The gate cannot pass on an incomplete triage; re-run once the provider is available",
+			Message: fmt.Sprintf("AI triage did not complete: %d finding(s) have no verdict because the LLM provider failed or returned no usable verdicts. The gate cannot pass on an incomplete triage; re-run once the provider works",
 				res.Breakdown.TriageFailedFindings),
 			Count:     res.Breakdown.TriageFailedFindings,
 			Threshold: 0,

@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,7 +74,17 @@ func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw raw
 	confidence := normalizeConfidence(raw.Confidence)
 	if raw.Disposition == "False Positive" {
 		if err := validateFalsePositiveEvidence(projectPath, finding, raw.Evidence); err != nil {
-			return FindingDisposition{}, err.Error(), ""
+			if !errors.Is(err, errPersonMustDecide) {
+				return FindingDisposition{}, err.Error(), ""
+			}
+			// The model did answer; the answer is just not one the tool may
+			// act on alone. Asking again would only repeat it.
+			return FindingDisposition{
+				Disposition: "Needs Manual Review",
+				Rationale:   "Kept for manual review: " + err.Error() + ". Model rationale: " + raw.Rationale,
+				Confidence:  confidence,
+				Evidence:    raw.Evidence,
+			}, "", "false positive kept as Needs Manual Review: " + err.Error()
 		}
 		if violatesCriticalConfidencePolicy(policy, finding, confidence) {
 			note := fmt.Sprintf("false positive for a CRITICAL finding kept as Needs Manual Review: policy fp_critical_requires_high_confidence requires high confidence, model reported %q", confidence)
@@ -127,11 +138,42 @@ func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, 
 	}
 }
 
-// validateCodeMitigation accepts code_mitigation evidence only when it points
-// at code, other than the flagged statement itself, that exists on the cited
-// line. Quoting text that merely exists in the file was enough before: models
-// cited comments, configuration, and the vulnerable line itself.
+// Limits that tie code_mitigation evidence to its finding. A check that
+// protects a statement normally sits a few lines above it, in the same
+// function, and names the data the statement uses. Code further away, after
+// the statement, or about other names is unrelated code that merely looks
+// protective, which is what models cited to dismiss findings.
+const (
+	// maxMitigationDistance is how many lines above the flagged line the
+	// cited code may sit. A fixed window works for every language and is
+	// what the classification prompt states.
+	maxMitigationDistance = 30
+	// maxStatementLines bounds how many lines a flagged statement is followed
+	// for when a parenthesis or bracket opened on the flagged line is still
+	// open, as in a call with one argument per line.
+	maxStatementLines = 10
+	// minSharedIdentifierLength leaves out one-letter names (i, r, w, x):
+	// they are too common to tie a line to a finding.
+	minSharedIdentifierLength = 2
+)
+
+// errPersonMustDecide marks code_mitigation evidence for a finding that only a
+// person may dismiss. The verdict is kept as Needs Manual Review rather than
+// rejected and asked again: the model would only repeat it.
+var errPersonMustDecide = errors.New("a person must decide")
+
+// validateCodeMitigation accepts code_mitigation evidence only when it is tied
+// to the finding: code only (no byte of it in a comment or string literal), in
+// the same source file, above the flagged line and at most
+// maxMitigationDistance lines away, and naming a variable or function of the
+// flagged statement. Quoting code-looking text anywhere in the file was
+// enough before: models cited comments, configuration, the vulnerable line
+// itself and unrelated assignments. CRITICAL findings and hardcoded secrets
+// are never dismissed by code_mitigation.
 func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+	if subject := personOnlyFinding(finding); subject != "" {
+		return fmt.Errorf("code_mitigation evidence is not accepted for %s: %w", subject, errPersonMustDecide)
+	}
 	observed := evidence.Observed
 	if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(observed)) < 4 {
 		return fmt.Errorf("code_mitigation evidence is incomplete")
@@ -143,58 +185,83 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 	if err != nil {
 		return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
 	}
+	if err := checkMitigationPlacement(finding.Line, evidence.Line); err != nil {
+		return err
+	}
+	syntax := syntaxForPath(path)
+	if syntax.leadingOnly {
+		return fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
+	}
 	lines, err := readSourceLines(path)
 	if err != nil {
 		return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
 	}
-	if evidence.Line > len(lines) {
-		return fmt.Errorf("code_mitigation evidence is unreadable: line %d is outside source file", evidence.Line)
+	if finding.Line > len(lines) {
+		return fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
 	}
-	line := lines[evidence.Line-1]
+	// The evidence line is above the flagged line, so both are scanned.
+	regions := fileRegions(lines, finding.Line-1+maxStatementLines, syntax)
+	line, kinds := lines[evidence.Line-1], regions[evidence.Line-1]
 	if !strings.Contains(line, observed) {
 		return fmt.Errorf("code_mitigation observed text is absent from source")
 	}
-	kinds := lineRegions(lines, evidence.Line-1, syntaxForPath(path))
-	sameLine := finding.Line > 0 && evidence.Line == finding.Line
-	if sameLine && isCriticalOrHigh(finding.Severity) {
-		// A serious finding goes to a person rather than be dismissed by
-		// anything on its own line.
-		return fmt.Errorf("code_mitigation evidence rejected: a mitigation on the flagged line itself is not accepted for %s findings", strings.ToUpper(strings.TrimSpace(finding.Severity)))
-	}
-	if region := observedRegion(line, kinds, observed); region != "" {
-		return fmt.Errorf("code_mitigation evidence rejected: observed text lies inside a %s, not in code", region)
-	}
-	if sameLine && coversStatement(statementText(line, kinds), observed) {
-		return fmt.Errorf("code_mitigation evidence rejected: observed text is the flagged statement itself, which cannot be its own mitigation")
+	starts, where := codeOccurrences(line, kinds, observed)
+	if len(starts) == 0 {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text %s", where)
 	}
 	if !hasCodeTokens(observed) {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
 	}
+	cited := citedIdentifiers(line, starts, len(observed))
+	flagged := statementIdentifiers(lines, regions, finding.Line-1)
+	if !sharesIdentifier(cited, flagged) {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
+	}
 	return nil
 }
 
-func isCriticalOrHigh(severity string) bool {
-	switch strings.ToUpper(strings.TrimSpace(severity)) {
-	case "CRITICAL", "HIGH":
-		return true
+// personOnlyFinding names why code_mitigation evidence can never dismiss a
+// finding, or returns "". A CRITICAL finding is too severe to drop on the
+// strength of nearby code, and a hardcoded secret is exposed in the source
+// whatever code surrounds it.
+func personOnlyFinding(f EnrichedFinding) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(f.Severity), "CRITICAL"):
+		return "a CRITICAL finding"
+	case isHardcodedSecret(f):
+		return "a hardcoded secret"
 	default:
-		return false
+		return ""
 	}
 }
 
-// coversStatement reports whether observed is (most of) the flagged
-// statement. Whitespace is ignored so reformatting cannot dodge the check.
-func coversStatement(statement, observed string) bool {
-	stmt := stripWhitespace(statement)
-	obs := stripWhitespace(observed)
-	if stmt == "" || obs == "" {
-		return true
+// checkMitigationPlacement requires the cited line to run before the flagged
+// line and close to it. The flagged line itself never qualifies: a statement
+// is not its own mitigation, and nothing else on its line can be told apart
+// from it reliably.
+func checkMitigationPlacement(findingLine, evidenceLine int) error {
+	switch {
+	case findingLine < 1:
+		return fmt.Errorf("code_mitigation evidence rejected: the finding has no line, so no mitigation can be tied to it")
+	case evidenceLine == findingLine:
+		return fmt.Errorf("code_mitigation evidence rejected: evidence.line must cite code other than the flagged line itself")
+	case evidenceLine > findingLine:
+		return fmt.Errorf("code_mitigation evidence rejected: line %d is after the flagged line %d; a mitigation must run before the flagged statement", evidenceLine, findingLine)
+	case findingLine-evidenceLine > maxMitigationDistance:
+		return fmt.Errorf("code_mitigation evidence rejected: line %d is more than %d lines above the flagged line %d", evidenceLine, maxMitigationDistance, findingLine)
+	default:
+		return nil
 	}
-	return obs == stmt || 2*len(obs) > len(stmt)
 }
 
-func stripWhitespace(text string) string {
-	return strings.Join(strings.Fields(text), "")
+// sharesIdentifier reports whether two name sets intersect.
+func sharesIdentifier(a, b map[string]bool) bool {
+	for name := range a {
+		if b[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // codeTokenPatterns recognise text that is code rather than prose: an

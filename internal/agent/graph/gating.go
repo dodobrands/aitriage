@@ -22,8 +22,9 @@ const (
 	dispositionSourceCache         = "cache"
 	dispositionSourceDeterministic = "deterministic"
 	dispositionSourceNRFallback    = "nr-fallback"
-	// dispositionSourceTriageFailed marks a finding the model never saw
-	// because the provider failed; the run's triage is incomplete.
+	// dispositionSourceTriageFailed marks a finding the model never
+	// classified because the provider failed or every reply about it was
+	// unusable; the run's triage is incomplete.
 	dispositionSourceTriageFailed = "triage-failed"
 	// dispositionSourceSuppressed marks a finding dismissed by a recorded
 	// project decision; it is never sent to the LLM.

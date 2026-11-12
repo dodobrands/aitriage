@@ -504,8 +504,11 @@ differ noticeably between models on the same code. Pin one model (`llm.model` or
 and re-check a project you know before switching to another.
 `fp_critical_requires_high_confidence: true` (`--fp-critical-requires-high-confidence`) keeps a
 CRITICAL finding for manual review unless the model calls it a false positive with high
-confidence. A false positive also needs evidence AITriage can check: a comment, a string, a
-configuration file or the flagged line itself is never accepted as a code mitigation.
+confidence. A false positive also needs evidence AITriage can check. A code mitigation must be
+code (not a comment, a string, a configuration file or the flagged line itself), in the same file
+at most 30 lines above the flagged line, and must name a variable or function the flagged
+statement uses. A CRITICAL finding or a hardcoded secret is never dismissed this way: it stays
+Needs Manual Review until a person decides.
 
 A baseline is a property of the project, not of the tool that created it. The shared record is
 `.aitriage-baseline.json` at the repository root, used by the CLI (`aitriage baseline`), the Web
@@ -535,7 +538,7 @@ first move: it keeps every finding visible in reports while the gate judges only
 | :--- | :--- |
 | `0` | The gate passed, or no gate applies |
 | `1` | The security gate failed. Usage errors and setup problems caught before the run starts (Docker not running) also exit `1` |
-| `2` | `aitriage agent` could not complete the audit: no usable LLM provider or a provider failure (rejected key, rate limit, timeout), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
+| `2` | `aitriage agent` could not complete the audit: no usable LLM provider, a provider failure (rejected key, rate limit, timeout) or replies that classify nothing (empty, malformed, or only rejected verdicts), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
 
 A provider failure no longer discards the run. When triage is cut short, AITriage still writes
 every report: `triage-findings.json` records `triage_status: failed` and the reason, the

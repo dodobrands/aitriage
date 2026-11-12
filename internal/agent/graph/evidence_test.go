@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,9 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/llm"
 )
 
+// A verdict for another finding is rejected. When it is the only verdict the
+// model ever gives, nothing was classified: the finding is triage-failed and
+// the triage incomplete, never an ordinary fallback.
 func TestClassifyFindingsRejectsWrongIdentityToNeedsReview(t *testing.T) {
 	pinConcurrency(t)
 	findings := []EnrichedFinding{{ID: "B101", VulnID: "CS-MISC-001", Severity: "LOW", File: "tests/a_test.py", Line: 7, Message: "assert"}}
@@ -22,17 +26,19 @@ func TestClassifyFindingsRejectsWrongIdentityToNeedsReview(t *testing.T) {
 	}
 	var usage llm.Usage
 	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
-	if err != nil {
-		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
+	if !errors.Is(err, ErrTriageIncomplete) {
+		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want ErrTriageIncomplete", err)
 	}
-	if got := dispositions[0].Disposition; got != "Needs Manual Review" {
-		t.Fatalf("disposition = %q, want Needs Manual Review", got)
+	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceTriageFailed {
+		t.Fatalf("disposition = %+v, want triage-failed Needs Manual Review", got)
 	}
-	if len(audit) == 0 || len(audit[0].Rejected) == 0 {
+	if !auditMentions(audit, "finding_id does not match") {
 		t.Fatalf("audit = %+v, want recorded rejection", audit)
 	}
 }
 
+// A False Positive without evidence is rejected; a model that answers
+// nothing else leaves the finding triage-failed.
 func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 	pinConcurrency(t)
 	findings := []EnrichedFinding{{ID: "B101", VulnID: "CS-MISC-001", Severity: "LOW", File: "tests/a_test.py", Line: 7, Message: "assert"}}
@@ -43,12 +49,15 @@ func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 		},
 	}
 	var usage llm.Usage
-	_, dispositions, _, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
-	if err != nil {
-		t.Fatalf("ClassifyFindingsWithAudit() error = %v", err)
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
+	if !errors.Is(err, ErrTriageIncomplete) {
+		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want ErrTriageIncomplete", err)
 	}
-	if got := dispositions[0].Disposition; got != "Needs Manual Review" {
-		t.Fatalf("disposition = %q, want Needs Manual Review", got)
+	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceTriageFailed {
+		t.Fatalf("disposition = %+v, want triage-failed Needs Manual Review", got)
+	}
+	if !auditMentions(audit, "false positive has no evidence") {
+		t.Fatalf("audit = %+v, want recorded rejection", audit)
 	}
 }
 
@@ -113,15 +122,15 @@ func TestClassifyFindingsAcceptsValidatedCodeMitigationFalsePositive(t *testing.
 func TestCodeMitigationAcceptsAbsoluteInProjectEvidence(t *testing.T) {
 	pinConcurrency(t)
 	project := t.TempDir()
-	path := filepath.Join(project, "security_controls.py")
-	if err := os.WriteFile(path, []byte("TOKEN_ENV = \"API_TOKENS_JSON\"\nraw = os.environ.get(TOKEN_ENV)\n"), 0o644); err != nil {
+	path := filepath.Join(project, "files.py")
+	if err := os.WriteFile(path, []byte("def read(name):\n    name = os.path.basename(name)\n    return open(name).read()\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	findings := []EnrichedFinding{{ID: "B105", VulnID: "CS-MISC-001", Severity: "LOW", File: path, Line: 1, Message: "possible hardcoded password"}}
+	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-MISC-001", Severity: "MEDIUM", File: path, Line: 3, Message: "path from input"}}
 	mock := &fakeLLM{
 		t: t,
 		classifyHandler: func(_ int, _ []EnrichedFinding) (string, error) {
-			return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"environment variable name only","evidence":{"basis":"code_mitigation","file":` + strconv.Quote(path) + `,"line":2,"observed":"os.environ.get(TOKEN_ENV)"}}]}`, nil
+			return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"directory parts are stripped","evidence":{"basis":"code_mitigation","file":` + strconv.Quote(path) + `,"line":2,"observed":"os.path.basename(name)"}}]}`, nil
 		},
 	}
 	var usage llm.Usage
@@ -134,6 +143,37 @@ func TestCodeMitigationAcceptsAbsoluteInProjectEvidence(t *testing.T) {
 	}
 	if len(audit) != 1 || len(audit[0].Rejected) != 0 {
 		t.Fatalf("audit = %+v, want first-attempt acceptance", audit)
+	}
+}
+
+// A possible hardcoded password is never dismissed by code_mitigation, even
+// when the model is right that the value is only an environment variable
+// name: the verdict is kept for a person, recorded as a downgrade.
+func TestCodeMitigationKeepsHardcodedSecretForReview(t *testing.T) {
+	pinConcurrency(t)
+	project := t.TempDir()
+	path := filepath.Join(project, "security_controls.py")
+	if err := os.WriteFile(path, []byte("TOKEN_ENV = \"API_TOKENS_JSON\"\nraw = os.environ.get(TOKEN_ENV)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := []EnrichedFinding{{ID: "B105", VulnID: "CS-SECRETS-001", Type: "external", Source: "bandit", Severity: "LOW", File: path, Line: 1, Message: "possible hardcoded password"}}
+	mock := &fakeLLM{
+		t: t,
+		classifyHandler: func(_ int, _ []EnrichedFinding) (string, error) {
+			return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"environment variable name only","evidence":{"basis":"code_mitigation","file":` + strconv.Quote(path) + `,"line":2,"observed":"os.environ.get(TOKEN_ENV)"}}]}`, nil
+		},
+	}
+	var usage llm.Usage
+	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dispositions[0]
+	if d.Disposition != "Needs Manual Review" || d.DispositionSource != dispositionSourceLLM || !strings.Contains(d.Rationale, "environment variable name only") {
+		t.Fatalf("disposition = %+v, want the dismissal kept for manual review with the model's rationale", d)
+	}
+	if len(audit) != 1 || len(audit[0].Downgraded) != 1 || !strings.Contains(audit[0].Downgraded[0].Reason, "hardcoded secret") {
+		t.Fatalf("audit = %+v, want one downgrade naming the hardcoded secret", audit)
 	}
 }
 

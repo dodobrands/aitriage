@@ -119,6 +119,8 @@ func classifyAllByCount(count int, disposition string) string {
 
 // bindPromptIdentities emulates the exact identity echo required from a real
 // provider while preserving test handlers that focus only on index behavior.
+// A reply without entries ({}, null, an error object) is passed on verbatim,
+// so tests see exactly the shape they asked for.
 func bindPromptIdentities(body string, batch []classificationPromptFinding) string {
 	var raw struct {
 		FindingDispositions []struct {
@@ -131,7 +133,7 @@ func bindPromptIdentities(body string, batch []classificationPromptFinding) stri
 			Evidence     *DispositionEvidence `json:"evidence,omitempty"`
 		} `json:"finding_dispositions"`
 	}
-	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+	if err := json.Unmarshal([]byte(body), &raw); err != nil || len(raw.FindingDispositions) == 0 {
 		return body
 	}
 	for i := range raw.FindingDispositions {
@@ -273,7 +275,8 @@ func TestClassifyFindingsPartialResponseFallsBackToNeedsReview(t *testing.T) {
 	}
 }
 
-// Req: unsupported disposition strings are rejected and default to NR, never FP.
+// Req: unsupported disposition strings are rejected, never FP. A model that
+// answers nothing else classified nothing: the finding is triage-failed.
 func TestClassifyFindingsRejectsUnsupportedDisposition(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(1)
@@ -286,11 +289,11 @@ func TestClassifyFindingsRejectsUnsupportedDisposition(t *testing.T) {
 	var usage llm.Usage
 
 	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrTriageIncomplete) {
+		t.Fatalf("err = %v, want ErrTriageIncomplete", err)
 	}
-	if disps[0].Disposition != "Needs Manual Review" {
-		t.Fatalf("unsupported disposition should fall back to NR, got %q", disps[0].Disposition)
+	if disps[0].Disposition != "Needs Manual Review" || disps[0].DispositionSource != dispositionSourceTriageFailed {
+		t.Fatalf("unsupported disposition should leave the finding triage-failed, got %+v", disps[0])
 	}
 }
 

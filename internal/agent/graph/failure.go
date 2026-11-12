@@ -116,18 +116,27 @@ var (
 		regexp.MustCompile(`[A-Za-z0-9_-]{40,}`),
 	}
 	// failureKeyedSecretPattern keeps the field name, so a reader still sees
-	// which credential the provider complained about.
-	failureKeyedSecretPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|token|secret|password|authorization|bearer)(["'\s:=]+)[^\s"',;]{6,}`)
+	// which credential the provider complained about. An authorization
+	// scheme ("Authorization: Bearer <token>") is removed with the value
+	// rather than taken for it.
+	failureKeyedSecretPattern = regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?token|token|secret|password|authorization|bearer)(["'\s:=]+)(?:(?:bearer|basic|digest|token)\s+)?[^\s"',;]{6,}`)
 )
 
 // failureReason renders a provider error as one short line that is safe to
 // publish in a CI summary: whitespace collapsed, URLs (which may name private
-// gateways) and credential-shaped values removed, length capped.
+// gateways) and credential-shaped values removed, length capped. Every error
+// text written to an artifact goes through it.
 func failureReason(err error) string {
 	if err == nil {
 		return "unknown error"
 	}
-	text := strings.Join(strings.Fields(err.Error()), " ")
+	return redactFailureText(err.Error())
+}
+
+// redactFailureText is failureReason for text that is already a string, such
+// as the rejection reasons recorded in the classification audit.
+func redactFailureText(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
 	text = failureURLPattern.ReplaceAllString(text, "<url>")
 	text = failureKeyedSecretPattern.ReplaceAllString(text, "$1$2[redacted]")
 	for _, pattern := range failureSecretPatterns {

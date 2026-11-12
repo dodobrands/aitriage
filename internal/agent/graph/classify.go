@@ -29,6 +29,9 @@ import (
 // built ONCE and reused. A provider failure does not discard the work done:
 // the dispositions are returned complete (findings the model never saw carry
 // disposition_source "triage-failed") together with a *TriageIncompleteError.
+// Output that classifies nothing counts as such a failure: a finding whose
+// every request came back malformed, empty or with only rejected verdicts is
+// "triage-failed" too.
 //
 // The returned slice always has exactly len(findings) entries, ordered by index.
 func ClassifyFindings(ctx context.Context, repoContextText, projectPath string, findings []EnrichedFinding, llmClient llm.Client, usage *llm.Usage, batchSize int) (*ThreatModel, []FindingDisposition, error) {
@@ -205,7 +208,7 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 
 	// Layer 4b + 5: classify the remaining findings against the threat model,
 	// in bounded-concurrency batches with adaptive retry of omitted findings.
-	var unparseable map[int]bool
+	var unanswered map[int]bool
 	if failure == nil && len(toLLM) > 0 {
 		classified, audit, outcome, err := classifyWithLLM(ctx, tmSummary, req, unique, toLLM)
 		res.Audit = audit
@@ -223,26 +226,29 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		switch {
 		case outcome.transportErr != nil:
 			failure = newTriageIncomplete(usageStageClassification, outcome.transportErr)
-		case len(outcome.unparseable) > 0:
-			// A batch whose every reply was unparseable never got a model look:
-			// treating its findings as ordinary NR fallbacks would let a broken
-			// provider pass a fail_on=confirmed gate.
-			unparseable = outcome.unparseable
+		case len(outcome.unanswered) > 0:
+			// Every request that carried these findings came back without a
+			// single usable verdict: unparseable, {} or null, an error object,
+			// an empty list, or only verdicts that failed validation. That is
+			// broken output, not a model judgement; treating the findings as
+			// ordinary NR fallbacks would let it pass a fail_on=confirmed gate.
+			unanswered = outcome.unanswered
 			failure = newTriageIncomplete(usageStageClassification, fmt.Errorf(
-				"the provider returned no parseable classification output for %d finding(s) after %d attempt(s)",
-				len(unparseable), classifyMaxRetries()+1))
+				"the provider returned no usable classification for %d finding(s) after %d attempt(s): every reply was malformed, empty or rejected by validation",
+				len(unanswered), classifyMaxRetries()+1))
 		}
 	}
 
 	// Findings the model did not classify: triage-failed when the provider
-	// failed for them, NR fallback when the model answered but left them out.
-	everyMissingFailed := failure != nil && unparseable == nil
+	// failed for them or never gave a usable reply, NR fallback when the model
+	// answered the request but left them out or gave them a rejected verdict.
+	everyMissingFailed := failure != nil && unanswered == nil
 	for _, i := range toLLM {
 		if result[i] != nil {
 			continue
 		}
 		fp := Fingerprint(unique[i])
-		if everyMissingFailed || unparseable[i] {
+		if everyMissingFailed || unanswered[i] {
 			result[i] = &FindingDisposition{
 				FindingIndex:      i,
 				Disposition:       "Needs Manual Review",
@@ -299,9 +305,10 @@ func triageFailedRationale(reason string) string {
 type classifyOutcome struct {
 	// transportErr is the first provider failure (auth, rate limit, timeout).
 	transportErr error
-	// unparseable holds the unique indices of findings whose batch never got a
-	// parseable reply. Only meaningful when transportErr is nil.
-	unparseable map[int]bool
+	// unanswered holds the unique indices of unclassified findings that never
+	// got a usable reply: no request that carried them produced an accepted
+	// verdict for any finding. Only meaningful when transportErr is nil.
+	unanswered map[int]bool
 }
 
 // classifyWithLLM classifies the given unique-index targets in bounded-concurrency
@@ -323,14 +330,14 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 	defer cancel()
 
 	var (
-		mu           sync.Mutex // guards out and unparseable
+		mu           sync.Mutex // guards out and unanswered
 		usageMu      sync.Mutex // guards req.usage
 		errMu        sync.Mutex // guards abortErr and transportErr
 		abortErr     error
 		transportErr error
 		wg           sync.WaitGroup
 	)
-	unparseable := make(map[int]bool)
+	unanswered := make(map[int]bool)
 	audit := &classificationAuditCollector{}
 	sem := make(chan struct{}, triageConcurrency())
 
@@ -369,17 +376,15 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 			for li, gi := range batch {
 				subset[li] = unique[gi]
 			}
-			local, parsedAny := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
+			local, answered := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
 
 			mu.Lock()
 			for li, d := range local {
 				out[batch[li]] = d
 			}
-			if !parsedAny {
-				for li, gi := range batch {
-					if _, ok := local[li]; !ok {
-						unparseable[gi] = true
-					}
+			for li, gi := range batch {
+				if _, ok := local[li]; !ok && !answered[li] {
+					unanswered[gi] = true
 				}
 			}
 			mu.Unlock()
@@ -394,8 +399,8 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 		return nil, audit.snapshot(), classifyOutcome{}, err
 	}
 	outcome := classifyOutcome{transportErr: transportErr}
-	if transportErr == nil && len(unparseable) > 0 {
-		outcome.unparseable = unparseable
+	if transportErr == nil && len(unanswered) > 0 {
+		outcome.unanswered = unanswered
 	}
 	return out, audit.snapshot(), outcome, nil
 }
@@ -414,10 +419,12 @@ const (
 // the previous reply was unparseable or omitted more than a quarter of its
 // findings: weaker models drop items from long requests, and resending the
 // same long request tends to fail the same way. It returns a map keyed by
-// LOCAL batch index and whether any reply for this batch was parseable.
-func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyRequest, subset []EnrichedFinding, globalIndices []int, addUsageSafe func(llm.Usage), setErr func(error), audit *classificationAuditCollector) (map[int]FindingDisposition, bool) {
+// LOCAL batch index, and the local indices of the findings that were part of
+// at least one usable request: one whose reply produced an accepted verdict.
+// A finding outside every usable request never got a real answer.
+func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyRequest, subset []EnrichedFinding, globalIndices []int, addUsageSafe func(llm.Usage), setErr func(error), audit *classificationAuditCollector) (map[int]FindingDisposition, map[int]bool) {
 	res := make(map[int]FindingDisposition)
-	parsedAny := false
+	answered := make(map[int]bool)
 
 	pass := func(attempt int, localMap []int) passOutcome {
 		items := make([]EnrichedFinding, len(localMap))
@@ -430,7 +437,8 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		addUsageSafe(u)
 		entry := newClassificationAuditEntry(attempt, requestIndices, items, rawResponse)
 		if err != nil {
-			entry.ParseError = err.Error()
+			// A provider error can carry the gateway URL and credentials.
+			entry.ParseError = failureReason(err)
 			audit.record(entry)
 			if errors.Is(err, errThreatModelParse) {
 				return passUnparseable
@@ -438,7 +446,6 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			setErr(err)
 			return passFailed
 		}
-		parsedAny = true
 		for _, d := range disps {
 			if d.FindingIndex < 0 || d.FindingIndex >= len(items) {
 				entry.Rejected = append(entry.Rejected, AuditRejection{FindingIndex: d.FindingIndex, Reason: "out-of-range finding_index"})
@@ -455,7 +462,7 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			}
 			validated, reject, note := validateLLMDisposition(req.projectPath, items[d.FindingIndex], d, req.policy)
 			if reject != "" {
-				entry.Rejected = append(entry.Rejected, AuditRejection{FindingIndex: globalIndices[local], Reason: reject})
+				entry.Rejected = append(entry.Rejected, AuditRejection{FindingIndex: globalIndices[local], Reason: redactFailureText(reject)})
 				continue
 			}
 			if note != "" {
@@ -463,6 +470,13 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			}
 			res[local] = validated
 			entry.AcceptedFindingIndices = append(entry.AcceptedFindingIndices, globalIndices[local])
+		}
+		if len(entry.AcceptedFindingIndices) > 0 {
+			// The model answered this request: whatever it left out or got
+			// rejected is an omission, not a broken reply.
+			for _, local := range localMap {
+				answered[local] = true
+			}
 		}
 		audit.record(entry)
 		return passParsed
@@ -478,11 +492,11 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		for _, chunk := range chunks {
 			if ctx.Err() != nil {
 				// Another batch hit a provider failure, or the run was cancelled.
-				return res, parsedAny
+				return res, answered
 			}
 			outcome := pass(attempt, chunk)
 			if outcome == passFailed {
-				return res, parsedAny
+				return res, answered
 			}
 			var missing []int
 			for _, local := range chunk {
@@ -496,7 +510,7 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		}
 		chunks = next
 	}
-	return res, parsedAny
+	return res, answered
 }
 
 // retryChunks plans the retry of the findings a request left unclassified.
@@ -534,35 +548,52 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 		return nil, "", u, fmt.Errorf("classification LLM call failed: %w", err)
 	}
 
-	jsonText := extractJSON(response)
-	var raw struct {
-		FindingDispositions []struct {
-			FindingIndex int                  `json:"finding_index"`
-			FindingID    string               `json:"finding_id"`
-			Fingerprint  string               `json:"fingerprint"`
-			Disposition  string               `json:"disposition"`
-			Confidence   string               `json:"confidence"`
-			Rationale    string               `json:"rationale"`
-			Evidence     *DispositionEvidence `json:"evidence"`
-		} `json:"finding_dispositions"`
-	}
-	if err := decodeFirstJSONValue(jsonText, &raw); err != nil {
+	items, err := decodeClassificationReply(extractJSON(response))
+	if err != nil {
 		return nil, response, u, fmt.Errorf("%w: %v", errThreatModelParse, err)
 	}
 
-	disps := make([]rawDisposition, 0, len(raw.FindingDispositions))
-	for _, d := range raw.FindingDispositions {
-		disps = append(disps, rawDisposition{
-			FindingIndex: d.FindingIndex,
-			FindingID:    d.FindingID,
-			Fingerprint:  d.Fingerprint,
-			Disposition:  d.Disposition,
-			Confidence:   d.Confidence,
-			Rationale:    d.Rationale,
-			Evidence:     d.Evidence,
-		})
+	disps := make([]rawDisposition, 0, len(items))
+	for _, d := range items {
+		disps = append(disps, rawDisposition(d))
 	}
 	return disps, response, u, nil
+}
+
+// classificationReplyItem is one entry of a classification reply: a
+// rawDisposition as the model writes it.
+type classificationReplyItem struct {
+	FindingIndex int                  `json:"finding_index"`
+	FindingID    string               `json:"finding_id"`
+	Fingerprint  string               `json:"fingerprint"`
+	Disposition  string               `json:"disposition"`
+	Confidence   string               `json:"confidence"`
+	Rationale    string               `json:"rationale"`
+	Evidence     *DispositionEvidence `json:"evidence"`
+}
+
+// decodeClassificationReply decodes the first JSON value of a reply, which
+// must be an object with a finding_dispositions list. {}, null, a bare list
+// or an error object decode without error in a lenient decoder but classify
+// nothing; they are parse errors here, so the audit records why the reply
+// was unusable.
+func decodeClassificationReply(jsonText string) ([]classificationReplyItem, error) {
+	var envelope map[string]json.RawMessage
+	if err := decodeFirstJSONValue(jsonText, &envelope); err != nil {
+		return nil, err
+	}
+	list, ok := envelope["finding_dispositions"]
+	if !ok {
+		return nil, errors.New("reply has no finding_dispositions list")
+	}
+	var items []classificationReplyItem
+	if err := json.Unmarshal(list, &items); err != nil {
+		return nil, fmt.Errorf("finding_dispositions is not a list of dispositions: %w", err)
+	}
+	if items == nil {
+		return nil, errors.New("finding_dispositions is null, not a list")
+	}
+	return items, nil
 }
 
 // threatModelSummary renders a compact text view of the threat model for use as
