@@ -62,9 +62,9 @@ inputs:
 
 runs:
   using: 'docker'
-  # Rolling major image tag, refreshed by the docker-publish workflow on main
-  # so downstream workflows consume fixes without hand-repinning an image
-  # digest on every rollout.
+  # The Action's image channel. The docker-publish workflow never moves :v1
+  # (a release publishes v<version>, v<major>.<minor> and latest); the owner
+  # advances it deliberately, so a release does not change running pipelines.
   image: 'docker://ghcr.io/dodobrands/aitriage:v1'
   entrypoint: '/entrypoint.sh'
   env:
