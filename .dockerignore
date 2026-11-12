@@ -1,36 +1,84 @@
-# ─── AITriage Docker Ignore ──────────────────────────────────────────────────
+# ==============================================================================
+# AITriage — .dockerignore
+#
+# The build context is the repository root, and the go-builder stage runs
+# `COPY . .`. The image needs only go.mod, go.sum, cmd/, internal/, rules/,
+# web/ (without node_modules and dist) and entrypoint.sh. Everything below
+# stays out of every build layer.
+#
+# Patterns are relative to the repository root; use **/ to match at any depth.
+# Never exclude files under rules/: `//go:embed all:*` ships all of them.
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# Version control & CI
+# ------------------------------------------------------------------------------
 .git
 .github
-.jules
-.notes
-.aitriage
+
+
+# ------------------------------------------------------------------------------
+# Secrets & machine-local config
+# ------------------------------------------------------------------------------
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+.aitriage.yaml
+.aitriage.yml
+aitriage.yaml
+aitriage.yml
+.codex
+.claude
+.mcp.json
 .gemini
+.jules
+
+
+# ------------------------------------------------------------------------------
+# Internal workspace, scan state & reports
+# ------------------------------------------------------------------------------
+.notes
 .codex-work
-.env
+artifacts
+docs
+enterprise
+reports
+scratch
+tmp
+stitch_*
 CLAUDE.md
-LOCAL_DOCKER_DUAL_KEY_PLAN.md
-artifact-reuse-cache.md
-artifacts/
-bin/
-docs/
-reports/
-scratch/
-tmp/
-testdata/
-stitch_*/
+AITRIAGE_*.md
+*_PLAN.md
+*HANDOFF*.md
+**/.aitriage
+**/aitriage-reports
+aitriage-report.*
+aitriage-results.*
 
-# Pre-built binaries (58MB+)
-/aitriage
-/tmp_aitriage
-aitriage-report.html
 
-# Web node_modules (installed inside Docker)
-web/node_modules
+# ------------------------------------------------------------------------------
+# Build output & dependencies (rebuilt inside the image)
+# ------------------------------------------------------------------------------
+bin
+dist
+aitriage
+tmp_aitriage
+**/node_modules
 web/dist
 
-# Enterprise docs (not needed for build)
-enterprise/*.md
 
-# OS artifacts
-.DS_Store
-*.swp
+# ------------------------------------------------------------------------------
+# Test fixtures (not part of the image)
+# ------------------------------------------------------------------------------
+testdata
+
+
+# ------------------------------------------------------------------------------
+# Editors & OS
+# ------------------------------------------------------------------------------
+.idea
+.vscode
+**/*.swp
+**/.DS_Store

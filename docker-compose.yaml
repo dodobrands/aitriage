@@ -1,14 +1,14 @@
-# ─── AITriage Enterprise Docker Compose ─────────────────────────────────────────
-# One-liner security audit:
-#   docker compose run --rm aitriage scan /project -i
+# ─── AITriage Docker Compose ───────────────────────────────────────────────────
+# Web dashboard and API (default):
+#   make up   (or: docker compose up -d web)
 #
-# Start Web Dashboard & API (Default):
-#   make up (or: docker compose up -d web)
+# One-off interactive scan of a project under SCAN_ROOT (mounted at /host):
+#   docker compose run --rm web scan /host/<project> -i
 #
-# Start Full Stack with LangGraph Agent:
-#   docker compose --profile agent up -d
+# MCP server over SSE for AI clients (http://localhost:9090/sse):
+#   docker compose --profile agent up -d aitriage-mcp
 #
-# Mount your project into /project for scanning.
+# Set SCAN_ROOT, PROJECT_PATH and API keys in .env (see .env.example).
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -31,7 +31,6 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-super-secret-development-key-change-in-prod}
       - DB_PATH=/app/data/aitriage.db
-      - LOG_LEVEL=${LOG_LEVEL:-info}
       - TERM=xterm-256color
     ports:
       - "8080:8080"
@@ -46,10 +45,9 @@ services:
     stdin_open: true
 
   # ─── AITriage MCP Server (SSE) ──────────────────────────────────────────────
-  # Exposes all 13 AITriage security tools via Model Context Protocol over HTTP.
-  # Used by the LangGraph Python agent and compatible AI clients (Claude, Cursor).
-  #
-  # Connect LangGraph to: http://localhost:9090/sse
+  # Serves the AITriage MCP tools over HTTP for AI clients that connect by URL.
+  # The audited project is PROJECT_PATH, mounted read-only at /project.
+  # Endpoint: http://localhost:9090/sse
   aitriage-mcp:
     image: aitriage:latest
     container_name: aitriage-mcp
@@ -65,41 +63,6 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
       - ${PROJECT_PATH:-.}:/project:ro
-    profiles:
-      - agent
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/sse"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # ─── LangGraph Security Agent ────────────────────────────────────────────────
-  # Python agent that connects to aitriage-mcp and runs a stateful
-  # security remediation workflow using LangGraph.
-  aitriage-agent:
-    build:
-      context: ./agent
-      dockerfile: Dockerfile
-    container_name: aitriage-agent
-    volumes:
-      - ${PROJECT_PATH:-.}:/project:ro
-    environment:
-      # AITriage MCP server URL (internal Docker network)
-      - AITRIAGE_MCP_URL=http://aitriage-mcp:9090/sse
-      # LLM provider (pick one)
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - AGENT_MODEL=${AGENT_MODEL:-google-genai:gemini-2.5-flash}
-      # Human-in-the-Loop: set to "1" to pause before fixes
-      - AGENT_HITL=${AGENT_HITL:-0}
-      # LangSmith Observability (optional but recommended)
-      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
-      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-}
-      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-aitriage}
-    depends_on:
-      aitriage-mcp:
-        condition: service_healthy
     profiles:
       - agent
 

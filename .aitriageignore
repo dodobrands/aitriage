@@ -16,3 +16,9 @@ dist/
 
 # Ignored by default in repo
 examples/
+
+# Detection rules and test-project configs: data that reads like findings when
+# AITriage scans its own repository. Git still tracks them.
+rules/**/secrets.yaml
+**/testdata/**/aitriage.yaml
+**/testdata/**/.aitriage.yaml

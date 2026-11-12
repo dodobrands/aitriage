@@ -94,14 +94,6 @@ enterprise-up: sync-web
 	@docker compose up -d --build
 	@echo "$(GREEN)AITriage Enterprise is running! Web UI: http://localhost:8080$(RESET)"
 
-db-migrate:
-	@echo "$(BLUE)Migrations are applied automatically on startup via InitDB...$(RESET)"
-	@docker compose exec web aitriage version
-
-create-admin:
-	@echo "$(BLUE)Admin user 'admin' is seeded automatically if DB is empty...$(RESET)"
-	@docker compose exec web aitriage version
-
 down:
 	@echo "$(BLUE)Stopping AITriage Enterprise Stack...$(RESET)"
 	@docker compose down

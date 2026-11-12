@@ -1,86 +1,156 @@
-# =============================================================================
-# AITriage .gitignore  —  public / open-source repository
-# Rule of thumb: commit source + checked-in examples; never commit secrets,
-# build output, dependencies, local scratch, or scan artifacts.
-# =============================================================================
+# ==============================================================================
+# AITriage — .gitignore
+#
+# This repository is public. Commit source, checked-in examples and test
+# fixtures only. Never commit secrets, build output, dependencies, scan results
+# or internal working notes.
+#
+# Internal docs, plans, handoffs and evidence live in .notes/ (never committed).
+# The repository root holds public project files only.
+#
+# After editing this file, check that no tracked file became ignored:
+#   git ls-files --cached --ignored --exclude-standard
+# Only the force-tracked fixtures listed under "AITriage runtime" may appear.
+# ==============================================================================
 
-# =========================
-# Secrets & Environment (CRITICAL — public repo)
-# =========================
-# Ignore every .env variant, but ALWAYS keep the checked-in templates.
+
+# ------------------------------------------------------------------------------
+# Secrets & credentials (critical: public repository)
+# ------------------------------------------------------------------------------
 .env
 .env.*
 *.env
-**/.env
-**/.env.*
+.envrc
 !.env.example
 !.env.*.example
-!**/.env.example
-!**/.env.*.example
 
-# Credentials / key material that must never be committed.
 *.pem
 *.key
+*.crt
 *.p12
 *.pfx
-*.crt
+*.jks
 *.keystore
 *_rsa
 *_rsa.pub
-secrets.*
-!internal/engine/secrets.go
-!internal/engine/secrets_test.go
+*_ed25519
+*_ed25519.pub
+.netrc
 credentials.json
 gha-creds-*.json
 
-# =========================
-# AITriage Specific
-# =========================
-# Compiled CLI binary (built into the Docker image / via `go build`).
+secrets.*
+# The scanner's own code and detection rules are named after what they detect.
+!secrets.go
+!/rules/**/secrets.yaml
+
+
+# ------------------------------------------------------------------------------
+# Internal workspace: docs, plans, handoffs, evidence
+# ------------------------------------------------------------------------------
+/.notes/
+
+# Plans and handoffs created at the root by people or agents go to .notes/plans/.
+/AITRIAGE_*.md
+/*_PLAN.md
+/*HANDOFF*.md
+
+# Former locations of internal material, now merged into .notes/.
+/local/
+/artifacts/
+/.codex-work/
+/docs/
+/enterprise/
+/.jules/
+/data/
+
+
+# ------------------------------------------------------------------------------
+# AITriage runtime: state, config, scan output
+# ------------------------------------------------------------------------------
+# Results and run bundles. `aitriage install-*` adds the same entry to scanned
+# projects.
+aitriage-reports/
+
+# Per-project scan state. Force-tracked fixtures (git add -f), kept on purpose:
+#   testdata/synthetic/fastapi-perfect/.aitriage/history/2026-05-12T*.json
+.aitriage/
+
+# Active config for this checkout. Templates (*.example) and test-project
+# configs under testdata/ stay tracked.
+/.aitriage.yaml
+/.aitriage.yml
+/aitriage.yaml
+/aitriage.yml
+
+# Reports written by `aitriage scan`, the TUI and the Action smoke test.
+/aitriage-report.*
+/aitriage-results.*
+
+
+# ------------------------------------------------------------------------------
+# Build output
+# ------------------------------------------------------------------------------
+# Go binaries: `make build` writes bin/, a bare `go build` writes ./aitriage.
+/bin/
 /aitriage
 /aitriage_bin
 /aitriage_dev
 /tmp_aitriage
-/bin/
-# Runtime state dir and active config (the *.example variants stay tracked).
-.aitriage/
-.aitriage.yaml
-.aitriage.yml
-aitriage.yaml
-aitriage.yml
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
 
-# Local-only working docs, plans, notes & scan artifacts (NEVER commit — public repo).
-# Internal working documentation, plans, and notes live under .notes/ and are
-# intentionally untracked. Public project docs stay at the repository root.
-/AITRIAGE_DISTRIBUTION_AND_AGENT_ROADMAP.md
-/AITRIAGE_HOST_AGENT_PIPELINE_PLAN.md
-/AITRIAGE_ONE_ACTION_REMEDIATION_PLAN.md
-/AITRIAGE_FULL_CONTAINER_RUNTIME_PLAN.md
-/AITRIAGE_WINDOWS_NATIVE_SUPPORT_PLAN.md
-/.notes/
-/local/
-/artifacts/
-/data/
-/.codex-work/
-# Defensive: keep internal doc/plan folders out of git if ever re-created.
-/docs/
-/enterprise/
-/.jules/
+# Coverage profiles
+*.out
+coverage.txt
+coverage.html
 
-# =========================
-# Dev scratch / temp outputs
-# =========================
-output.html
-output.txt
-scan_audit.txt
-scratch/
-ansi2html.sh
-fix_*.py
-max-*.txt
+# Go workspaces are machine-local.
+go.work
+go.work.sum
 
-# =========================
-# Logs
-# =========================
+# GoReleaser output and the web UI bundle.
+/dist/
+/web/dist/
+*.tsbuildinfo
+
+# The UI bundle copied next to the Go server for embedding. index.html is a
+# tracked placeholder so `//go:embed ui/dist/*` compiles before the UI is built.
+/internal/server/ui/dist/*
+!/internal/server/ui/dist/index.html
+
+
+# ------------------------------------------------------------------------------
+# Dependencies & tool caches
+# ------------------------------------------------------------------------------
+node_modules/
+.eslintcache
+.cache/
+.vite/
+.parcel-cache/
+
+# Python (helper scripts and vulnerable test apps)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+
+# ------------------------------------------------------------------------------
+# Logs & local databases
+# ------------------------------------------------------------------------------
 *.log
 logs/
 npm-debug.log*
@@ -88,110 +158,74 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# =========================
-# Databases & local data stores
-# =========================
 *.db
+*.db-shm
+*.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
-data.db
-agent/agent_state.db
 
-# =========================
-# Go
-# =========================
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-# Test binary, built with `go test -c`
-*.test
-# Output of the go coverage tool
-*.out
-coverage.txt
-coverage.html
-# Dependency vendoring (uncomment if you choose to NOT vendor)
-# vendor/
-# Go workspace files (machine-local)
-go.work
-go.work.sum
 
-# =========================
-# Python (Legacy Agent / Scripts)
-# =========================
-__pycache__/
-*.py[cod]
-*$py.class
-.Python
-develop-eggs/
-downloads/
-eggs/
-.eggs/
-sdist/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-.venv/
-venv/
-env/
-ENV/
-env.bak/
-venv.bak/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
-# Python agent local files
-agent/.venv/
-agent/__pycache__/
-agent/*.pyc
-agent/aitriage_agent_report_*.md
-agent/.env
-
-# =========================
-# Node / Web Frontend (React/Vite)
-# =========================
-node_modules/
-/web/node_modules/
-/web/dist/
-dist/
-build/
-.eslintcache
-.cache/
-.parcel-cache/
-.vite/
-*.tsbuildinfo
-
-# =========================
+# ------------------------------------------------------------------------------
 # Docker
-# =========================
+# ------------------------------------------------------------------------------
+# Image exports (`docker save`)
 *.tar
 docker-compose.override.yml
 docker-compose.override.yaml
 
-# =========================
-# Merge / backup / patch leftovers
-# =========================
+
+# ------------------------------------------------------------------------------
+# Scratch, merge & backup leftovers
+# ------------------------------------------------------------------------------
+/scratch/
+/output.html
+/output.txt
+/scan_audit.txt
+/ansi2html.sh
+/fix_*.py
+/max-*.txt
+
 *.orig
 *.rej
 *.bak
 *.tmp
-*.md.bak
 
-# =========================
-# OS & Environment
-# =========================
+
+# ------------------------------------------------------------------------------
+# AI agents (machine-local config with absolute paths)
+# ------------------------------------------------------------------------------
+# Written by `aitriage install-codex` / `install-claude-code`.
+/.codex/
+/.mcp.json
+/.claude/settings.local.json
+/CLAUDE.local.md
+/.gemini/
+.aider*
+
+
+# ------------------------------------------------------------------------------
+# Editors & IDEs
+# ------------------------------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.zed/
+.cursor/
+.windsurf/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+
+# ------------------------------------------------------------------------------
+# Operating systems
+# ------------------------------------------------------------------------------
+# macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-Icon
 ._*
 .DocumentRevisions-V100
 .fseventsd
@@ -200,22 +234,13 @@ Icon
 .Trashes
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
+
+# Windows
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+$RECYCLE.BIN/
 
-# =========================
-# IDEs and Editors
-# =========================
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.fleet/
-.cursor/
-.windsurf/
-*.code-workspace
-
-# AITriage scan/run artifacts (host-agent runs + raw scan history)
-/aitriage-reports/
+# Linux
+.directory
+.Trash-*
