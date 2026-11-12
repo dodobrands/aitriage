@@ -507,9 +507,13 @@ and re-check a project you know before switching to another.
 CRITICAL finding for manual review unless the model calls it a false positive with high
 confidence. A false positive also needs evidence AITriage can check. A code mitigation must be
 code (not a comment, a string, a configuration file or the flagged line itself), in the same file
-at most 30 lines above the flagged line, and must name a variable or function the flagged
-statement uses. A CRITICAL finding or a hardcoded secret is never dismissed this way: it stays
-Needs Manual Review until a person decides.
+and the same function at most 30 lines above the flagged line, name a variable or function the
+flagged statement uses, and be a guard of it (an `if`, `elif` or `assert` that checks it and
+exits early or encloses the flagged statement) or a re-assignment of it through a call
+(`cmd = shlex.quote(cmd)`). AITriage checks this on the syntax tree for Python, Go, JavaScript
+and TypeScript; in other languages a HIGH finding dismissed this way stays Needs Manual Review.
+A CRITICAL finding is never dismissed by a code mitigation, and a hardcoded secret by no
+evidence at all, not even in a test file: they stay Needs Manual Review until a person decides.
 
 A baseline is a property of the project, not of the tool that created it. The shared record is
 `.aitriage-baseline.json` at the repository root, used by the CLI (`aitriage baseline`), the Web
