@@ -93,16 +93,15 @@ func TestClassifyFindingsAcceptsValidatedTestOnlyFalsePositive(t *testing.T) {
 	}
 }
 
-// The mitigation sits on a different line from the HIGH finding: a mitigation
-// on the flagged line itself is no longer accepted for CRITICAL/HIGH findings
-// (see TestCodeMitigationRejectsSameLineForCriticalAndHigh).
+// The mitigation is a guard on another line above the HIGH finding, in the
+// same function: a check that exits early when the token does not verify.
 func TestClassifyFindingsAcceptsValidatedCodeMitigationFalsePositive(t *testing.T) {
 	pinConcurrency(t)
 	project := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("def handler(request):\n    verify_token(request)\n    return load_profile(request)\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("def handler(request):\n    if not verify_token(request):\n        abort(401)\n    return load_profile(request)\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 3, Message: "missing auth"}}
+	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 4, Message: "missing auth"}}
 	mock := &fakeLLM{
 		t: t,
 		classifyHandler: func(_ int, _ []EnrichedFinding) (string, error) {

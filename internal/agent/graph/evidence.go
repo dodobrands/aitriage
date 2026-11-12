@@ -113,6 +113,12 @@ func violatesCriticalConfidencePolicy(policy validationPolicy, finding EnrichedF
 }
 
 func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+	if isHardcodedSecret(finding) {
+		// A committed credential is exposed wherever it sits, a test fixture
+		// included: whether it is real, revoked or a placeholder is for a
+		// person to decide. No evidence basis dismisses it automatically.
+		return fmt.Errorf("a hardcoded secret is never dismissed automatically, whatever the evidence: %w", errPersonMustDecide)
+	}
 	if evidence == nil {
 		return fmt.Errorf("false positive has no evidence")
 	}
@@ -165,11 +171,14 @@ var errPersonMustDecide = errors.New("a person must decide")
 // validateCodeMitigation accepts code_mitigation evidence only when it is tied
 // to the finding: code only (no byte of it in a comment or string literal), in
 // the same source file, above the flagged line and at most
-// maxMitigationDistance lines away, and naming a variable or function of the
-// flagged statement. Quoting code-looking text anywhere in the file was
+// maxMitigationDistance lines away, naming a variable or function of the
+// flagged statement, and shaped like a mitigation of it: a guard of that name
+// or a re-assignment of it through a call, in the same function (see
+// checkMitigationShape). Quoting code-looking text anywhere in the file was
 // enough before: models cited comments, configuration, the vulnerable line
-// itself and unrelated assignments. CRITICAL findings and hardcoded secrets
-// are never dismissed by code_mitigation.
+// itself, unrelated assignments, the tainted assignment, log calls and checks
+// in other functions. CRITICAL findings and hardcoded secrets are never
+// dismissed by code_mitigation.
 func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
 	if subject := personOnlyFinding(finding); subject != "" {
 		return fmt.Errorf("code_mitigation evidence is not accepted for %s: %w", subject, errPersonMustDecide)
@@ -192,10 +201,11 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 	if syntax.leadingOnly {
 		return fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
 	}
-	lines, err := readSourceLines(path)
+	source, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
 	}
+	lines := splitSourceLines(source)
 	if finding.Line > len(lines) {
 		return fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
 	}
@@ -214,16 +224,18 @@ func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidenc
 	}
 	cited := citedIdentifiers(line, starts, len(observed))
 	flagged := statementIdentifiers(lines, regions, finding.Line-1)
-	if !sharesIdentifier(cited, flagged) {
+	shared := sharedIdentifiers(cited, flagged)
+	if len(shared) == 0 {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
 	}
-	return nil
+	return checkMitigationShape(path, source, lines, regions, finding, evidence, starts, shared)
 }
 
 // personOnlyFinding names why code_mitigation evidence can never dismiss a
 // finding, or returns "". A CRITICAL finding is too severe to drop on the
 // strength of nearby code, and a hardcoded secret is exposed in the source
-// whatever code surrounds it.
+// whatever code surrounds it (validateFalsePositiveEvidence stops those
+// before any basis is considered).
 func personOnlyFinding(f EnrichedFinding) string {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(f.Severity), "CRITICAL"):
@@ -254,14 +266,15 @@ func checkMitigationPlacement(findingLine, evidenceLine int) error {
 	}
 }
 
-// sharesIdentifier reports whether two name sets intersect.
-func sharesIdentifier(a, b map[string]bool) bool {
+// sharedIdentifiers returns the names two sets have in common.
+func sharedIdentifiers(a, b map[string]bool) map[string]bool {
+	shared := map[string]bool{}
 	for name := range a {
 		if b[name] {
-			return true
+			shared[name] = true
 		}
 	}
-	return false
+	return shared
 }
 
 // codeTokenPatterns recognise text that is code rather than prose: an
@@ -358,15 +371,13 @@ func resolveProjectFile(projectPath, candidate string) (string, error) {
 	return path, nil
 }
 
-// readSourceLines returns the file split into lines without line endings.
-func readSourceLines(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+// splitSourceLines splits a file into lines without line endings. Byte
+// offsets within a line are the same as in the file, which the syntax tree
+// checks rely on.
+func splitSourceLines(data []byte) []string {
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		lines[i] = strings.TrimSuffix(line, "\r")
 	}
-	return lines, nil
+	return lines
 }

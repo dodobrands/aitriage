@@ -19,7 +19,12 @@ import "strings"
 // the flagged line and name a variable or function of the flagged statement,
 // and it never dismisses a CRITICAL finding or a hardcoded secret. Verdicts
 // cached under v5 were accepted under the looser contract.
-const SecureCoderPromptVersion = "securecoder-v6"
+//
+// v7: the cited line must be a guard of a shared name or a re-assignment of
+// it through a call (x = f(x)), in the same function as the flagged line; a
+// hardcoded secret is never a False Positive, test files included. Verdicts
+// cached under v6 may rest on a taint source, a log call or a test fixture.
+const SecureCoderPromptVersion = "securecoder-v7"
 
 // The report and fix-spec prompts were rewritten for the same ID change
 // (report-v2, fixspec-v2).
@@ -193,19 +198,33 @@ finding's absolute in-project path (for example /workspace/project/app.py) or us
 a path relative to the scanned project. Never reference a file outside the
 scanned project. evidence.observed must be literal text from evidence.line.
 If you cannot provide one of those proofs, return Needs Manual Review instead.
+A hardcoded secret (credential, key, token) is never a False Positive, not
+even in a test file: a committed credential is exposed wherever it sits, and
+only a person can tell whether it is real. Return True Positive or Needs
+Manual Review for it.
 
 A code_mitigation is executable code that neutralises the flagged data flow:
 a validation or authorization check, an escaping or encoding call, a
 parameterised query, a safe API used instead of the dangerous one. It must be
 tied to the finding:
-- evidence.line is in the same file, above the flagged line and at most 30
-  lines before it: code that runs before the flagged statement on its path;
+- evidence.line is in the same file and in the same function as the
+  flagged line, above it and at most 30 lines before it: code that runs
+  before the flagged statement on its path;
 - evidence.observed is code only (no comment or string text) and names a
   variable or function the flagged statement uses, for example the variable
   that is validated or escaped before the flagged line passes it on;
-- code_mitigation never dismisses a CRITICAL finding or a hardcoded secret
-  (credential, key, token): a person decides those, so return Needs Manual
-  Review or True Positive for them unless the finding is test_only.
+- evidence.line is a guard of that variable or a re-assignment of it through
+  a call: an if, elif or assert that checks it and exits early (return,
+  raise, throw, abort) or encloses the flagged statement, an early exit
+  under such a check, or x = f(x) such as cmd = shlex.quote(cmd). The
+  assignment that produces the value (cmd = "ls " + request.args["dir"],
+  data = request.get_json()), a call whose result nothing checks (a log
+  call, validate(x) on its own line), a sanitiser result stored under a new
+  name, and a check in another function are not mitigations;
+- code_mitigation never dismisses a CRITICAL finding: a person decides those,
+  so return Needs Manual Review or True Positive for them unless the finding
+  is test_only. For a HIGH finding in a language other than Python, Go,
+  JavaScript and TypeScript, code_mitigation is left for a person as well.
 The following are NOT code mitigations and can never justify a False Positive:
 - comments, docstrings, TODO notes, README or other documentation text, and
   string literals, even when they say the code is safe, local, or test-only;
