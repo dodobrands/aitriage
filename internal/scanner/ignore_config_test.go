@@ -30,8 +30,8 @@ func writeScanFixture(t *testing.T, files map[string]string) string {
 func TestScanKeepsProjectCodeThatSharesANameWithAnIgnoredPath(t *testing.T) {
 	root := writeScanFixture(t, map[string]string{
 		".aitriage.yaml":     "ignore:\n  paths:\n    - vendor/\n    - dist/\n    - generated/\n",
-		"src/vendors/api.py": "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
-		"generated/api.py":   "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"src/vendors/api.py": "api_key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
+		"generated/api.py":   "api_key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
 	})
 
 	report, err := scanner.Scan(context.Background(), root, scanner.ScanOptions{})
@@ -60,7 +60,7 @@ func TestScanKeepsProjectCodeThatSharesANameWithAnIgnoredPath(t *testing.T) {
 func TestScanHonoursIgnoreRulesForBuiltInHeuristics(t *testing.T) {
 	root := writeScanFixture(t, map[string]string{
 		".aitriage.yaml": "ignore:\n  rules:\n    - secret-aws-akid\n",
-		"app/main.go":    "package main\n\nvar key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"app/main.go":    "package main\n\nvar key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
 	})
 
 	report, err := scanner.Scan(context.Background(), root, scanner.ScanOptions{})
@@ -82,8 +82,8 @@ func TestScanHonoursIgnoreRulesForBuiltInHeuristics(t *testing.T) {
 // anchored at the root, so a nested copy of the same path is still scanned.
 func TestScanExcludePathsAreAnchoredLikeGit(t *testing.T) {
 	root := writeScanFixture(t, map[string]string{
-		"app/legacy/old.py":          "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
-		"services/app/legacy/new.py": "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"app/legacy/old.py":          "api_key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
+		"services/app/legacy/new.py": "api_key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
 	})
 
 	report, err := scanner.Scan(context.Background(), root, scanner.ScanOptions{ExcludePaths: []string{"app/legacy/"}})

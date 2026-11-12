@@ -84,7 +84,7 @@ func TestRunToolsRegisteredInSafeProfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "package-lock.json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "app.js"), []byte("const k = \"AKIAIOSFODNN7EXAMPLE\";\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "app.js"), []byte("const k = \"AKIA"+"Z7Q4XWVB3NMK2PLT\";\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -143,10 +143,10 @@ func TestRunStartSelectsNestedProject(t *testing.T) {
 	if err := os.MkdirAll(sibling, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(selected, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE'\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(selected, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE';\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT';\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

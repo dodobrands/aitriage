@@ -56,7 +56,7 @@ var passwordRule = Rule{
 func TestInlineIgnoreSilencesOnlyTheNamedRule(t *testing.T) {
 	found := runOnFile(t, "app/settings.py",
 		"password = load()  # aitriage-ignore: B105 (allowed in tests)\n"+
-			"aws_key = \"AKIAIOSFODNN7EXAMPLE\"  # aitriage-ignore: B105 (allowed in tests)\n",
+			"aws_key = \"AKIA"+"Z7Q4XWVB3NMK2PLT\"  # aitriage-ignore: B105 (allowed in tests)\n",
 		passwordRule)
 
 	if !found["TEST-PASSWORD"] {
@@ -71,7 +71,7 @@ func TestInlineIgnoreStillSilencesTheNamedRule(t *testing.T) {
 	found := runOnFile(t, "app/settings.py",
 		"password = load()  # aitriage-ignore: test-password (reviewed)\n"+
 			"# aitriage-ignore-next-line: SECRET-AWS-AKID\n"+
-			"aws_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+			"aws_key = \"AKIA"+"Z7Q4XWVB3NMK2PLT\"\n",
 		passwordRule)
 
 	if found["TEST-PASSWORD"] {

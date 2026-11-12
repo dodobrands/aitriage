@@ -118,7 +118,7 @@ func newProjectWithFinding(t *testing.T) string {
 	// a hardcoded secret so there is at least one finding to triage.
 	must(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"x","version":"1.0.0"}`), 0o644))
 	must(t, os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(`{}`), 0o644))
-	must(t, os.WriteFile(filepath.Join(dir, "app.js"), []byte("const k = \"AKIAIOSFODNN7EXAMPLE\";\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(dir, "app.js"), []byte("const k = \"AKIA"+"Z7Q4XWVB3NMK2PLT\";\n"), 0o644))
 	return dir
 }
 
@@ -135,8 +135,8 @@ func TestManagerSelectsConfinedSubproject(t *testing.T) {
 	sibling := filepath.Join(root, "synthetic", "nextjs-terrible")
 	must(t, os.MkdirAll(selected, 0o755))
 	must(t, os.MkdirAll(sibling, 0o755))
-	must(t, os.WriteFile(filepath.Join(selected, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE'\n"), 0o644))
-	must(t, os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIAIOSFODNN7EXAMPLE';\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(selected, "app.py"), []byte("FASTAPI_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT'\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(sibling, "app.js"), []byte("const NEXTJS_ONLY_MARKER = 'AKIA"+"Z7Q4XWVB3NMK2PLT';\n"), 0o644))
 
 	m, err := NewManager(root, "test")
 	if err != nil {

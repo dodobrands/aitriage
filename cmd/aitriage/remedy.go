@@ -21,10 +21,10 @@ By default runs in DRY RUN mode — prints what would change without touching fi
 Use --apply to write changes to disk.
 
 Fixable rules:
-  ENTR-17  / ENTROPY-SECRET  — Move hardcoded secrets to env vars
+  ENTR-17 / SECRET-*         — Move hardcoded secrets to env vars
   ENTR-18                    — Replace debug=True with env var check
-  FAST-CORS / FLASK-CORS     — Generate CORS middleware snippet
-  ENTR-02                    — Generate lockfile creation command`,
+  ENTR-02                    — Generate lockfile creation command
+  FLASK-SSTI                 — Suggest passing values as template variables`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := "."
 		if len(args) > 0 {
@@ -68,13 +68,11 @@ Fixable rules:
 
 		// List issues that can't be auto-fixed
 		fixableRules := map[string]bool{
-			"ENTR-17": true, "ENTROPY-SECRET": true, "ENTR-18": true,
-			"FAST-CORS": true, "FLASK-CORS": true, "ENTR-02": true,
-			"FAST-SSTI": true,
+			"ENTR-17": true, "ENTR-18": true, "ENTR-02": true, "FLASK-SSTI": true,
 		}
 		skipped := 0
 		for _, r := range report.Results {
-			if r.File != "" && !fixableRules[r.ID] {
+			if r.File != "" && !fixableRules[r.ID] && !remedy.IsSecretRule(r.ID) {
 				skipped++
 			}
 		}

@@ -10,7 +10,9 @@ import (
 	"github.com/dodobrands/aitriage/internal/scanner"
 )
 
-var goSecretRegex = regexp.MustCompile(`(\w+)\s*:?=\s*"[^"]{8,}"`)
+// goSecretRegex keeps the assignment operator (group 2), so a declaration
+// `apiKey := "…"` stays a declaration after the fix.
+var goSecretRegex = regexp.MustCompile(`(\w+)(\s*:?=\s*)"[^"]{8,}"`)
 var pySecretRegex = regexp.MustCompile(`(\w+)\s*=\s*["'][^"']{8,}["']`)
 var jsSecretRegex = regexp.MustCompile(`(const|let|var)\s+(\w+)\s*=\s*["'][^"']{8,}["']`)
 var pyDebugRegex = regexp.MustCompile(`(?i)(DEBUG\s*=\s*)True`)
@@ -26,6 +28,16 @@ type FixResult struct {
 	Err         error
 }
 
+// IsSecretRule reports whether a rule id comes from the built-in
+// hardcoded-secret detector: every id it emits starts with "SECRET-"
+// (SECRET-ASSIGN, SECRET-AWS-AKID, SECRET-LEAK-LOG, ...). ENTROPY-SECRET and
+// ENTROPY-SECRET-LEAK are the legacy names, still accepted from older reports
+// and baselines.
+func IsSecretRule(id string) bool {
+	id = strings.ToUpper(strings.TrimSpace(id))
+	return strings.HasPrefix(id, "SECRET-") || id == "ENTROPY-SECRET" || id == "ENTROPY-SECRET-LEAK"
+}
+
 // AutoFix runs deterministic fixers over all scan results.
 // If apply=false, prints unified diffs but does not write to disk.
 // If apply=true, writes changes to disk and reports what changed.
@@ -38,16 +50,16 @@ func AutoFix(report scanner.ScanReport, apply bool) []FixResult {
 		}
 
 		var fr FixResult
-		switch r.ID {
-		case "ENTR-17", "ENTROPY-SECRET":
+		switch {
+		case r.ID == "ENTR-17" || IsSecretRule(r.ID):
 			fr = fixHardcodedSecret(r, apply)
-		case "ENTR-18":
+		case r.ID == "ENTR-18":
 			fr = fixDebugMode(r, apply)
-		case "FAST-SSTI":
+		case r.ID == "FLASK-SSTI" || r.ID == "FAST-SSTI": // FAST-SSTI: retired id, still in older reports
 			fr = suggestManual(r, "Use Jinja2 template variables: Template(\"Hello {{ name }}!\").render(name=username)")
-		case "FAST-CORS", "FLASK-CORS":
+		case r.ID == "FAST-CORS" || r.ID == "FLASK-CORS":
 			fr = fixMissingCORS(r, apply)
-		case "ENTR-02":
+		case r.ID == "ENTR-02":
 			fr = fixMissingLockfile(r, apply)
 		default:
 			continue
@@ -85,7 +97,7 @@ func fixHardcodedSecret(r core.CheckResult, apply bool) FixResult {
 			return suggestManual(r, "Move secret to environment variable via os.Getenv()")
 		}
 		varName = strings.ToUpper(m[1])
-		fixed = re.ReplaceAllString(original, fmt.Sprintf(`$1 = os.Getenv("%s")`, varName))
+		fixed = re.ReplaceAllString(original, fmt.Sprintf(`${1}${2}os.Getenv("%s")`, varName))
 	case strings.HasSuffix(r.File, ".py"):
 		re := pySecretRegex
 		m := re.FindStringSubmatch(original)

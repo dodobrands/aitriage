@@ -97,3 +97,34 @@ func TestNonRepositoryFallsBackToPresence(t *testing.T) {
 		t.Errorf("a .env outside a git repository must be treated as exposed")
 	}
 }
+
+// A project scanned as a subdirectory of a repository has no .git of its own.
+// It used to be treated as "not a repository" and reported even though the
+// repository's .gitignore covers the file.
+func TestEnvInSubdirectoryProjectUsesTheEnclosingRepository(t *testing.T) {
+	root := t.TempDir()
+	initRepo(t, root)
+	writeFile(t, filepath.Join(root, ".gitignore"), ".env\n")
+	project := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project, ".env"), "API_KEY=secret\n")
+
+	if fileIsExposedToGit(project, ".env") {
+		t.Errorf("a .env ignored by the enclosing repository was reported as exposed")
+	}
+
+	// Tracked in the enclosing repository: exposed.
+	writeFile(t, filepath.Join(project, ".env.production"), "API_KEY=secret\n")
+	gitRun(t, root, "add", "services/api/.env.production")
+	if !fileIsExposedToGit(project, ".env.production") {
+		t.Errorf("a .env.production tracked by the enclosing repository was not reported")
+	}
+
+	// Neither tracked nor ignored: exposed.
+	writeFile(t, filepath.Join(project, ".env.local"), "API_KEY=secret\n")
+	if !fileIsExposedToGit(project, ".env.local") {
+		t.Errorf("an unignored .env.local in a subdirectory project was not reported")
+	}
+}

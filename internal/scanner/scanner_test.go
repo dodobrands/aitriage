@@ -14,7 +14,7 @@ func TestScanReturnsReport(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create a dummy file that might trigger a finding, e.g., a hardcoded secret pattern
-	err := os.WriteFile(tmpDir+"/main.go", []byte("package main\n\nfunc main() {\n\tsecret := \"AKIAIOSFODNN7EXAMPLE\"\n}\n"), 0644)
+	err := os.WriteFile(tmpDir+"/main.go", []byte("package main\n\nfunc main() {\n\tsecret := \"AKIA"+"Z7Q4XWVB3NMK2PLT\"\n}\n"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create dummy file: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestScanReturnsReport(t *testing.T) {
 func TestScanExcludesTestMockFixtureAndSpecFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	testOnly := map[string]string{
-		"main_test.go":       "package main\nvar token = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"main_test.go":       "package main\nvar token = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
 		"tests/test_auth.py": "api_key = 'sk-proj-123456789012345678901234567890'\n",
 		"fixtures/leaked.ts": "const token = 'ghp_abcdefghijklmnopqrstuvwxyz1234567890'\n",
 		"src/auth.spec.js": "const secret = 'xoxb-" +
@@ -67,7 +67,7 @@ func TestScanExcludesTestMockFixtureAndSpecFiles(t *testing.T) {
 func TestScanProductionSubstringNamesRemainInScope(t *testing.T) {
 	tmpDir := t.TempDir()
 	for _, name := range []string{"contest.go", "latest.py"} {
-		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("api_key = \"AKIAIOSFODNN7EXAMPLE\"\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("api_key = \"AKIA"+"Z7Q4XWVB3NMK2PLT\"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -89,7 +89,7 @@ func TestScanProductionSubstringNamesRemainInScope(t *testing.T) {
 
 func TestScanAppliesHealthCheckPolicyConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	if err := os.WriteFile(tmpDir+"/main.go", []byte("package main\n\nfunc main() {\n\tsecret := \"AKIAIOSFODNN7EXAMPLE\"\n}\n"), 0644); err != nil {
+	if err := os.WriteFile(tmpDir+"/main.go", []byte("package main\n\nfunc main() {\n\tsecret := \"AKIA"+"Z7Q4XWVB3NMK2PLT\"\n}\n"), 0644); err != nil {
 		t.Fatalf("Failed to create dummy file: %v", err)
 	}
 	if err := os.WriteFile(tmpDir+"/.aitriage.yaml", []byte(`

@@ -8,8 +8,9 @@ import (
 )
 
 // ENTR-SLOP-01 flags files that are mostly unfinished scaffolding: TODO and
-// FIXME notes, "placeholder" and "temporary" stubs, tempVar/result1/var2
-// names. It is a code-quality signal, not a vulnerability, so it is LOW.
+// FIXME notes in comments, "placeholder" and "temporary" stubs,
+// tempVar/result1/var2 names. It is a code-quality signal, not a
+// vulnerability, so it is LOW.
 
 // slopMarker is the residue vocabulary. Word boundaries keep it from matching
 // inside other words ("autodownload", "todos", "TodoList").
@@ -55,16 +56,22 @@ func slopLanguageFor(path string) slopLanguage {
 // 1-based line of the first one counted.
 //
 // Text inside string literals is data (UI copy, SQL, CSS in template
-// literals), not residue. "placeholder" used in code as the name of an
-// attribute, prop or field is form vocabulary: a TSX form with seven
-// placeholder="…" inputs is an ordinary form. Comments are read as they are,
-// since that is where scaffolding notes live.
+// literals), not residue. TODO and FIXME count only inside comments, where
+// scaffolding notes live: in code they are identifiers, and a to-do app has a
+// Todo model, addTodo functions and todo parameters on every line.
+// "placeholder" used in code as the name of an attribute, prop or field is
+// form vocabulary: a TSX form with seven placeholder="…" inputs is an
+// ordinary form.
 func countScaffoldingResidue(src, path string) (count, firstLine int) {
 	lexed := lexSource(src, slopLanguageFor(path))
 	firstOffset := -1
 	for _, loc := range slopMarker.FindAllStringIndex(lexed.masked, -1) {
-		if strings.EqualFold(lexed.masked[loc[0]:loc[1]], "placeholder") &&
-			!lexed.inComment(loc[0]) && isPropertyName(lexed.masked, loc[0], loc[1]) {
+		word := lexed.masked[loc[0]:loc[1]]
+		inComment := lexed.inComment(loc[0])
+		if (strings.EqualFold(word, "todo") || strings.EqualFold(word, "fixme")) && !inComment {
+			continue
+		}
+		if strings.EqualFold(word, "placeholder") && !inComment && isPropertyName(lexed.masked, loc[0], loc[1]) {
 			continue
 		}
 		count++

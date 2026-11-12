@@ -497,7 +497,10 @@ var secretConfigExts = map[string]bool{
 	".properties": true, ".xml": true,
 }
 
-// leakSinkRegexCache avoids recompiling the per-variable leak regex repeatedly.
+// evaluateEntropy runs the hardcoded-secret detector (secrets.go) over one file
+// and turns its hits into findings. Severity and advice come from the hit; a
+// secret that is also passed to a log or print call is reported as
+// SECRET-LEAK-LOG with the severity of the underlying hit.
 func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	// Skip test files — fixtures legitimately contain dummy tokens.
 	if f.IsTest {
@@ -506,38 +509,43 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 	if isVendoredPath(projectRelPath(f)) {
 		return nil
 	}
-
-	base := strings.ToLower(filepath.Base(f.Path))
-	isEnv := strings.Contains(base, ".env")
-	scanAssign := entropyAllowedExts[f.Extension] || isEnv
-	scanSignatures := scanAssign || secretConfigExts[f.Extension]
-	if !scanSignatures {
+	kind, ok := secretScanKindFor(f.Path, f.Extension)
+	if !ok {
 		return nil
 	}
 
 	content, err := f.GetContent()
-	if err != nil {
+	if err != nil || f.IsBinary {
 		return nil
 	}
 	src := string(content)
 	lowerSrc := strings.ToLower(src)
+	mayLog := strings.Contains(lowerSrc, "log") || strings.Contains(lowerSrc, "print") ||
+		strings.Contains(lowerSrc, "console") || strings.Contains(lowerSrc, "puts")
 
 	var results []core.CheckResult
-	for _, h := range detectSecretHits(src, scanAssign) {
-		id, name, severity := h.id, h.name, h.severity
-		suggestion := "CRITICAL: hardcoded credential in source. Remove it, load the value from a secret manager or environment variable, and rotate the exposed credential."
-
-		// Escalate when the secret is not only hardcoded but written to a log/print sink.
-		if h.varName != "" && (strings.Contains(lowerSrc, "log") || strings.Contains(lowerSrc, "print") || strings.Contains(lowerSrc, "console")) {
-			leakRe := regexp.MustCompile(`(?i)(?:log|print|console)\w*\s*\([^)]*` + regexp.QuoteMeta(h.varName) + `[^)]*\)`)
-			if leakRe.MatchString(src) {
-				id, name, severity = "SECRET-LEAK-LOG", "Hardcoded Secret Leaked to Logger", "CRITICAL"
-				suggestion = "CRITICAL: secret is hardcoded AND passed to a log/print sink. Remove the secret, remove the log statement, and rotate the credential immediately."
-			}
+	for _, h := range detectSecretHits(src, kind) {
+		id, name, suggestion := h.id, h.name, h.advice
+		leaked := mayLog && h.varName != "" && leaksToLogger(src, h.varName)
+		if leaked {
+			id, name, suggestion = secretLeakLogID, "Hardcoded Secret Leaked to Logger", adviceLeakLog
 		}
 
-		// Inline suppression: honour both the specific id and the legacy alias.
-		if e.isLineIgnored(f, h.line, id) || e.isLineIgnored(f, h.line, "ENTROPY-SECRET") {
+		// Inline suppression: honour the reported id, the id of the
+		// underlying hit, and the legacy aliases ENTROPY-SECRET and
+		// ENTROPY-SECRET-LEAK.
+		aliases := []string{id, h.id, "ENTROPY-SECRET"}
+		if leaked {
+			aliases = append(aliases, "ENTROPY-SECRET-LEAK")
+		}
+		ignored := false
+		for _, alias := range aliases {
+			if e.isLineIgnored(f, h.line, alias) {
+				ignored = true
+				break
+			}
+		}
+		if ignored {
 			continue
 		}
 
@@ -549,7 +557,7 @@ func (e *Engine) evaluateEntropy(f *core.FileInfo) []core.CheckResult {
 			Line:       h.line,
 			Evidence:   fmt.Sprintf("%s (%s)", name, h.evidence),
 			Suggestion: suggestion,
-			Severity:   severity,
+			Severity:   h.severity,
 		})
 	}
 	return results

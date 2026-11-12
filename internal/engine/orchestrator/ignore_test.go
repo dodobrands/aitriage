@@ -181,7 +181,7 @@ ignore:
     - NFR-API-001
     - deploy:dockerfile_root_user
 `,
-		"app/settings.py": "aws_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"app/settings.py": "aws_key = \"AKIA" + "Z7Q4XWVB3NMK2PLT\"\n",
 		"main.py":         "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get('/items')\ndef items():\n    return []\n",
 		"Dockerfile":      "FROM python:3.12\nUSER root\nADD https://example.com/app.py /app/\n",
 	})
