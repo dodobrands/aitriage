@@ -438,11 +438,11 @@ func (m *DashboardModel) updateViewportContent() {
 
 	rb.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("FINDING: "+res.Name) + "\n\n")
 
-	rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("SEVERITY:"), m.getSeverityStyled(res.Severity)))
-	rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("FILE:    "), res.File))
-	rb.WriteString(fmt.Sprintf("%s %d\n", labelStyle.Render("LINE:    "), res.Line))
+	fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("SEVERITY:"), m.getSeverityStyled(res.Severity))
+	fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("FILE:    "), res.File)
+	fmt.Fprintf(&rb, "%s %d\n", labelStyle.Render("LINE:    "), res.Line)
 	if res.OWASPMapping != "" {
-		rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("OWASP:   "), res.OWASPMapping))
+		fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("OWASP:   "), res.OWASPMapping)
 	}
 	rb.WriteString("\n")
 
@@ -483,11 +483,11 @@ func (m *DashboardModel) updateSASTViewportContent() {
 	var rb strings.Builder
 
 	rb.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("EXTERNAL FINDING") + "\n\n")
-	rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("SOURCE:  "), lipgloss.NewStyle().Foreground(colorPrimaryDim).Background(colorBG).Render(source)))
-	rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("RULE:    "), ruleID))
-	rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("SEVERITY:"), m.getSeverityStyled(sev)))
+	fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("SOURCE:  "), lipgloss.NewStyle().Foreground(colorPrimaryDim).Background(colorBG).Render(source))
+	fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("RULE:    "), ruleID)
+	fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("SEVERITY:"), m.getSeverityStyled(sev))
 	if file != "" {
-		rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("FILE:    "), file))
+		fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("FILE:    "), file)
 	}
 	rb.WriteString("\n")
 
@@ -503,7 +503,7 @@ func (m *DashboardModel) updateSASTViewportContent() {
 					rb.WriteString(lipgloss.NewStyle().Foreground(colorGray).Background(colorBG).Render(f.Suggestion) + "\n")
 				}
 				if f.OWASP != "" {
-					rb.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("OWASP:   "), f.OWASP))
+					fmt.Fprintf(&rb, "%s %s\n", labelStyle.Render("OWASP:   "), f.OWASP)
 				}
 
 				// Show code context if file+line available

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dodobrands/aitriage/internal/engine/core"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -123,6 +124,72 @@ func Save(projectPath string, b *Baseline) error {
 		return fmt.Errorf("failed to write baseline: %w", err)
 	}
 	return nil
+}
+
+// ReportsArea is the folder under the reports directory that holds the
+// baselines written while the project is mounted read-only.
+const ReportsArea = "baselines"
+
+// Locate returns where the baseline of the scanned folder projectPath is read
+// and written: the project's own file natively, plus a local copy under the
+// reports directory in the container runtime (see statefile).
+func Locate(projectPath string) statefile.Location {
+	return statefile.Locate(projectPath, ReportsArea, BaselineFile)
+}
+
+// LoadAt reads the baseline that applies at loc, or nil, nil when there is
+// none. Natively that is the project's own file. In the container runtime it
+// is that file together with the local copy: a finding accepted in either is
+// accepted, and for a finding in both the copy's record is kept. Findings the
+// project accepts after the copy was written still count, and the copy keeps
+// accepting what the project later drops, until it is committed or cleared.
+func LoadAt(loc statefile.Location) (*Baseline, error) {
+	project, err := Load(loc.ProjectDir)
+	if err != nil || !loc.Redirected() {
+		return project, err
+	}
+	local, err := Load(loc.WriteDir)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case project == nil:
+		return local, nil
+	case local == nil:
+		return project, nil
+	}
+
+	merged := &Baseline{
+		// The project file's format decides how its older entries match. The
+		// local copy is always written in the current format, whose entries
+		// every version matches exactly.
+		Version:   project.Version,
+		CreatedAt: project.CreatedAt,
+		UpdatedAt: project.UpdatedAt,
+		Findings:  make(map[string]Finding, len(project.Findings)+len(local.Findings)),
+	}
+	if !local.CreatedAt.IsZero() && (merged.CreatedAt.IsZero() || local.CreatedAt.Before(merged.CreatedAt)) {
+		merged.CreatedAt = local.CreatedAt
+	}
+	if local.UpdatedAt.After(merged.UpdatedAt) {
+		merged.UpdatedAt = local.UpdatedAt
+	}
+	for fp, f := range project.Findings {
+		merged.Findings[fp] = f
+	}
+	for fp, f := range local.Findings {
+		merged.Findings[fp] = f
+	}
+	return merged, nil
+}
+
+// SaveAt writes the baseline where loc sends writes, creating its folder under
+// the reports directory when the project is read-only.
+func SaveAt(loc statefile.Location, b *Baseline) error {
+	if err := loc.Prepare(); err != nil {
+		return fmt.Errorf("failed to write baseline: %w", err)
+	}
+	return Save(loc.WriteDir, b)
 }
 
 // ── Filtering ────────────────────────────────────────────────────────────────

@@ -27,16 +27,37 @@ import (
 // Every concrete finding type (core.CheckResult, external.UnifiedFinding, NFR,
 // Deploy, Network, ...) is mapped into this shape before scoring.
 type Finding struct {
-	Source   string // "core" | "semgrep" | "trivy" | "gitleaks" | "bandit" | "nfr" | "deploy" | "network" | ...
-	Class    string // stable category key for dedup (rule ID / vuln class)
+	Source string // "core" | "semgrep" | "trivy" | "gitleaks" | "bandit" | "nfr" | "deploy" | "network" | ...
+	// Class is a canonical class key (see ClassifyRule) or, for a rule no
+	// class covers, the rule id itself.
+	Class    string
 	Severity string // CRITICAL | HIGH | MEDIUM | LOW | INFO
 	File     string
 	Line     int
-	Ignored  bool // true => excluded from penalties (audit-ignored OR AI False Positive)
+	// Identity, when set, is the caller's decision of which findings are one
+	// defect: findings with the same Identity count once. The triage graph
+	// sets it to the key it merged detectors under. When empty, the identity
+	// is derived from the class, the location and the class scope.
+	Identity string
+	// Rules lists every rule behind the finding (a merged finding has one per
+	// detector). Empty means Class is the rule.
+	Rules []string
+	// Sources lists every scanner that reported the finding. Empty means Source.
+	Sources []string
+	Ignored bool // true => excluded from penalties (audit-ignored OR AI False Positive)
 	// NeedsReview marks a finding that no one has confirmed or dismissed yet.
 	// It still counts as active — an unreviewed finding is unresolved work — but
 	// the gate says so explicitly instead of implying the issue is proven.
 	NeedsReview bool
+	// Unclassified narrows NeedsReview to findings that never received a model
+	// verdict at all (retries exhausted, or the provider failed). "The model was
+	// unsure" and "the model never answered" call for different actions, so the
+	// report keeps them apart.
+	Unclassified bool
+	// TriageFailed marks an unclassified finding whose triage was cut short by
+	// a provider failure. Any such finding makes the gate fail, whatever the
+	// policy, because the verdict it would have produced is unknown.
+	TriageFailed bool
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -62,14 +83,32 @@ type Breakdown struct {
 	// ConfirmedFindings and NeedsReviewFindings partition ActiveFindings, so a
 	// report can say "0 confirmed, 25 unreviewed" instead of leaving a reader to
 	// wonder why a gate failed with nothing proven.
-	ConfirmedFindings   int            `json:"confirmed_findings"`
-	NeedsReviewFindings int            `json:"needs_review_findings"`
-	IgnoredFindings     int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
-	DedupedFindings     int            `json:"deduped_findings"`  // duplicates collapsed
-	PenaltyBySource     map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
-	CountBySeverity     map[string]int `json:"count_by_severity"` // active finding count per severity
-	CountBySource       map[string]int `json:"count_by_source"`   // active finding count per source
-	CountByClass        map[string]int `json:"count_by_class"`    // active finding count per class/rule
+	ConfirmedFindings   int `json:"confirmed_findings"`
+	NeedsReviewFindings int `json:"needs_review_findings"`
+	// UnclassifiedFindings is the subset of NeedsReviewFindings that never got
+	// a model verdict.
+	UnclassifiedFindings int `json:"unclassified_findings"`
+	// TriageFailedFindings counts active inputs whose triage a provider failure
+	// cut short. It is counted before deduplication, so collapsing a duplicate
+	// can never hide an incomplete triage from the gate.
+	TriageFailedFindings int            `json:"triage_failed_findings,omitempty"`
+	IgnoredFindings      int            `json:"ignored_findings"`  // findings excluded (FP / audit-ignored)
+	DedupedFindings      int            `json:"deduped_findings"`  // duplicates collapsed
+	PenaltyBySource      map[string]int `json:"penalty_by_source"` // weighted penalty contribution per source
+	CountBySeverity      map[string]int `json:"count_by_severity"` // active finding count per severity
+	// ConfirmedBySeverity counts only confirmed active findings, so a policy
+	// can block on confirmed findings above a severity floor.
+	ConfirmedBySeverity map[string]int `json:"confirmed_by_severity"`
+	// CountBySource counts active findings per scanner. A finding several
+	// scanners reported counts under each of them, so block_sources keeps
+	// working when the report of the blocked scanner was merged into another.
+	CountBySource map[string]int `json:"count_by_source"`
+	// CountByClass counts active findings per canonical class, or per rule id
+	// for a rule no class covers.
+	CountByClass map[string]int `json:"count_by_class"`
+	// CountByRule counts active findings per rule id behind them, so a policy
+	// written against rule ids keeps matching merged findings.
+	CountByRule map[string]int `json:"count_by_rule,omitempty"`
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -139,25 +178,107 @@ func effectiveWeight(f Finding) float64 {
 	return weightFor(f.Severity) * confidenceFor(f.Source)
 }
 
-// dedupKey builds the deduplication key for a finding. Located findings dedup by
-// class+file+line; location-less findings dedup by source+class so the same
-// project-level rule firing twice (e.g. across two stacks) counts once.
+// dedupKey builds the deduplication key for a finding; findings with the same
+// key are one defect. An explicit Identity wins. Otherwise a finding of a
+// canonical class dedups with the other findings of that class at the same
+// location (the same file for a file-scoped class, the project for findings
+// without a location, whichever scanner reported them), and a finding no class
+// covers dedups by rule and location, or by source and rule when it has no
+// location, so the same project-level rule firing twice (e.g. across two
+// stacks) counts once. An empty key means the finding is never collapsed.
 func dedupKey(f Finding) string {
-	class := strings.ToLower(strings.TrimSpace(f.Class))
-	if f.File == "" && f.Line == 0 {
-		return fmt.Sprintf("%s|%s", strings.ToLower(f.Source), class)
+	if id := strings.TrimSpace(f.Identity); id != "" {
+		return "identity|" + id
 	}
-	return fmt.Sprintf("%s|%s|%d", class, strings.ToLower(f.File), f.Line)
+	file := identityPath(f.File)
+	rule := strings.ToLower(strings.TrimSpace(f.Class))
+	class, ok := findingClassOf(f)
+	switch {
+	case !ok && file == "" && f.Line == 0:
+		return fmt.Sprintf("%s|%s", strings.ToLower(f.Source), rule)
+	case !ok:
+		return fmt.Sprintf("%s|%s|%d", rule, file, f.Line)
+	case class.Scope == ScopeRule:
+		// Advisories never merge with each other. Without the rule ids behind
+		// a finding there is nothing to tell two of them apart by.
+		if len(f.Rules) > 0 {
+			rule = strings.ToLower(strings.Join(sortedUnique(f.Rules), ","))
+		} else if rule == class.Key {
+			return ""
+		}
+		return fmt.Sprintf("rule|%s|%s|%d", rule, file, f.Line)
+	case file == "" && f.Line == 0:
+		return class.Key + "|project"
+	case class.Scope == ScopeFile && file != "":
+		return class.Key + "|" + file
+	default:
+		return fmt.Sprintf("%s|%s|%d", class.Key, file, f.Line)
+	}
+}
+
+// identityPath normalizes a path for comparison within one evaluation.
+func identityPath(path string) string {
+	path = strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	return strings.ToLower(strings.TrimPrefix(path, "./"))
+}
+
+// classKeyOf is the key a finding is counted under in CountByClass.
+func classKeyOf(f Finding) string {
+	if class, ok := findingClassOf(f); ok {
+		return class.Key
+	}
+	if key := strings.ToLower(strings.TrimSpace(f.Class)); key != "" {
+		return key
+	}
+	return "unknown"
+}
+
+// rulesOf lists the rule ids behind a finding, lower-cased and de-duplicated.
+func rulesOf(f Finding) []string {
+	rules := f.Rules
+	if len(rules) == 0 {
+		if _, isClass := LookupClass(f.Class); isClass {
+			return nil
+		}
+		rules = []string{f.Class}
+	}
+	return sortedUnique(rules)
+}
+
+// sourcesOf lists the scanners that reported a finding, lower-cased and
+// de-duplicated.
+func sourcesOf(f Finding) []string {
+	if len(f.Sources) == 0 {
+		return sortedUnique([]string{f.Source})
+	}
+	return sortedUnique(f.Sources)
+}
+
+func sortedUnique(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Evaluate runs the full Health Check and returns the score, grade and breakdown.
 func Evaluate(in Input) Result {
 	bd := Breakdown{
-		BaseScore:       100,
-		PenaltyBySource: map[string]int{},
-		CountBySeverity: map[string]int{},
-		CountBySource:   map[string]int{},
-		CountByClass:    map[string]int{},
+		BaseScore:           100,
+		PenaltyBySource:     map[string]int{},
+		CountBySeverity:     map[string]int{},
+		ConfirmedBySeverity: map[string]int{},
+		CountBySource:       map[string]int{},
+		CountByClass:        map[string]int{},
+		CountByRule:         map[string]int{},
 	}
 
 	// 1. Deduplicate findings. If one duplicate is ignored and another is still
@@ -165,11 +286,22 @@ func Evaluate(in Input) Result {
 	//    ordering. If both have the same ignore status, keep the stronger signal.
 	seen := make(map[string]Finding, len(in.Findings))
 	keys := make([]string, 0, len(in.Findings))
-	for _, f := range in.Findings {
+	collapsed := make(map[string][]Finding)
+	for i, f := range in.Findings {
+		if f.TriageFailed && !f.Ignored {
+			bd.TriageFailedFindings++
+		}
 		key := dedupKey(f)
+		if key == "" {
+			key = fmt.Sprintf("unique|%d", i)
+		}
 		prev, ok := seen[key]
 		if ok {
 			bd.DedupedFindings++
+			if len(collapsed[key]) == 0 {
+				collapsed[key] = []Finding{prev}
+			}
+			collapsed[key] = append(collapsed[key], f)
 			switch {
 			case prev.Ignored && !f.Ignored:
 				seen[key] = f
@@ -183,7 +315,21 @@ func Evaluate(in Input) Result {
 	}
 	deduped := make([]Finding, 0, len(seen))
 	for _, key := range keys {
-		deduped = append(deduped, seen[key])
+		f := seen[key]
+		if group := collapsed[key]; len(group) > 0 {
+			// The kept finding stands for every report it absorbed with the
+			// same status, so a policy naming any of their rules or scanners
+			// still sees it.
+			var rules, sources []string
+			for _, other := range group {
+				if other.Ignored == f.Ignored {
+					rules = append(rules, rulesOf(other)...)
+					sources = append(sources, sourcesOf(other)...)
+				}
+			}
+			f.Rules, f.Sources = rules, sources
+		}
+		deduped = append(deduped, f)
 	}
 
 	// 2. Accumulate weighted penalties, skipping ignored (FP / audit-ignored).
@@ -203,8 +349,12 @@ func Evaluate(in Input) Result {
 		bd.ActiveFindings++
 		if f.NeedsReview {
 			bd.NeedsReviewFindings++
+			if f.Unclassified || f.TriageFailed {
+				bd.UnclassifiedFindings++
+			}
 		} else {
 			bd.ConfirmedFindings++
+			bd.ConfirmedBySeverity[sev]++
 		}
 
 		if sev == "CRITICAL" || sev == "HIGH" {
@@ -217,12 +367,19 @@ func Evaluate(in Input) Result {
 		if src == "" {
 			src = "unknown"
 		}
-		class := strings.ToLower(strings.TrimSpace(f.Class))
-		if class == "" {
-			class = "unknown"
+		// The penalty is attributed once, to the reporting source; the counts
+		// name every scanner and rule behind the finding.
+		sources := sourcesOf(f)
+		if len(sources) == 0 {
+			sources = []string{src}
 		}
-		bd.CountBySource[src]++
-		bd.CountByClass[class]++
+		for _, source := range sources {
+			bd.CountBySource[source]++
+		}
+		for _, rule := range rulesOf(f) {
+			bd.CountByRule[rule]++
+		}
+		bd.CountByClass[classKeyOf(f)]++
 		rawBySource[src] += w
 	}
 

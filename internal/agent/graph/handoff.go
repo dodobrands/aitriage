@@ -45,13 +45,24 @@ type AIAgentData struct {
 }
 
 type AIAgentFinding struct {
-	ID             string `json:"id"`
-	Severity       string `json:"severity"`
-	File           string `json:"file,omitempty"`
-	Line           int    `json:"line,omitempty"`
-	Title          string `json:"title"`
-	Disposition    string `json:"disposition"`
-	Recommendation string `json:"recommendation,omitempty"`
+	ID          string `json:"id"`
+	Severity    string `json:"severity"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Title       string `json:"title"`
+	Disposition string `json:"disposition"`
+	// DispositionSource tells an agent whether a Needs Manual Review is a
+	// model judgement ("llm") or has no model verdict at all ("nr-fallback",
+	// "triage-failed").
+	DispositionSource string `json:"disposition_source,omitempty"`
+	Recommendation    string `json:"recommendation,omitempty"`
+	// StableID identifies the finding across runs (triage-findings.json).
+	StableID string `json:"stable_id,omitempty"`
+	// Package, InstalledVersion and FixedVersion name the upgrade a
+	// dependency advisory needs.
+	Package          string `json:"package,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	FixedVersion     string `json:"fixed_version,omitempty"`
 }
 
 // BuildAgentHandoff builds the canonical actionable handoff. A completed scan
@@ -77,7 +88,7 @@ func BuildAgentHandoff(state *AgentState, generatedAt time.Time) (AgentHandoff, 
 	writeAIRemediationPrompt(&prompt, state, actionable, generatedAt)
 
 	var summary strings.Builder
-	writeHumanSummary(&summary, state, actionable, tp, fp, nr)
+	writeHumanSummary(&summary, state, actionable)
 	summary.WriteString(prompt.String())
 	writeAIAgentData(&summary, agentData)
 	writeAgentHandoffFooter(&summary, state, fp)
@@ -91,24 +102,25 @@ func BuildAgentHandoff(state *AgentState, generatedAt time.Time) (AgentHandoff, 
 	}, nil
 }
 
+// collectActionableFindings returns the True Positive and Needs Manual Review
+// findings of the repository with the disposition counts. Network probe
+// results are excluded from both: they describe the scanning host and are
+// listed in their own summary section.
 func collectActionableFindings(state *AgentState) ([]actionableFinding, int, int, int) {
-	tp, fp, nr := 0, 0, 0
-	dispositionMap := make(map[int]string, len(state.FindingDispositions))
+	tally := tallyDispositions(state)
+	tp, fp, nr := tally.TruePositives, tally.FalsePositives, tally.NeedsReview
+	dispositionMap := make(map[int]FindingDisposition, len(state.FindingDispositions))
 	for _, disposition := range state.FindingDispositions {
-		switch disposition.Disposition {
-		case "True Positive":
-			tp++
-		case "False Positive":
-			fp++
-		default:
-			nr++
-		}
-		dispositionMap[disposition.FindingIndex] = disposition.Disposition
+		dispositionMap[disposition.FindingIndex] = disposition
 	}
 
 	actionable := make([]actionableFinding, 0, tp+nr)
 	for i, finding := range state.EnrichedFindings {
-		disposition := dispositionMap[i]
+		if isEnvironmentFinding(finding) {
+			continue
+		}
+		d := dispositionMap[i]
+		disposition := d.Disposition
 		if disposition == "False Positive" {
 			continue
 		}
@@ -120,13 +132,19 @@ func collectActionableFindings(state *AgentState) ([]actionableFinding, int, int
 		message = strings.ReplaceAll(message, "\n", " ")
 
 		actionable = append(actionable, actionableFinding{
-			vulnID:      finding.VulnID,
-			source:      finding.Source,
-			severity:    finding.Severity,
-			file:        finding.File,
-			line:        finding.Line,
-			message:     message,
-			disposition: disposition,
+			vulnID:            finding.VulnID,
+			source:            finding.Source,
+			severity:          finding.Severity,
+			file:              finding.File,
+			line:              finding.Line,
+			message:           message,
+			disposition:       disposition,
+			label:             dispositionLabel(d),
+			dispositionSource: d.DispositionSource,
+			pkg:               finding.Package,
+			installedVersion:  finding.InstalledVersion,
+			fixedVersion:      finding.FixedVersion,
+			stableID:          finding.StableID,
 		})
 	}
 	return actionable, tp, fp, nr
@@ -158,7 +176,8 @@ func buildAIAgentData(state *AgentState, actionable []actionableFinding, tp, fp,
 	data.Stats.TruePositives = tp
 	data.Stats.NeedsReview = nr
 	data.Stats.FalsePositives = fp
-	data.Stats.Total = len(state.EnrichedFindings)
+	// Repository findings only; network probe results are not counted.
+	data.Stats.Total = tp + fp + nr
 
 	recommendations := make(map[string]string, len(state.FindingDispositions))
 	for _, disposition := range state.FindingDispositions {
@@ -168,12 +187,17 @@ func buildAIAgentData(state *AgentState, actionable []actionableFinding, tp, fp,
 	}
 	for _, finding := range actionable {
 		item := AIAgentFinding{
-			ID:          finding.vulnID,
-			Severity:    finding.severity,
-			File:        finding.file,
-			Line:        finding.line,
-			Title:       strings.ReplaceAll(finding.message, "\\|", "|"),
-			Disposition: finding.disposition,
+			ID:                finding.vulnID,
+			Severity:          finding.severity,
+			File:              finding.file,
+			Line:              finding.line,
+			Title:             strings.ReplaceAll(finding.message, "\\|", "|"),
+			Disposition:       finding.disposition,
+			DispositionSource: finding.dispositionSource,
+			StableID:          finding.stableID,
+			Package:           finding.pkg,
+			InstalledVersion:  finding.installedVersion,
+			FixedVersion:      finding.fixedVersion,
 		}
 		item.Recommendation = recommendations[finding.vulnID]
 		data.Findings = append(data.Findings, item)

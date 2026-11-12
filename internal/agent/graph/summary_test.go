@@ -21,6 +21,9 @@ func TestGenerateSummaryExcludesFalsePositives(t *testing.T) {
 		},
 	}
 
+	// The headline counts come from the health-check breakdown, as in Run,
+	// so they can never disagree with the gate.
+	computeHealthCheck(state)
 	if err := generateSummary(state); err != nil {
 		t.Fatal(err)
 	}

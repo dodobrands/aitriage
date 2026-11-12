@@ -15,7 +15,7 @@ IMAGE ?= aitriage:latest
 PROJECT ?= $(CURDIR)
 
 .DEFAULT_GOAL := all
-.PHONY: help all build test lint clean format install release build-web sync-web web-up launch up enterprise-up down docker-build docker-tui docker-web docker-scan
+.PHONY: help all build test lint clean format install release build-web sync-web web-up launch up enterprise-up down docker-build docker-tui docker-web docker-scan build-linux e2e-regression
 
 # Colors
 BLUE = \033[34m
@@ -23,7 +23,7 @@ GREEN = \033[32m
 RESET = \033[0m
 
 help: ## List the available targets
-	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 all: format test build ## Format, test and build (default target)
 
@@ -131,3 +131,33 @@ docker-scan: docker-build ## JSON scan of PROJECT in the local image (for CI/CD)
 	@docker run --rm \
 	    -v "$(PROJECT):/project:ro" \
 	    $(IMAGE) scan /project --format json
+
+# ─── Regression E2E (container, no LLM) ───────────────────────────────────────
+# e2e-regression runs testdata/regression/pilot-org through the full scanner
+# bundle the way a CI job runs the image, with an LLM endpoint that fails at
+# once, and checks the deterministic results (TestE2E_AgentRegressionPilotOrg).
+# E2E_IMAGE supplies Semgrep, Trivy, Gitleaks and Bandit; the aitriage binary
+# under test is built from this checkout and mounted over the image's copy, so
+# no image rebuild is needed. Needs Docker and network access: Semgrep fetches
+# its registry rules on each run, and Trivy its databases, which are cached in a
+# Docker volume. Pin the bundle with E2E_IMAGE=ghcr.io/dodobrands/aitriage:v1.13.0.
+E2E_IMAGE ?= ghcr.io/dodobrands/aitriage:v1
+# tree-sitter needs CGO, so the linux binary is built in the Dockerfile's Go image.
+E2E_GO_IMAGE ?= golang:1.26.11-bookworm
+E2E_BINARY = bin/linux/$(BINARY_NAME)
+
+build-linux: ## Build bin/linux/aitriage for E2E_IMAGE's platform (in a Go container)
+	@docker image inspect $(E2E_IMAGE) >/dev/null 2>&1 || docker pull $(E2E_IMAGE)
+	@mkdir -p $(dir $(E2E_BINARY))
+	@platform="$$(docker image inspect --format '{{.Os}}/{{.Architecture}}' $(E2E_IMAGE))" && \
+	    echo "$(BLUE)Building $(E2E_BINARY) for $$platform...$(RESET)" && \
+	    docker run --rm --platform "$$platform" \
+	    -v "$(CURDIR):/src" -w /src \
+	    -v aitriage-gomod-cache:/go/pkg/mod -v aitriage-gobuild-cache:/root/.cache/go-build \
+	    -e CGO_ENABLED=1 $(E2E_GO_IMAGE) \
+	    go build -buildvcs=false -ldflags "$(LDFLAGS)" -o $(E2E_BINARY) ./cmd/aitriage
+
+e2e-regression: build-linux ## Regression E2E on testdata/regression/pilot-org (Docker, no LLM)
+	@echo "$(BLUE)Running the regression E2E against $(E2E_IMAGE)...$(RESET)"
+	@AITRIAGE_IMAGE=$(E2E_IMAGE) AITRIAGE_E2E_BINARY="$(CURDIR)/$(E2E_BINARY)" \
+	    go test ./cmd/aitriage -run '^TestE2E_AgentRegressionPilotOrg$$' -count=1 -timeout 30m -v

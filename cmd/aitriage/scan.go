@@ -45,6 +45,10 @@ var scanCmd = &cobra.Command{
 	Short: "Scan a directory for security presence checks",
 	Long:  `Scan a directory to identify missing architectural security practices.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Arguments and flags are valid by now; a policy failure or a runtime
+		// error must not be followed by the full usage text in CI logs.
+		cmd.SilenceUsage = true
+
 		path := "."
 		if len(args) > 0 {
 			path = args[0]
@@ -311,6 +315,9 @@ var scanCmd = &cobra.Command{
 			}
 		}
 		refreshScanHealthCheck(&report, policy)
+		// Everything the command prints or writes names files relative to
+		// the project root; the scan history keeps the report as scanned.
+		output := report.WithRelativePaths()
 
 		var outWriter io.Writer = os.Stdout
 		if scanOutputFile != "" {
@@ -322,23 +329,23 @@ var scanCmd = &cobra.Command{
 			outWriter = f
 
 			// If we're writing structured format to a file, we should still display the gorgeous UI
-			reporter.PrintTerminal(report)
+			reporter.PrintTerminal(output)
 		}
 
 		switch scanFormat {
 		case "json":
-			reporter.PrintJSON(report, outWriter)
+			reporter.PrintJSON(output, outWriter)
 		case "sarif":
-			reporter.PrintSARIF(report, outWriter)
+			reporter.PrintSARIF(output, outWriter)
 		case "html":
 			criticalCount := 0
-			for _, r := range report.Results {
+			for _, r := range output.Results {
 				if r.Severity == "CRITICAL" {
 					criticalCount++
 				}
 			}
-			stackNames := make([]string, len(report.Stacks))
-			for i, s := range report.Stacks {
+			stackNames := make([]string, len(output.Stacks))
+			for i, s := range output.Stacks {
 				stackNames[i] = string(s)
 			}
 			outName := "aitriage-report.html"
@@ -346,10 +353,10 @@ var scanCmd = &cobra.Command{
 				outName = scanOutputFile
 			}
 			err := reporter.GenerateHTMLReport(outName, reporter.ReportData{
-				SecurityGrade: report.SecurityGrade,
+				SecurityGrade: output.SecurityGrade,
 				CriticalCount: criticalCount,
 				Stacks:        stackNames,
-				Results:       report.Results,
+				Results:       output.Results,
 			})
 			if err != nil {
 				_, _ = os.Stderr.WriteString("Failed to generate HTML report: " + err.Error() + "\n")
@@ -360,7 +367,7 @@ var scanCmd = &cobra.Command{
 			// If they didn't specify a file, or if they specified a file but asked for terminal format
 			// (which makes no sense, but whatever), print it once.
 			if scanOutputFile == "" {
-				reporter.PrintTerminal(report)
+				reporter.PrintTerminal(output)
 			}
 			// If scanOutputFile was given, terminal format is not written to it.
 		}

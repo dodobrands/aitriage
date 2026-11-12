@@ -1,6 +1,6 @@
 module github.com/dodobrands/aitriage
 
-go 1.25.13
+go 1.26.11
 
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
@@ -16,7 +16,6 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/muesli/termenv v0.16.0
 	github.com/openai/openai-go v1.12.0
-	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/spf13/cobra v1.10.2
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-go v0.25.0

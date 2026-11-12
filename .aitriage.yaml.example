@@ -5,50 +5,89 @@
 
 # ─── LLM Integration (optional, for aitriage agent/fix) ───────────────────────
 llm:
-  # Supported providers: gemini | openai | anthropic | ollama
+  # Supported providers: gemini | openai | anthropic | ollama | groq
   provider: gemini
-  
-  # The model used for deep analysis and remediation
+
+  # The model used for deep analysis and remediation. Verdicts differ between
+  # models on the same code, so the fail_on: confirmed gate depends on this
+  # choice: pin one model and re-check a known project before switching.
   model: gemini-2.5-flash
-  
+
   # NEVER hardcode keys here. Always use environment variables.
   api_key: $GEMINI_API_KEY
 
+  # Findings per classification request (default 40; AITRIAGE_BATCH_SIZE wins).
+  # Weaker models drop items from long requests; such batches are retried in halves.
+  # batch_size: 40
+
 # ─── Ignore Rules ─────────────────────────────────────────────────────────────
 ignore:
-  # Rule IDs that the scanner should completely ignore (e.g., ["ENTR-04"])
-  rules: []
-  
-  # Paths the scanner should skip (supports glob-style prefix matching / you can also use .aitriageignore)
-  paths:
-    - "node_modules/"
-    - ".git/"
-    - "vendor/"
-    - "dist/"
+  # Rule IDs dropped from every source: built-in rules and heuristics, Semgrep,
+  # Trivy, Gitleaks, Bandit, NFR, deploy and network checks. IDs compare whole,
+  # ignoring case. A bare ID matches any source; a prefix limits it to one:
+  # "gitleaks:generic-api-key", "trivy:CVE-2024-1234", "semgrep:<check-id>",
+  # "bandit:B105", and "core:", "nfr:", "deploy:", "network:" for AITriage's own
+  # checks (e.g. "deploy:nginx_missing_csp", "network:port-5432").
+  rules: []   # e.g. ["ENTR-12", "gitleaks:generic-api-key"]
 
-# ─── Information Security Policy Gate ────────────────────────────────────────
-# This is the CI/CD answer to: can this project pass IB requirements?
+  # Paths every scanner skips (the built-in engine, Semgrep, Trivy, Gitleaks,
+  # Bandit, NFR and deploy checks, the git-history scan): .gitignore syntax,
+  # relative to the project root, like .aitriageignore. "legacy/" matches that
+  # directory at any depth, "/legacy/" only at the root. Git-ignored files and
+  # vendored or generated directories (node_modules, vendor, dist, .next,
+  # __pycache__, venv) are skipped already; a committed build/ is scanned.
+  paths: []   # e.g. ["/third_party/", "**/*.pb.go"]
+
+# To silence one place instead of a whole rule, comment in the source:
+#   x = "fixture"  # aitriage-ignore: B105, gitleaks:generic-api-key (reason)
+#   # aitriage-ignore-next-line: PY-SUBPROCESS
+#   # aitriage-ignore-file: ENTR-12   (first 10 lines; without IDs, every rule)
+# aitriage-ignore covers its own line and the next. "all" silences every rule
+# only as an ID of its own; text after the ID list is never read as an ID.
+
+# ─── Security Policy Gate ────────────────────────────────────────────────────
+# This is the CI/CD answer to: can this project pass its security requirements?
 health_check:
   # profile: baseline | standard | strict
   #   - baseline: compatible default; blocks active CRITICAL/HIGH by fail_on
   #   - standard: for sensitive/business apps; also enforces minimum_score 70
   #   - strict: for high-assurance systems; blocks any active finding
   profile: baseline
-  
-  # When to exit non-zero (blocks the CI/CD job): critical | any | never
+
+  # When to exit 1 (blocks the CI/CD job): critical | any | confirmed | never
+  #   critical: active CRITICAL/HIGH findings; any: every active finding;
+  #   confirmed: only findings AI triage confirmed (aitriage agent); never: report only.
+  # If AI triage cannot finish, the gate fails (triage_incomplete) under every
+  # value except never, and aitriage agent exits 2.
   fail_on: critical
-  
+
+  # With fail_on: confirmed, block only confirmed findings at or above this
+  # severity: LOW (default: every confirmed finding) | MEDIUM | HIGH | CRITICAL
+  confirmed_min_severity: LOW
+
+  # Accept an AI false-positive verdict for a CRITICAL finding only when the
+  # model reports high confidence; otherwise keep it for manual review.
+  fp_critical_requires_high_confidence: false
+
   # Fail if the Health Check score is below this threshold (0 disables score gating)
   minimum_score: 0
-  
+
   # Specific threshold overrides (-1 = unlimited, 0 = block any active finding of this severity)
   max_critical: -1
   max_high: -1
   max_medium: -1
-  
+
   # Expose block lists for specific rules/classes/sources
   block_sources: []  # e.g., ["gitleaks"]
   block_classes: []  # e.g., ["hardcoded-secret"]
+
+# ─── Bundled Scanner Options (optional) ──────────────────────────────────────
+# Trivy also applies the project's own .trivyignore (or .trivyignore.yaml, which
+# wins when both exist) from the repository root, to dependency and IaC scans.
+# scanners:
+#   trivy:
+#     ignore_unfixed: true        # dependency scan: only vulnerabilities with a fixed version
+#     severity: [CRITICAL, HIGH]  # both scans; UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL (a typo fails the Trivy run)
 
 # ─── Legacy Failure Thresholds (fallback) ─────────────────────────────────────
 # Still supported when the health_check block is not configured.

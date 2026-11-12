@@ -1,9 +1,11 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -57,24 +59,57 @@ func findingIdentity(f EnrichedFinding) string {
 	return f.ID
 }
 
-func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition) (FindingDisposition, string) {
+// validateLLMDisposition checks one model verdict. A non-empty reject reason
+// means the verdict is not trusted: the finding is retried and otherwise
+// defaults to Needs Manual Review. A non-empty note means the verdict was
+// accepted in a weaker form, such as a False Positive kept for manual review
+// by policy; the note is recorded in the classification audit.
+func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition, policy validationPolicy) (FindingDisposition, string, string) {
 	if raw.FindingID != findingIdentity(finding) {
-		return FindingDisposition{}, "finding_id does not match requested finding"
+		return FindingDisposition{}, "finding_id does not match requested finding", ""
 	}
 	if raw.Fingerprint != Fingerprint(finding) {
-		return FindingDisposition{}, "fingerprint does not match requested finding"
+		return FindingDisposition{}, "fingerprint does not match requested finding", ""
 	}
+	confidence := normalizeConfidence(raw.Confidence)
 	if raw.Disposition == "False Positive" {
 		if err := validateFalsePositiveEvidence(projectPath, finding, raw.Evidence); err != nil {
-			return FindingDisposition{}, err.Error()
+			if !errors.Is(err, errPersonMustDecide) {
+				return FindingDisposition{}, err.Error(), ""
+			}
+			// The model did answer; the answer is just not one the tool may
+			// act on alone. Asking again would only repeat it.
+			return FindingDisposition{
+				Disposition: "Needs Manual Review",
+				Rationale:   "Kept for manual review: " + err.Error() + ". Model rationale: " + raw.Rationale,
+				Confidence:  confidence,
+				Evidence:    raw.Evidence,
+			}, "", "false positive kept as Needs Manual Review: " + err.Error()
+		}
+		if violatesCriticalConfidencePolicy(policy, finding, confidence) {
+			note := fmt.Sprintf("false positive for a CRITICAL finding kept as Needs Manual Review: policy fp_critical_requires_high_confidence requires high confidence, model reported %q", confidence)
+			return FindingDisposition{
+				Disposition: "Needs Manual Review",
+				Rationale:   "Kept for manual review: a CRITICAL finding is only dismissed with high model confidence (policy fp_critical_requires_high_confidence). Model rationale: " + raw.Rationale,
+				Confidence:  confidence,
+				Evidence:    raw.Evidence,
+			}, "", note
 		}
 	}
 	return FindingDisposition{
 		Disposition: raw.Disposition,
 		Rationale:   raw.Rationale,
-		Confidence:  normalizeConfidence(raw.Confidence),
+		Confidence:  confidence,
 		Evidence:    raw.Evidence,
-	}, ""
+	}, "", ""
+}
+
+// violatesCriticalConfidencePolicy reports whether a False Positive for a
+// CRITICAL finding lacks the high confidence the policy demands.
+func violatesCriticalConfidencePolicy(policy validationPolicy, finding EnrichedFinding, confidence string) bool {
+	return policy.fpCriticalRequiresHighConfidence &&
+		strings.EqualFold(strings.TrimSpace(finding.Severity), "CRITICAL") &&
+		normalizeConfidence(confidence) != "high"
 }
 
 func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
@@ -97,24 +132,168 @@ func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, 
 		}
 		return nil
 	case "code_mitigation":
-		if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(evidence.Observed)) < 4 {
-			return fmt.Errorf("code_mitigation evidence is incomplete")
-		}
-		path, err := matchingProjectFile(projectPath, finding.File, evidence.File)
-		if err != nil {
-			return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
-		}
-		line, err := readLine(path, evidence.Line)
-		if err != nil {
-			return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
-		}
-		if !strings.Contains(line, evidence.Observed) {
-			return fmt.Errorf("code_mitigation observed text is absent from source")
-		}
-		return nil
+		return validateCodeMitigation(projectPath, finding, evidence)
 	default:
 		return fmt.Errorf("false positive evidence basis %q is not deterministically verifiable", evidence.Basis)
 	}
+}
+
+// Limits that tie code_mitigation evidence to its finding. A check that
+// protects a statement normally sits a few lines above it, in the same
+// function, and names the data the statement uses. Code further away, after
+// the statement, or about other names is unrelated code that merely looks
+// protective, which is what models cited to dismiss findings.
+const (
+	// maxMitigationDistance is how many lines above the flagged line the
+	// cited code may sit. A fixed window works for every language and is
+	// what the classification prompt states.
+	maxMitigationDistance = 30
+	// maxStatementLines bounds how many lines a flagged statement is followed
+	// for when a parenthesis or bracket opened on the flagged line is still
+	// open, as in a call with one argument per line.
+	maxStatementLines = 10
+	// minSharedIdentifierLength leaves out one-letter names (i, r, w, x):
+	// they are too common to tie a line to a finding.
+	minSharedIdentifierLength = 2
+)
+
+// errPersonMustDecide marks code_mitigation evidence for a finding that only a
+// person may dismiss. The verdict is kept as Needs Manual Review rather than
+// rejected and asked again: the model would only repeat it.
+var errPersonMustDecide = errors.New("a person must decide")
+
+// validateCodeMitigation accepts code_mitigation evidence only when it is tied
+// to the finding: code only (no byte of it in a comment or string literal), in
+// the same source file, above the flagged line and at most
+// maxMitigationDistance lines away, and naming a variable or function of the
+// flagged statement. Quoting code-looking text anywhere in the file was
+// enough before: models cited comments, configuration, the vulnerable line
+// itself and unrelated assignments. CRITICAL findings and hardcoded secrets
+// are never dismissed by code_mitigation.
+func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+	if subject := personOnlyFinding(finding); subject != "" {
+		return fmt.Errorf("code_mitigation evidence is not accepted for %s: %w", subject, errPersonMustDecide)
+	}
+	observed := evidence.Observed
+	if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(observed)) < 4 {
+		return fmt.Errorf("code_mitigation evidence is incomplete")
+	}
+	if isConfigOrDataFile(finding.File) {
+		return fmt.Errorf("code_mitigation evidence rejected: %s is a configuration or data file, which contains no code that mitigates", filepath.Base(normalizePath(finding.File)))
+	}
+	path, err := matchingProjectFile(projectPath, finding.File, evidence.File)
+	if err != nil {
+		return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
+	}
+	if err := checkMitigationPlacement(finding.Line, evidence.Line); err != nil {
+		return err
+	}
+	syntax := syntaxForPath(path)
+	if syntax.leadingOnly {
+		return fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
+	}
+	lines, err := readSourceLines(path)
+	if err != nil {
+		return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
+	}
+	if finding.Line > len(lines) {
+		return fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
+	}
+	// The evidence line is above the flagged line, so both are scanned.
+	regions := fileRegions(lines, finding.Line-1+maxStatementLines, syntax)
+	line, kinds := lines[evidence.Line-1], regions[evidence.Line-1]
+	if !strings.Contains(line, observed) {
+		return fmt.Errorf("code_mitigation observed text is absent from source")
+	}
+	starts, where := codeOccurrences(line, kinds, observed)
+	if len(starts) == 0 {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text %s", where)
+	}
+	if !hasCodeTokens(observed) {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
+	}
+	cited := citedIdentifiers(line, starts, len(observed))
+	flagged := statementIdentifiers(lines, regions, finding.Line-1)
+	if !sharesIdentifier(cited, flagged) {
+		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
+	}
+	return nil
+}
+
+// personOnlyFinding names why code_mitigation evidence can never dismiss a
+// finding, or returns "". A CRITICAL finding is too severe to drop on the
+// strength of nearby code, and a hardcoded secret is exposed in the source
+// whatever code surrounds it.
+func personOnlyFinding(f EnrichedFinding) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(f.Severity), "CRITICAL"):
+		return "a CRITICAL finding"
+	case isHardcodedSecret(f):
+		return "a hardcoded secret"
+	default:
+		return ""
+	}
+}
+
+// checkMitigationPlacement requires the cited line to run before the flagged
+// line and close to it. The flagged line itself never qualifies: a statement
+// is not its own mitigation, and nothing else on its line can be told apart
+// from it reliably.
+func checkMitigationPlacement(findingLine, evidenceLine int) error {
+	switch {
+	case findingLine < 1:
+		return fmt.Errorf("code_mitigation evidence rejected: the finding has no line, so no mitigation can be tied to it")
+	case evidenceLine == findingLine:
+		return fmt.Errorf("code_mitigation evidence rejected: evidence.line must cite code other than the flagged line itself")
+	case evidenceLine > findingLine:
+		return fmt.Errorf("code_mitigation evidence rejected: line %d is after the flagged line %d; a mitigation must run before the flagged statement", evidenceLine, findingLine)
+	case findingLine-evidenceLine > maxMitigationDistance:
+		return fmt.Errorf("code_mitigation evidence rejected: line %d is more than %d lines above the flagged line %d", evidenceLine, maxMitigationDistance, findingLine)
+	default:
+		return nil
+	}
+}
+
+// sharesIdentifier reports whether two name sets intersect.
+func sharesIdentifier(a, b map[string]bool) bool {
+	for name := range a {
+		if b[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// codeTokenPatterns recognise text that is code rather than prose: an
+// operator or bracket, a dotted member access, a snake_case or camelCase
+// identifier.
+var codeTokenPatterns = []*regexp.Regexp{
+	regexp.MustCompile("[(){}\\[\\]=<>;$@&|`]|::|->|=>"),
+	regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_]`),
+	regexp.MustCompile(`[A-Za-z0-9]_[A-Za-z0-9]`),
+	regexp.MustCompile(`[a-z][A-Z]`),
+}
+
+func hasCodeTokens(observed string) bool {
+	for _, pattern := range codeTokenPatterns {
+		if pattern.MatchString(observed) {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfigOrDataFile reports whether a path holds configuration or data
+// rather than code. Such files can describe a mitigation but never perform
+// one, so code_mitigation evidence is not accepted for them.
+func isConfigOrDataFile(path string) bool {
+	base := strings.ToLower(filepath.Base(normalizePath(path)))
+	switch filepath.Ext(base) {
+	case ".yaml", ".yml", ".json", ".jsonc", ".json5", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".tfvars":
+		return true
+	}
+	return base == ".env" || strings.HasPrefix(base, ".env.") || base == ".htaccess" ||
+		strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose.")
 }
 
 func isTestPath(path string) bool {
@@ -179,14 +358,15 @@ func resolveProjectFile(projectPath, candidate string) (string, error) {
 	return path, nil
 }
 
-func readLine(path string, lineNumber int) (string, error) {
+// readSourceLines returns the file split into lines without line endings.
+func readSourceLines(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	lines := strings.Split(string(data), "\n")
-	if lineNumber > len(lines) {
-		return "", fmt.Errorf("line %d is outside source file", lineNumber)
+	for i, line := range lines {
+		lines[i] = strings.TrimSuffix(line, "\r")
 	}
-	return lines[lineNumber-1], nil
+	return lines, nil
 }

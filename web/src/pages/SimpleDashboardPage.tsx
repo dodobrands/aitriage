@@ -183,10 +183,13 @@ interface BaselineStatus {
   by_severity?: Record<string, number>;
   created_at?: string;
   updated_at?: string;
+  /** The baseline in effect is the project's own file, which the server cannot change. */
+  read_only?: boolean;
 }
 
 /* ── Scan Panel (right column) ── */
-type ScanStatus = { state: 'idle' | 'scanning' | 'done' | 'error'; findings?: number; duration?: string; coverage?: string; error?: string };
+// baselined is set only for scans that applied the baseline.
+type ScanStatus = { state: 'idle' | 'scanning' | 'done' | 'error'; findings?: number; duration?: string; coverage?: string; baselined?: number; error?: string };
 
 interface ScanPanelProps {
   onScanComplete?: () => void;
@@ -195,6 +198,9 @@ interface ScanPanelProps {
 const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
   const { t } = useTranslation('pages');
   const [external, setExternal] = useState(true);
+  // Off by default: a scan reports everything unless the person asks to judge
+  // only what is new against the accepted baseline.
+  const [useBaseline, setUseBaseline] = useState(false);
   const [scanPath, setScanPath] = useState('.');
   const [projects, setProjects] = useState<BrowserEntry[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -249,11 +255,11 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, external }),
+        body: JSON.stringify({ path, external, use_baseline: useBaseline }),
       });
       const data = await res.json();
       if (data.ok) {
-        setScanStatuses(prev => ({ ...prev, [path]: { state: 'done', findings: data.findings?.length ?? 0, duration: data.duration, coverage: data.scanner_coverage } }));
+        setScanStatuses(prev => ({ ...prev, [path]: { state: 'done', findings: data.findings?.length ?? 0, duration: data.duration, coverage: data.scanner_coverage, baselined: useBaseline ? (data.baselined_findings ?? 0) : undefined } }));
         return true;
       } else {
         setScanStatuses(prev => ({ ...prev, [path]: { state: 'error', error: data.error || 'Failed' } }));
@@ -396,6 +402,7 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
                         <div className="text-[10px] text-[#52525b] mt-0.5">
                           <span className="text-[#22c55e]">{status.findings}</span> {t('issues')} · {status.duration}
                           {status.coverage && <> · <span className={status.coverage === 'full' ? 'text-[#22c55e]' : 'text-[#f59e0b]'}>{status.coverage.toUpperCase()}</span></>}
+                          {status.baselined !== undefined && <> · {t('review.baselineHidden', { count: status.baselined })}</>}
                         </div>
                       )}
                       {status?.state === 'error' && (
@@ -488,6 +495,10 @@ const ScanPanel: React.FC<ScanPanelProps> = ({ onScanComplete }) => {
 
       {/* Action button */}
       <div className="p-3 border-t border-[rgba(255,255,255,0.06)] bg-surface-container-low">
+        <label className="flex items-center gap-2 mb-2 text-[11px] text-on-surface-variant cursor-pointer" title={t('review.useBaselineHint')}>
+          <input type="checkbox" checked={useBaseline} disabled={isAnyScanRunning} onChange={event => setUseBaseline(event.target.checked)} />
+          {t('review.useBaseline')}
+        </label>
         <button
           onClick={() => {
             if (showCustomPath) return scanOne(scanPath);
@@ -807,17 +818,24 @@ const SecureCoderPanel: React.FC<{
   // it — those working entirely here — could not reach it.
   const [baselineStatus, setBaselineStatus] = useState<BaselineStatus | null>(null);
   const [baselineBusy, setBaselineBusy] = useState(false);
+  // null: no failure. A failed create or clear used to leave the panel
+  // unchanged, which read as "nothing happened" rather than as an error.
+  const [baselineError, setBaselineError] = useState<string | null>(null);
 
   const fetchBaseline = useCallback(async () => {
     try {
       const res = await fetch('/api/baseline');
       const data = await res.json();
-      if (data.ok) setBaselineStatus(data);
+      if (data.ok) {
+        setBaselineStatus(data);
+        setBaselineError(null);
+      }
     } catch { /* leave the previous status visible */ }
   }, []);
 
   const writeBaseline = useCallback(async () => {
     setBaselineBusy(true);
+    setBaselineError(null);
     try {
       const res = await fetch('/api/baseline', {
         method: 'POST',
@@ -826,17 +844,20 @@ const SecureCoderPanel: React.FC<{
       });
       const data = await res.json();
       if (data.ok) setBaselineStatus(data);
-    } catch { /* status stays as it was */ }
+      else setBaselineError(data.error || '');
+    } catch { setBaselineError(''); /* status stays as it was */ }
     setBaselineBusy(false);
   }, []);
 
   const clearBaseline = useCallback(async () => {
     setBaselineBusy(true);
+    setBaselineError(null);
     try {
       const res = await fetch('/api/baseline', { method: 'DELETE' });
       const data = await res.json();
       if (data.ok) setBaselineStatus(data);
-    } catch { /* status stays as it was */ }
+      else setBaselineError(data.error || '');
+    } catch { setBaselineError(''); /* status stays as it was */ }
     setBaselineBusy(false);
   }, []);
 
@@ -1607,6 +1628,18 @@ const SecureCoderPanel: React.FC<{
                         {baselineStatus.updated_at && <div>{i18n.language?.startsWith('ru') ? 'Обновлена' : 'Updated'}: {String(baselineStatus.updated_at).replace('T', ' ').replace('Z', '')}</div>}
                       </div>
                     )}
+                    {baselineStatus?.exists && baselineStatus.read_only && (
+                      <p className="text-[10px] leading-relaxed text-[#a1a1aa]">
+                        {i18n.language?.startsWith('ru')
+                          ? 'Это собственный файл проекта .aitriage-baseline.json, здесь он доступен только для чтения. «Обновить» сохранит копию в aitriage-reports/, и применяться будет она; изменить или удалить сам файл можно командой aitriage baseline в терминале.'
+                          : "This is the project's own .aitriage-baseline.json, read-only here. Update saves a copy under aitriage-reports/ that applies instead; change or remove the file itself with aitriage baseline in a terminal."}
+                      </p>
+                    )}
+                    {baselineError !== null && (
+                      <p role="alert" className="text-[10px] leading-relaxed text-[#ef4444]">
+                        {baselineError || (i18n.language?.startsWith('ru') ? 'Не удалось изменить точку отсчёта.' : 'Could not change the baseline.')}
+                      </p>
+                    )}
                     <div className="flex gap-2">
                       <button
                         onClick={() => void writeBaseline()}
@@ -1620,7 +1653,7 @@ const SecureCoderPanel: React.FC<{
                       </button>
                       <button
                         onClick={() => void clearBaseline()}
-                        disabled={baselineBusy || !baselineStatus?.exists}
+                        disabled={baselineBusy || !baselineStatus?.exists || baselineStatus.read_only}
                         className="flex-1 py-1.5 bg-[rgba(239,68,68,0.06)] border border-[rgba(239,68,68,0.12)] hover:bg-[rgba(239,68,68,0.12)] text-[#ef4444] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                       >
                         <span className="material-symbols-outlined text-[12px]">delete_sweep</span>
@@ -3330,9 +3363,12 @@ export const SimpleDashboardPage: React.FC<SimpleDashboardPageProps> = ({ onNavi
                   <span className="material-symbols-outlined" aria-hidden="true">close</span>
                 </button>
               </div>
+              {/* Silent: a loading refresh swaps the page for its skeleton, which
+                  unmounts this drawer and discards the scan results and options
+                  the person is looking at. */}
               <div className="simple-drawer__content"><ScanPanel onScanComplete={() => runScanCompletionRefreshers({
-                findings: refreshFindings,
-                metrics: refreshMetrics,
+                findings: () => refreshFindings({ silent: true }),
+                metrics: () => refreshMetrics({ silent: true }),
                 products: refreshProducts,
               })} /></div>
             </aside>

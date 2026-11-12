@@ -24,18 +24,18 @@ func GenerateClaudeSpec(rich llm.RichScanResult) string {
 	if len(rich.Report.Results) > 0 {
 		sb.WriteString("## Core Security Findings to Fix\n\n")
 		for i, r := range rich.Report.Results {
-			sb.WriteString(fmt.Sprintf("### %d. [%s] %s\n", i+1, r.Severity, r.Name))
-			sb.WriteString(fmt.Sprintf("- **File**: `%s:%d`\n", r.File, r.Line))
-			sb.WriteString(fmt.Sprintf("- **Rule ID**: `%s`\n", r.ID))
-			sb.WriteString(fmt.Sprintf("- **Evidence**: `%s`\n", r.Evidence))
+			fmt.Fprintf(&sb, "### %d. [%s] %s\n", i+1, r.Severity, r.Name)
+			fmt.Fprintf(&sb, "- **File**: `%s:%d`\n", r.File, r.Line)
+			fmt.Fprintf(&sb, "- **Rule ID**: `%s`\n", r.ID)
+			fmt.Fprintf(&sb, "- **Evidence**: `%s`\n", r.Evidence)
 			if r.Suggestion != "" {
-				sb.WriteString(fmt.Sprintf("- **Remediation Plan**: %s\n", r.Suggestion))
+				fmt.Fprintf(&sb, "- **Remediation Plan**: %s\n", r.Suggestion)
 			}
 
 			// Map to specific file rules for Cursor/Claude
 			sb.WriteString("\n<cursor_rule>\n")
-			sb.WriteString(fmt.Sprintf("When modifying `%s`:\n- Ensure the vulnerability `%s` is patched securely.\n", r.File, r.ID))
-			sb.WriteString(fmt.Sprintf("- Context: %s\n", r.Evidence))
+			fmt.Fprintf(&sb, "When modifying `%s`:\n- Ensure the vulnerability `%s` is patched securely.\n", r.File, r.ID)
+			fmt.Fprintf(&sb, "- Context: %s\n", r.Evidence)
 			sb.WriteString("</cursor_rule>\n\n")
 		}
 	}
@@ -44,9 +44,9 @@ func GenerateClaudeSpec(rich llm.RichScanResult) string {
 	if len(rich.External) > 0 {
 		sb.WriteString("## Sub-Scanner Security Findings\n\n")
 		for i, e := range rich.External {
-			sb.WriteString(fmt.Sprintf("### %d. [%s] %s (%s)\n", i+1, e.Severity, e.Message, e.Source))
-			sb.WriteString(fmt.Sprintf("- **File**: `%s:%d`\n", e.File, e.Line))
-			sb.WriteString(fmt.Sprintf("- **Rule**: `%s`\n\n", e.RuleID))
+			fmt.Fprintf(&sb, "### %d. [%s] %s (%s)\n", i+1, e.Severity, e.Message, e.Source)
+			fmt.Fprintf(&sb, "- **File**: `%s:%d`\n", e.File, e.Line)
+			fmt.Fprintf(&sb, "- **Rule**: `%s`\n\n", e.RuleID)
 		}
 	}
 
@@ -54,9 +54,9 @@ func GenerateClaudeSpec(rich llm.RichScanResult) string {
 	if len(rich.NFR) > 0 {
 		sb.WriteString("## Non-Functional Requirements (NFR) Violations\n\n")
 		for i, n := range rich.NFR {
-			sb.WriteString(fmt.Sprintf("### %d. [%s] %s\n", i+1, n.Severity, n.Name))
-			sb.WriteString(fmt.Sprintf("- **Message**: %s\n", n.Message))
-			sb.WriteString(fmt.Sprintf("- **Advice**: %s\n\n", n.Advice))
+			fmt.Fprintf(&sb, "### %d. [%s] %s\n", i+1, n.Severity, n.Name)
+			fmt.Fprintf(&sb, "- **Message**: %s\n", n.Message)
+			fmt.Fprintf(&sb, "- **Advice**: %s\n\n", n.Advice)
 		}
 	}
 
@@ -64,9 +64,9 @@ func GenerateClaudeSpec(rich llm.RichScanResult) string {
 	if len(rich.Deploy) > 0 {
 		sb.WriteString("## Infrastructure/Deploy Risks\n\n")
 		for i, d := range rich.Deploy {
-			sb.WriteString(fmt.Sprintf("### %d. [%s] %s\n", i+1, d.Severity, d.Issue))
-			sb.WriteString(fmt.Sprintf("- **File**: `%s:%d`\n", d.File, d.Line))
-			sb.WriteString(fmt.Sprintf("- **Recommendation**: %s\n\n", d.Advice))
+			fmt.Fprintf(&sb, "### %d. [%s] %s\n", i+1, d.Severity, d.Issue)
+			fmt.Fprintf(&sb, "- **File**: `%s:%d`\n", d.File, d.Line)
+			fmt.Fprintf(&sb, "- **Recommendation**: %s\n\n", d.Advice)
 		}
 	}
 
@@ -75,16 +75,16 @@ func GenerateClaudeSpec(rich llm.RichScanResult) string {
 		sb.WriteString("## Live Network Exposure\n\n")
 		sb.WriteString("> **Warning**: The following ports were found open during the live infrastructure probe. Close any ports that should not be publicly accessible.\n\n")
 		for i, n := range rich.Network {
-			sb.WriteString(fmt.Sprintf("### %d. [%s] Port %d Open\n", i+1, n.Severity, n.Port))
-			sb.WriteString(fmt.Sprintf("- **Service**: `%s`\n", n.Service))
-			sb.WriteString(fmt.Sprintf("- **Message**: %s\n\n", n.Message))
+			fmt.Fprintf(&sb, "### %d. [%s] Port %d Open\n", i+1, n.Severity, n.Port)
+			fmt.Fprintf(&sb, "- **Service**: `%s`\n", n.Service)
+			fmt.Fprintf(&sb, "- **Message**: %s\n\n", n.Message)
 		}
 	}
 
 	// 8. Context
 	if rich.Diagram != "" {
 		sb.WriteString("## System Architecture Context\n\n")
-		sb.WriteString(fmt.Sprintf("```mermaid\n%s\n```\n", rich.Diagram))
+		fmt.Fprintf(&sb, "```mermaid\n%s\n```\n", rich.Diagram)
 	}
 
 	sb.WriteString("\n## Next Steps\n")

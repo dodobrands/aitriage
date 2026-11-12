@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -20,6 +20,11 @@ import (
 // is red because of years of accumulated debt". All three surfaces now read and
 // write the same `.aitriage-baseline.json`, so a baseline created anywhere is
 // honoured everywhere.
+//
+// In the container runtime the project is mounted read-only. The baseline this
+// tool writes then goes to a local copy under aitriage-reports, the one the Web
+// UI writes there too, and every reader in the container applies it together
+// with the project's own file (baseline.LoadAt).
 
 type baselineInput struct {
 	Path string `json:"path,omitempty"`
@@ -85,15 +90,7 @@ func registerBaselineTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 				return nil, baselineResult{}, fmt.Errorf(
 					"action \"clear\" removes %s and is not available under the safe profile", baseline.BaselineFile)
 			}
-			target := filepath.Join(path, baseline.BaselineFile)
-			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-				return nil, baselineResult{}, fmt.Errorf("could not remove baseline: %v", err)
-			}
-			return nil, baselineResult{
-				Action:  "clear",
-				File:    target,
-				Summary: "Baseline removed. Every finding is reported again.",
-			}, nil
+			return baselineClear(path)
 
 		default:
 			return nil, baselineResult{}, fmt.Errorf("unknown action %q (supported: status, create, update, clear)", input.Action)
@@ -102,30 +99,24 @@ func registerBaselineTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 }
 
 func baselineStatusFor(path string) baselineResult {
-	target := filepath.Join(path, baseline.BaselineFile)
-	existing, err := baseline.Load(path)
+	loc := baseline.Locate(path)
+	existing, err := baseline.LoadAt(loc)
 	if err != nil || existing == nil {
 		return baselineResult{
 			Action:  "status",
-			File:    target,
+			File:    loc.WriteFile(),
 			Summary: "No baseline. Every finding is reported as new.",
 		}
 	}
 
-	stats := existing.Stats()
-	return baselineResult{
-		Action:     "status",
-		Exists:     true,
-		File:       target,
-		Total:      stats.Total,
-		BySeverity: stats.BySeverity,
-		CreatedAt:  existing.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:  existing.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-		Summary:    fmt.Sprintf("%d finding(s) accepted; only findings outside this set are reported as new.", stats.Total),
-	}
+	result := describeBaseline("status", existing, loc)
+	result.Summary = fmt.Sprintf("%d finding(s) accepted; only findings outside this set are reported as new.", result.Total)
+	return withContainerNote(result, loc)
 }
 
 func baselineWrite(ctx context.Context, path, action string) (*mcp.CallToolResult, baselineResult, error) {
+	loc := baseline.Locate(path)
+
 	// Every scanner, so the baseline covers what the project actually reports.
 	rich := orchestrator.RunAllScanners(ctx, orchestrator.Options{
 		ProjectPath: path,
@@ -133,25 +124,82 @@ func baselineWrite(ctx context.Context, path, action string) (*mcp.CallToolResul
 	})
 
 	created := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
-	if existing, loadErr := baseline.Load(path); loadErr == nil && existing != nil {
+	if existing, loadErr := baseline.LoadAt(loc); loadErr == nil && existing != nil {
 		// Keep the original creation date: it records how long the project has
 		// been operating against a baseline.
 		created.CreatedAt = existing.CreatedAt
 	}
-	if err := baseline.Save(path, created); err != nil {
+	if err := baseline.SaveAt(loc, created); err != nil {
 		return nil, baselineResult{}, fmt.Errorf("could not write baseline: %v", err)
 	}
 
-	stats := created.Stats()
+	// In the container the project's own baseline keeps applying next to the
+	// copy just written, so report what applies now.
+	applied := created
+	if merged, loadErr := baseline.LoadAt(loc); loadErr == nil && merged != nil {
+		applied = merged
+	}
+	result := describeBaseline(action, applied, loc)
+	result.Summary = fmt.Sprintf("%d finding(s) accepted as the baseline. They stay visible in reports; only new findings are reported as regressions.",
+		result.Total)
+	if loc.Redirected() {
+		result.Summary += " " + writtenUnderReports(loc.WriteFile())
+	}
+	return nil, withContainerNote(result, loc), nil
+}
+
+func baselineClear(path string) (*mcp.CallToolResult, baselineResult, error) {
+	loc := baseline.Locate(path)
+	target := loc.WriteFile()
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return nil, baselineResult{}, fmt.Errorf("could not remove baseline: %v", err)
+	}
+	// A read-only project's own baseline cannot be removed from here and keeps
+	// applying. Report it rather than claim that no baseline is left.
+	if loc.Redirected() {
+		if remaining, loadErr := baseline.LoadAt(loc); loadErr == nil && remaining != nil {
+			result := describeBaseline("clear", remaining, loc)
+			result.Summary = fmt.Sprintf("Removed the local copy under aitriage-reports. The project's own baseline still applies: %d finding(s) accepted.", result.Total)
+			return nil, withContainerNote(result, loc), nil
+		}
+	}
 	return nil, baselineResult{
+		Action:  "clear",
+		File:    target,
+		Summary: "Baseline removed. Every finding is reported again.",
+	}, nil
+}
+
+// withContainerNote explains, in the container runtime, how the baseline in
+// effect relates to the project's own file.
+func withContainerNote(result baselineResult, loc statefile.Location) baselineResult {
+	switch {
+	case loc.HasCopy():
+		result.Summary += " " + statefile.LocalOverrideNote
+	case loc.Redirected():
+		result.Summary += " " + projectBaselineReadOnly
+	}
+	return result
+}
+
+// projectBaselineReadOnly explains why the baseline in effect cannot be
+// changed by this server in the container runtime.
+const projectBaselineReadOnly = "It is the project's own file, read-only in the container: a baseline created or updated here is written as a local copy under aitriage-reports that applies on top of it, and the file itself can only be changed outside the container."
+
+// writtenUnderReports tells the agent where a container write went.
+func writtenUnderReports(file string) string {
+	return fmt.Sprintf("The project is read-only in the container, so this was written to %s, which is not committed.", file)
+}
+
+func describeBaseline(action string, b *baseline.Baseline, loc statefile.Location) baselineResult {
+	stats := b.Stats()
+	return baselineResult{
 		Action:     action,
 		Exists:     true,
-		File:       filepath.Join(path, baseline.BaselineFile),
+		File:       loc.CurrentFile(),
 		Total:      stats.Total,
 		BySeverity: stats.BySeverity,
-		CreatedAt:  created.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:  created.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-		Summary: fmt.Sprintf("%d finding(s) accepted as the baseline. They stay visible in reports; only new findings are reported as regressions.",
-			stats.Total),
-	}, nil
+		CreatedAt:  b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:  b.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
 }

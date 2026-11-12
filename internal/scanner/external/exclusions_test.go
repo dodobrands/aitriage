@@ -119,7 +119,7 @@ func TestScopeFilterHandlesContainerPaths(t *testing.T) {
 }
 
 func TestExclusionArgsCoverVendoredDirectories(t *testing.T) {
-	semgrep := SemgrepExcludeArgs()
+	semgrep := SemgrepExcludeArgs(t.TempDir())
 	var sawVendor, sawNodeModules bool
 	for _, arg := range semgrep {
 		switch arg {
@@ -133,7 +133,7 @@ func TestExclusionArgsCoverVendoredDirectories(t *testing.T) {
 		t.Errorf("semgrep exclude args = %v; want vendor and node_modules", semgrep)
 	}
 
-	pattern := GitleaksAllowlistPattern()
+	pattern := gitleaksAllowlistPaths(t.TempDir())[0]
 	for _, want := range []string{"vendor", "node_modules", "aitriage-reports"} {
 		if !strings.Contains(pattern, want) {
 			t.Errorf("gitleaks allowlist %q is missing %q", pattern, want)

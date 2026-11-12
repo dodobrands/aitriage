@@ -499,7 +499,8 @@ func (s *Server) handleSecureCoderScanDirectory(w http.ResponseWriter, r *http.R
 		ProjectPath: containerPath,
 		RunExternal: req.External,
 		// No implicit port scan of the host: see requestedProbeHost.
-		ProbeHost: requestedProbeHost(req.ProbeNetwork),
+		ProbeHost:    requestedProbeHost(req.ProbeNetwork),
+		ProbeCompose: req.ProbeNetwork,
 	})
 
 	var findings []secureCoderFindingResponse

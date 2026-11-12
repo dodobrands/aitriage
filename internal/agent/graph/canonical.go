@@ -19,8 +19,10 @@ import (
 // cvePattern matches CVE identifiers like CVE-2026-28684 (year + at least 4 digits).
 var cvePattern = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
 
-// vulnIDPattern matches generated CS-XXX-NNN vulnerability identifiers.
-var vulnIDPattern = regexp.MustCompile(`CS-[A-Z0-9]+-\d{3,}`)
+// vulnIDPattern matches display ids: the current CS-<CLASS>-<hex> form
+// (assignVulnIDs) and the CS-<CLASS>-<NNN> counter form of earlier releases,
+// which a model may still produce from memory and must be caught as unknown.
+var vulnIDPattern = regexp.MustCompile(`\bCS-[A-Z0-9]+-(?:[0-9A-F]{6,}|[0-9]{3,})\b`)
 
 // canonicalDispositionByVulnID maps each finding's generated VulnID to its
 // authoritative disposition, straight from state. This is the same 1:1 mapping
@@ -68,21 +70,34 @@ func buildCanonicalFindingsSection(state *AgentState) string {
 	for i, f := range state.EnrichedFindings {
 		file := f.File
 		if file == "" {
-			file = "N/A"
+			file = projectLevelLocation
 		}
-		disp := "Needs Manual Review"
+		disp := "Needs Manual Review (unclassified)"
 		src := ""
 		if d, ok := dispByIndex[i]; ok {
-			disp = d.Disposition
+			disp = dispositionLabel(d)
 			src = d.DispositionSource
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %s | %s |\n",
-			f.VulnID, f.Severity, file, f.Line, disp, src))
+		fmt.Fprintf(&sb, "| %s | %s | %s | %d | %s | %s |\n",
+			f.VulnID, f.Severity, file, f.Line, disp, src)
 	}
 
-	tp, fp, nr := countDispositions(state.FindingDispositions)
-	sb.WriteString(fmt.Sprintf("\n**Dispositions:** %d True Positive · %d False Positive · %d Needs Manual Review · %d total\n",
-		tp, fp, nr, len(state.EnrichedFindings)))
+	tally := tallyDispositions(state)
+	fmt.Fprintf(&sb, "\n**Dispositions:** %d True Positive · %d False Positive · %d Needs Manual Review · %d total\n",
+		tally.TruePositives, tally.FalsePositives, tally.NeedsReview, len(state.EnrichedFindings))
+	var notes []string
+	if tally.Unclassified > 0 {
+		notes = append(notes, fmt.Sprintf("%d Needs Manual Review finding(s) are unclassified: the model gave no verdict (%d of them because the provider failed)", tally.Unclassified, tally.TriageFailed))
+	}
+	if tally.Suppressed > 0 {
+		notes = append(notes, fmt.Sprintf("%d False Positive finding(s) were dismissed by project decisions and never sent to the LLM", tally.Suppressed))
+	}
+	if tally.Network > 0 {
+		notes = append(notes, fmt.Sprintf("%d network probe finding(s) describe the scanning host; they are listed but never sent to the LLM or scored", tally.Network))
+	}
+	for _, note := range notes {
+		sb.WriteString("- " + note + ".\n")
+	}
 	return sb.String()
 }
 
@@ -101,15 +116,20 @@ func canonicalActiveFindingsBrief(state *AgentState) string {
 	}
 	var rows []row
 	for i, f := range state.EnrichedFindings {
+		if isEnvironmentFinding(f) {
+			// A port open on the scanning host is not something to fix in
+			// this repository.
+			continue
+		}
 		d, ok := dispByIndex[i]
-		disp := "Needs Manual Review"
+		disp := "Needs Manual Review (unclassified)"
 		rationale := ""
 		if ok {
-			disp = d.Disposition
+			if d.Disposition == "False Positive" {
+				continue
+			}
+			disp = dispositionLabel(d)
 			rationale = d.Rationale
-		}
-		if disp == "False Positive" {
-			continue
 		}
 		rows = append(rows, row{vulnID: f.VulnID, sev: strings.ToUpper(f.Severity), file: f.File, disp: disp, rationale: rationale, line: f.Line})
 	}
@@ -128,11 +148,7 @@ func canonicalActiveFindingsBrief(state *AgentState) string {
 		return sb.String()
 	}
 	for _, r := range rows {
-		file := r.file
-		if file == "" {
-			file = "N/A"
-		}
-		sb.WriteString(fmt.Sprintf("- **%s** [%s] %s — `%s:%d` — %s\n", r.vulnID, r.sev, r.disp, file, r.line, r.rationale))
+		fmt.Fprintf(&sb, "- **%s** [%s] %s — `%s` — %s\n", r.vulnID, r.sev, r.disp, displayLocation(r.file, r.line), r.rationale)
 	}
 	sb.WriteString("\nDo not introduce any vulnerability ID, CVE, or package that is not listed above.\n")
 	return sb.String()

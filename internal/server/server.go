@@ -472,6 +472,32 @@ type scanResponse struct {
 	Error             string `json:"error,omitempty"`
 }
 
+// applyScanDecisions applies what the team has decided about a scan's
+// findings: the accepted baseline when requested, and the dismissals always.
+// Both combine the project's own file with the local copy this server writes
+// in the container runtime, where the project is read-only (baseline.LoadAt,
+// suppression.LoadAt), so a decision made in the container Web UI is applied
+// by the next scan there. It returns how many findings the baseline hid.
+func applyScanDecisions(rich *llm.RichScanResult, projectPath string, useBaseline bool) (int, error) {
+	// A baseline hides findings the team has already accepted, so what is
+	// left is what is new.
+	baselined := 0
+	if useBaseline {
+		accepted, err := baseline.LoadAt(baseline.Locate(projectPath))
+		if err != nil {
+			return 0, fmt.Errorf("failed to read baseline: %v", err)
+		}
+		baselined = orchestrator.ApplyBaseline(rich, accepted)
+	}
+
+	// Dismissals are always applied: a false positive someone already reviewed
+	// must not come back as an open finding on the next scan.
+	if store, err := suppression.LoadAt(suppression.Locate(projectPath)); err == nil {
+		orchestrator.ApplySuppressions(rich, store)
+	}
+	return baselined, nil
+}
+
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -507,8 +533,9 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		RunExternal:  req.External || containerFull,
 		// Port probing is opt-in. It inspects the machine AITriage runs on, not
 		// the code being audited, so it must never happen because someone asked
-		// for a source scan.
-		ProbeHost: requestedProbeHost(req.ProbeNetwork),
+		// for a source scan. The same request covers the Compose services.
+		ProbeHost:    requestedProbeHost(req.ProbeNetwork),
+		ProbeCompose: req.ProbeNetwork,
 	}
 
 	rich := orchestrator.RunAllScanners(ctx, opts)
@@ -517,23 +544,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A baseline hides findings the team has already accepted. It is applied
-	// here, before scoring and persistence, so the score, the gate verdict and
-	// the stored findings all describe the same set: what is new.
-	baselinedCount := 0
-	if req.UseBaseline {
-		accepted, loadErr := baseline.Load(containerPath)
-		if loadErr != nil {
-			jsonError(w, fmt.Sprintf("failed to read baseline: %v", loadErr), http.StatusInternalServerError)
-			return
-		}
-		baselinedCount = orchestrator.ApplyBaseline(&rich, accepted)
-	}
-
-	// Dismissals are always applied: a false positive someone already reviewed
-	// must not come back as an open finding on the next scan.
-	if store, storeErr := suppression.Load(containerPath); storeErr == nil {
-		orchestrator.ApplySuppressions(&rich, store)
+	// Decisions are applied here, before scoring and persistence, so the score,
+	// the gate verdict and the stored findings all describe the same set.
+	baselinedCount, err := applyScanDecisions(&rich, containerPath, req.UseBaseline)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	scannerCoverage := "core"
@@ -1864,7 +1880,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			_ = rows.Scan(&id, &name, &repoURL)
 			var crit, high, med, low int
 			_ = s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN severity='high' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN severity='medium' THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN severity='low' THEN 1 ELSE 0 END),0) FROM findings WHERE product_id=?`, id).Scan(&crit, &high, &med, &low)
-			systemCtx.WriteString(fmt.Sprintf("- **%s** (path: %s): %d critical, %d high, %d medium, %d low\n", name, repoURL, crit, high, med, low))
+			fmt.Fprintf(&systemCtx, "- **%s** (path: %s): %d critical, %d high, %d medium, %d low\n", name, repoURL, crit, high, med, low)
 		}
 		systemCtx.WriteString("\n")
 	}
@@ -1888,9 +1904,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if lineNum > 0 {
 				loc = fmt.Sprintf("%s:%d", filePath, lineNum)
 			}
-			systemCtx.WriteString(fmt.Sprintf("- [%s][%s] **%s** at `%s`\n", strings.ToUpper(severity), project, title, loc))
+			fmt.Fprintf(&systemCtx, "- [%s][%s] **%s** at `%s`\n", strings.ToUpper(severity), project, title, loc)
 			if desc != "" && len(desc) < 200 {
-				systemCtx.WriteString(fmt.Sprintf("  %s\n", desc))
+				fmt.Fprintf(&systemCtx, "  %s\n", desc)
 			}
 		}
 		systemCtx.WriteString("\n")
@@ -1900,7 +1916,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var totalFindings, openFindings int
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings`).Scan(&totalFindings)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings WHERE status NOT IN ('triage','false_positive','risk_accepted')`).Scan(&openFindings)
-	systemCtx.WriteString(fmt.Sprintf("## Stats: %d total findings, %d open/active.\n\n", totalFindings, openFindings))
+	fmt.Fprintf(&systemCtx, "## Stats: %d total findings, %d open/active.\n\n", totalFindings, openFindings)
 
 	// Response mode instructions
 	systemCtx.WriteString("## Response Modes\n")
@@ -2883,25 +2899,25 @@ Output exactly four short paragraphs with bold labels, no markdown headings:
 func buildAISummaryUserPrompt(e aiSummaryEvidence, lang string) string {
 	var sb strings.Builder
 	sb.WriteString("## Summary Evidence\n\n")
-	sb.WriteString(fmt.Sprintf("Requested language: %s\n", lang))
-	sb.WriteString(fmt.Sprintf("Product: %s\n", firstNonEmpty(e.ProductName, "unknown")))
+	fmt.Fprintf(&sb, "Requested language: %s\n", lang)
+	fmt.Fprintf(&sb, "Product: %s\n", firstNonEmpty(e.ProductName, "unknown"))
 	if e.RepoPath != "" {
-		sb.WriteString(fmt.Sprintf("Repo path: %s\n", e.RepoPath))
+		fmt.Fprintf(&sb, "Repo path: %s\n", e.RepoPath)
 	}
 	if e.ScanPath != "" {
-		sb.WriteString(fmt.Sprintf("Latest scan path: %s\n", e.ScanPath))
+		fmt.Fprintf(&sb, "Latest scan path: %s\n", e.ScanPath)
 	}
 	if e.TechStack != "" {
-		sb.WriteString(fmt.Sprintf("Recorded tech stack: %s\n", e.TechStack))
+		fmt.Fprintf(&sb, "Recorded tech stack: %s\n", e.TechStack)
 	}
 	if e.Platform != "" {
-		sb.WriteString(fmt.Sprintf("Platform: %s\n", e.Platform))
+		fmt.Fprintf(&sb, "Platform: %s\n", e.Platform)
 	}
 	if e.BusinessCriticality != "" {
-		sb.WriteString(fmt.Sprintf("Business criticality: %s\n", e.BusinessCriticality))
+		fmt.Fprintf(&sb, "Business criticality: %s\n", e.BusinessCriticality)
 	}
 	if e.Lifecycle != "" {
-		sb.WriteString(fmt.Sprintf("Lifecycle: %s\n", e.Lifecycle))
+		fmt.Fprintf(&sb, "Lifecycle: %s\n", e.Lifecycle)
 	}
 
 	sb.WriteString("\n## Project Filesystem Evidence\n")
@@ -2910,10 +2926,10 @@ func buildAISummaryUserPrompt(e aiSummaryEvidence, lang string) string {
 	}
 
 	sb.WriteString("\n## Finding Counts\n")
-	sb.WriteString(fmt.Sprintf("- Active findings: %d (critical=%d, high=%d, medium=%d, low=%d, other=%d)\n",
-		e.ActiveCounts.total(), e.ActiveCounts.Critical, e.ActiveCounts.High, e.ActiveCounts.Medium, e.ActiveCounts.Low, e.ActiveCounts.Other))
-	sb.WriteString(fmt.Sprintf("- Non-active/suppressed findings: %d (critical=%d, high=%d, medium=%d, low=%d, other=%d)\n",
-		e.SuppressedCounts.total(), e.SuppressedCounts.Critical, e.SuppressedCounts.High, e.SuppressedCounts.Medium, e.SuppressedCounts.Low, e.SuppressedCounts.Other))
+	fmt.Fprintf(&sb, "- Active findings: %d (critical=%d, high=%d, medium=%d, low=%d, other=%d)\n",
+		e.ActiveCounts.total(), e.ActiveCounts.Critical, e.ActiveCounts.High, e.ActiveCounts.Medium, e.ActiveCounts.Low, e.ActiveCounts.Other)
+	fmt.Fprintf(&sb, "- Non-active/suppressed findings: %d (critical=%d, high=%d, medium=%d, low=%d, other=%d)\n",
+		e.SuppressedCounts.total(), e.SuppressedCounts.Critical, e.SuppressedCounts.High, e.SuppressedCounts.Medium, e.SuppressedCounts.Low, e.SuppressedCounts.Other)
 
 	sb.WriteString("\n## Findings Evidence\n")
 	if len(e.Findings) == 0 {
@@ -2925,8 +2941,8 @@ func buildAISummaryUserPrompt(e aiSummaryEvidence, lang string) string {
 				active = "active"
 			}
 			loc := formatPromptLocation(firstNonEmpty(f.File, "project-level/no-file"), f.Line)
-			sb.WriteString(fmt.Sprintf("- [%s][%s][%s] %s at `%s`; status=%s; stack=%s",
-				active, strings.ToUpper(f.Severity), firstNonEmpty(f.RuleID, "no-rule-id"), f.Title, loc, firstNonEmpty(f.Status, "open"), firstNonEmpty(f.Stack, "unknown")))
+			fmt.Fprintf(&sb, "- [%s][%s][%s] %s at `%s`; status=%s; stack=%s",
+				active, strings.ToUpper(f.Severity), firstNonEmpty(f.RuleID, "no-rule-id"), f.Title, loc, firstNonEmpty(f.Status, "open"), firstNonEmpty(f.Stack, "unknown"))
 			if f.AITriageStatus != "" {
 				sb.WriteString("; ai_triage=" + f.AITriageStatus)
 			}
@@ -3395,11 +3411,11 @@ func (s *Server) handleRunwayExport(w http.ResponseWriter, r *http.Request) {
 	// report instead of flagging its embedded examples as new vulnerabilities.
 	md.WriteString(core.AITriageArtifactMarker + "\n")
 	md.WriteString("# 🛡️ AITriage Security Audit Report\n\n")
-	md.WriteString(fmt.Sprintf("**Project**: %s\n", product.Name))
-	md.WriteString(fmt.Sprintf("**Date**: %s\n", session.CreatedAt.Format("2006-01-02 15:04")))
-	md.WriteString(fmt.Sprintf("**Session ID**: %d\n", session.ID))
-	md.WriteString(fmt.Sprintf("**Status**: %s\n", session.Status))
-	md.WriteString(fmt.Sprintf("**Findings**: %d before → %d after\n\n", session.ScanCountBefore, session.ScanCountAfter))
+	fmt.Fprintf(&md, "**Project**: %s\n", product.Name)
+	fmt.Fprintf(&md, "**Date**: %s\n", session.CreatedAt.Format("2006-01-02 15:04"))
+	fmt.Fprintf(&md, "**Session ID**: %d\n", session.ID)
+	fmt.Fprintf(&md, "**Status**: %s\n", session.Status)
+	fmt.Fprintf(&md, "**Findings**: %d before → %d after\n\n", session.ScanCountBefore, session.ScanCountAfter)
 	md.WriteString("---\n\n")
 
 	if session.ThreatModel != nil && *session.ThreatModel != "" {

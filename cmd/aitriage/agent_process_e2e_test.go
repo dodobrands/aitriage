@@ -37,18 +37,22 @@ func TestE2E_DefaultAgentUsesFullContainerBundle(t *testing.T) {
 			} `json:"messages"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&request)
-		system := ""
+		system, user := "", ""
 		if len(request.Messages) > 0 {
 			system = request.Messages[0].Content
+		}
+		if len(request.Messages) > 1 {
+			user = request.Messages[1].Content
 		}
 		content := "No actionable findings."
 		switch {
 		case strings.Contains(system, "Threat Model & Finding Classification"):
 			content = `{"component_overview":"test fixture","priority_areas":[]}`
 		case strings.Contains(system, "Finding Classification"):
-			// Omissions are safely converted to Needs Manual Review after bounded
-			// retries; this E2E tests transport/runtime, not model quality.
-			content = `{"finding_dispositions":[]}`
+			// A reply that classifies nothing is an incomplete triage (exit 2), so
+			// echo every requested identity as Needs Manual Review. This E2E tests
+			// transport and runtime, not model quality.
+			content = echoNeedsReview(user)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -125,4 +129,29 @@ func TestE2E_DefaultAgentUsesFullContainerBundle(t *testing.T) {
 			t.Errorf("agent scanner %s = %q, want completed (all=%v)", scanner, statuses[scanner], statuses)
 		}
 	}
+}
+
+// echoNeedsReview answers a classification request with Needs Manual Review for
+// every finding it lists, echoing the identities the validator checks.
+func echoNeedsReview(user string) string {
+	start := strings.Index(user, "## Findings to classify")
+	if start < 0 {
+		return `{"finding_dispositions":[]}`
+	}
+	open := strings.Index(user[start:], "[")
+	if open < 0 {
+		return `{"finding_dispositions":[]}`
+	}
+	var items []struct {
+		FindingIndex int    `json:"finding_index"`
+		FindingID    string `json:"finding_id"`
+		Fingerprint  string `json:"fingerprint"`
+	}
+	_ = json.NewDecoder(strings.NewReader(user[start+open:])).Decode(&items)
+	entries := make([]string, 0, len(items))
+	for _, item := range items {
+		entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":"Needs Manual Review","confidence":"low","rationale":"fixture"}`,
+			item.FindingIndex, item.FindingID, item.Fingerprint))
+	}
+	return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`
 }

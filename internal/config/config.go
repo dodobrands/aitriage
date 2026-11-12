@@ -17,6 +17,22 @@ type Config struct {
 	StrictMode  bool                    `yaml:"strict_mode,omitempty"` // Legacy: fail on ANY finding
 	FailScore   int                     `yaml:"fail_score,omitempty"`  // Legacy: fail if Health Check score < this value
 	HealthCheck HealthCheckPolicyConfig `yaml:"health_check,omitempty"`
+	Scanners    ScannersConfig          `yaml:"scanners,omitempty"`
+}
+
+// ScannersConfig holds options for the bundled external scanners.
+type ScannersConfig struct {
+	Trivy TrivyScannerConfig `yaml:"trivy,omitempty"`
+}
+
+// TrivyScannerConfig is the subset of Trivy's own flags a project may set.
+type TrivyScannerConfig struct {
+	// IgnoreUnfixed reports only vulnerabilities that already have a fixed
+	// version (trivy fs --ignore-unfixed).
+	IgnoreUnfixed bool `yaml:"ignore_unfixed,omitempty"`
+	// Severity limits what Trivy reports, e.g. [CRITICAL, HIGH]
+	// (trivy --severity). It applies to dependency and IaC scans alike.
+	Severity []string `yaml:"severity,omitempty"`
 }
 
 type HealthCheckPolicyConfig struct {
@@ -28,7 +44,18 @@ type HealthCheckPolicyConfig struct {
 	MaxMedium    *int     `yaml:"max_medium,omitempty"`
 	BlockSources []string `yaml:"block_sources,omitempty"`
 	BlockClasses []string `yaml:"block_classes,omitempty"`
+	// ConfirmedMinSeverity (LOW | MEDIUM | HIGH | CRITICAL) limits
+	// fail_on: confirmed to confirmed findings at or above that severity.
+	ConfirmedMinSeverity string `yaml:"confirmed_min_severity,omitempty"`
+	// FPCriticalRequiresHighConfidence keeps a CRITICAL finding as Needs
+	// Manual Review unless the model dismisses it with high confidence.
+	FPCriticalRequiresHighConfidence *bool `yaml:"fp_critical_requires_high_confidence,omitempty"`
 }
+
+// DefaultLLMBatchSize is how many findings one classification request carries
+// when nothing else is configured. Larger batches made weaker models omit
+// items, and every omission became an unclassified Needs Review finding.
+const DefaultLLMBatchSize = 40
 
 type LLMConfig struct {
 	Provider        string `yaml:"provider"`
@@ -61,7 +88,7 @@ type IgnoreConfig struct {
 // LoadConfig looks for aitriage.yaml or .aitriage.yaml in the given root string.
 // After loading, it applies env var overrides for LLM config (env > yaml).
 func LoadConfig(rootPath string) *Config {
-	possibleFiles := []string{"aitriage.yaml", ".aitriage.yaml", "aitriage.yml", ".aitriage.yml"}
+	possibleFiles := configFileNames
 
 	var configData []byte
 	var err error
@@ -158,20 +185,26 @@ func applyEnvLLMConfig(llm *LLMConfig) {
 			llm.Timeout = n
 		}
 	}
-	// LLM Batch size. Default is 150.
+	// LLM batch size (findings per classification request).
 	if v := strings.TrimSpace(os.Getenv("AITRIAGE_BATCH_SIZE")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			llm.BatchSize = n
 		}
 	}
 	if llm.BatchSize <= 0 {
-		llm.BatchSize = 150
+		llm.BatchSize = DefaultLLMBatchSize
 	}
 }
 
+// IsRuleIgnored reports whether ignore.rules silences a rule of the built-in
+// engine. Ids compare case-insensitively; a qualified entry such as
+// "gitleaks:B105" applies to that scanner only, not to the built-in engine.
 func (c *Config) IsRuleIgnored(ruleID string) bool {
-	for _, id := range c.Ignore.Rules {
-		if id == ruleID {
+	if c == nil {
+		return false
+	}
+	for _, entry := range c.Ignore.Rules {
+		if ParseRuleRef(entry).Matches(ruleID, CoreRuleSources...) {
 			return true
 		}
 	}

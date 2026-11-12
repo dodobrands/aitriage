@@ -5,7 +5,61 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dodobrands/aitriage/internal/config"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
+	"gopkg.in/yaml.v3"
 )
+
+// The generated .aitriage.yaml must parse, describe ignore.paths in the
+// .gitignore syntax every scanner now applies, and not list directories that
+// are out of scope anyway: such entries kept them excluded even under
+// AITRIAGE_SCAN_VENDORED=true.
+func TestInitConfigTemplateMatchesIgnoreSemantics(t *testing.T) {
+	template := generateAitrageConfig([]detectedStack{{Name: "go", Confidence: 100}})
+
+	var cfg config.Config
+	if err := yaml.Unmarshal([]byte(template), &cfg); err != nil {
+		t.Fatalf("generated config is not valid YAML: %v\n%s", err, template)
+	}
+	if len(cfg.Ignore.Paths) != 0 || len(cfg.Ignore.Rules) != 0 {
+		t.Errorf("ignore.paths/rules = %q/%q, want both empty by default", cfg.Ignore.Paths, cfg.Ignore.Rules)
+	}
+	if cfg.HealthCheck.FailOn != "critical" || cfg.HealthCheck.Profile != "baseline" {
+		t.Errorf("health_check = %+v, want profile baseline and fail_on critical", cfg.HealthCheck)
+	}
+	for _, want := range []string{".gitignore syntax", "relative to the project root", "confirmed", "gitleaks:generic-api-key"} {
+		if !strings.Contains(template, want) {
+			t.Errorf("generated config does not mention %q:\n%s", want, template)
+		}
+	}
+}
+
+// The generated .aitriageignore must not take the project's own files out of
+// scope: a committed build/ directory is scanned, and Trivy reports dependency
+// CVEs against lockfiles, which a "*.lock" entry used to drop from every report.
+func TestInitIgnoreFileKeepsLockfilesAndBuildInScope(t *testing.T) {
+	t.Setenv("AITRIAGE_RESPECT_GITIGNORE", "")
+	t.Setenv("AITRIAGE_SCAN_VENDORED", "")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".aitriageignore"), []byte(generateIgnoreFile()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external.ResetScopeFilterCache()
+	t.Cleanup(external.ResetScopeFilterCache)
+	scope := external.NewScopeFilter(root)
+
+	for _, path := range []string{"yarn.lock", "poetry.lock", "services/api/Cargo.lock", "build/package/Dockerfile", "src/app.js"} {
+		if !scope.InScope(path) {
+			t.Errorf("%s is out of scope with the generated .aitriageignore; it must be scanned", path)
+		}
+	}
+	for _, path := range []string{"static/app.min.js", "static/app.js.map", "coverage/lcov.info"} {
+		if scope.InScope(path) {
+			t.Errorf("%s is in scope; the generated .aitriageignore should exclude it", path)
+		}
+	}
+}
 
 // TestInitWritesModernCursorRuleNotLegacy proves `aitriage init` generates a
 // modern Cursor project rule (.cursor/rules/aitriage.mdc) with rule frontmatter

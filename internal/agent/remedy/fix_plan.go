@@ -65,20 +65,20 @@ func GenerateFixPlan(results []core.CheckResult) FixPlan {
 func (p FixPlan) ToMarkdown() string {
 	var sb strings.Builder
 	sb.WriteString("# AITriage Security Fix Plan\n")
-	sb.WriteString(fmt.Sprintf("Generated: %s\n\n", p.GeneratedAt.Format("2006-01-02 15:04")))
-	sb.WriteString(fmt.Sprintf("**Total findings: %d**\n\n", p.TotalFindings))
+	fmt.Fprintf(&sb, "Generated: %s\n\n", p.GeneratedAt.Format("2006-01-02 15:04"))
+	fmt.Fprintf(&sb, "**Total findings: %d**\n\n", p.TotalFindings)
 
 	if len(p.CriticalActions) > 0 {
 		sb.WriteString("## 🔴 CRITICAL — Fix Immediately\n\n")
 		for _, item := range p.CriticalActions {
-			sb.WriteString(fmt.Sprintf("### %s\n", item.Name))
-			sb.WriteString(fmt.Sprintf("**File:** `%s` line %d\n\n", item.File, item.Line))
-			sb.WriteString(fmt.Sprintf("**Fix prompt for AI agent:**\n```\n%s\n```\n\n", item.FixPrompt))
+			fmt.Fprintf(&sb, "### %s\n", item.Name)
+			fmt.Fprintf(&sb, "**File:** `%s` line %d\n\n", item.File, item.Line)
+			fmt.Fprintf(&sb, "**Fix prompt for AI agent:**\n```\n%s\n```\n\n", item.FixPrompt)
 			if item.FixExample != "" {
-				sb.WriteString(fmt.Sprintf("**Example:**\n```\n%s\n```\n\n", item.FixExample))
+				fmt.Fprintf(&sb, "**Example:**\n```\n%s\n```\n\n", item.FixExample)
 			}
 			if len(item.References) > 0 {
-				sb.WriteString(fmt.Sprintf("**Reference:** %s\n\n", strings.Join(item.References, ", ")))
+				fmt.Fprintf(&sb, "**Reference:** %s\n\n", strings.Join(item.References, ", "))
 			}
 		}
 	}
@@ -86,7 +86,7 @@ func (p FixPlan) ToMarkdown() string {
 	if len(p.HighActions) > 0 {
 		sb.WriteString("## 🟠 HIGH\n\n")
 		for _, item := range p.HighActions {
-			sb.WriteString(fmt.Sprintf("- **%s** (`%s:%d`) — %s\n", item.Name, item.File, item.Line, item.FixPrompt))
+			fmt.Fprintf(&sb, "- **%s** (`%s:%d`) — %s\n", item.Name, item.File, item.Line, item.FixPrompt)
 		}
 		sb.WriteString("\n")
 	}
@@ -94,7 +94,7 @@ func (p FixPlan) ToMarkdown() string {
 	if len(p.MediumActions) > 0 {
 		sb.WriteString("## 🟡 MEDIUM\n\n")
 		for _, item := range p.MediumActions {
-			sb.WriteString(fmt.Sprintf("- **%s** (`%s:%d`) — %s\n", item.Name, item.File, item.Line, item.FixPrompt))
+			fmt.Fprintf(&sb, "- **%s** (`%s:%d`) — %s\n", item.Name, item.File, item.Line, item.FixPrompt)
 		}
 	}
 

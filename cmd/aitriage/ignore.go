@@ -115,12 +115,29 @@ func runIgnoreAdd(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "  Recorded in %s/%s\n", projectPath, suppression.File)
 
-	if ignoreEvid == "" {
-		// Without evidence the fingerprint is coarser, so a later, different
-		// finding under the same rule and file would also be hidden.
-		fmt.Fprintf(os.Stderr, "\n  Note: no --evidence given, so this dismissal covers any finding of %s in that file.\n", entry.RuleID)
+	if note := ignoreScopeNote(entry, ignoreEvid); note != "" {
+		fmt.Fprintf(os.Stderr, "\n  Note: %s\n", note)
 	}
 	return nil
+}
+
+// ignoreScopeNote says how far a dismissal reaches when it is broader, or
+// narrower, than the one finding the person probably has in mind.
+func ignoreScopeNote(entry suppression.Entry, evidence string) string {
+	switch {
+	case evidence == "" && entry.File == "":
+		// Without evidence the entry stands for the rule, and without a file
+		// for the rule everywhere, so a later, different finding is hidden too.
+		return fmt.Sprintf("no --file or --evidence given, so this dismissal covers every %s finding of %s anywhere in the project.", entry.Source, entry.RuleID)
+	case evidence == "":
+		return fmt.Sprintf("no --evidence given, so this dismissal covers every %s finding of %s in %s.", entry.Source, entry.RuleID, entry.File)
+	case entry.File == "":
+		// With evidence the match is exact, file included: an empty file only
+		// matches findings reported without one.
+		return fmt.Sprintf("no --file given, so this dismissal matches only %s findings of %s reported without a file.", entry.Source, entry.RuleID)
+	default:
+		return ""
+	}
 }
 
 func runIgnoreList(cmd *cobra.Command, args []string) error {

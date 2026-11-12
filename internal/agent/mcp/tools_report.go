@@ -10,6 +10,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 	"github.com/dodobrands/aitriage/internal/models"
 	"github.com/dodobrands/aitriage/internal/report/artifacts"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -111,8 +112,17 @@ func registerReportTool(srv *mcp.Server, guard *PathGuard) {
 
 // reportOutputPath resolves where the artifact is written, refusing anything
 // outside the project so a tool call cannot scatter files across the disk.
+//
+// By default the artifact goes to the scanned folder's aitriage-reports. In the
+// container runtime only the project root's aitriage-reports is writable; a
+// nested folder's own one sits on the read-only mount, so the default there is
+// the root reports directory. The artifact's name carries the folder it
+// describes.
 func reportOutputPath(projectPath, requested, defaultName string) (string, error) {
 	if strings.TrimSpace(requested) == "" {
+		if reports, ok := statefile.ReportsDir(projectPath); ok {
+			return filepath.Join(reports, defaultName), nil
+		}
 		return filepath.Join(projectPath, reportsDirName, defaultName), nil
 	}
 

@@ -18,6 +18,12 @@ import (
 // the same rule at DIFFERENT locations get DIFFERENT fingerprints and are NOT
 // merged — exploitability is location-sensitive (per ZeroFalse, findings are
 // adjudicated 1:1). Only byte-for-byte identical findings collapse.
+//
+// Because it includes the line number, the fingerprint identifies a finding
+// within one run (deduplication, the identity the model echoes, the artifact
+// cache). Across runs a finding is identified by its StableID (stableid.go),
+// and the verdict cache is keyed by verdictCacheKey, neither of which moves
+// when lines are inserted above the finding.
 
 // Fingerprint returns a stable 32-hex-char content hash for a finding.
 func Fingerprint(f EnrichedFinding) string {

@@ -1,0 +1,3 @@
+fastapi==0.95.0
+pillow==9.0.0
+jinja2==2.11.2

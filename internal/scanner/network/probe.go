@@ -64,65 +64,9 @@ var criticalPorts = map[int]bool{
 	21: true, 23: true, 25: true,
 }
 
-// TargetDiscovery searches for potential network targets in the project.
-func FindTargets(projectPath string) []string {
-	targets := make(map[string]bool)
-	targets["127.0.0.1"] = true // Always scan localhost
-
-	// Scan for common infra patterns in yaml, env, and config files
-	extensions := map[string]bool{
-		".yaml": true, ".yml": true, ".env": true, ".conf": true, ".json": true, ".go": true,
-	}
-
-	_ = filepath.WalkDir(projectPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if extensions[filepath.Ext(path)] {
-			content, err := os.ReadFile(path)
-			if err == nil {
-				// Search for IPs and localhost variants
-
-				lines := strings.Split(string(content), "\n")
-				for _, line := range lines {
-					if strings.Contains(line, "127.0.0.1") {
-						targets["127.0.0.1"] = true
-					}
-					// Very rough extraction for demo purposes
-					if strings.Contains(line, "http") || strings.Contains(line, "host") || strings.Contains(line, "addr") {
-						// Look for anything that looks like a hostname in quotes or after =
-						parts := strings.FieldsFunc(line, func(r rune) bool {
-							return r == '"' || r == '\'' || r == '=' || r == ':' || r == '/' || r == ' '
-						})
-						for _, p := range parts {
-							p = strings.TrimSpace(p)
-							if len(p) > 2 && (strings.Contains(p, ".") || p == "localhost" || p == "db") {
-								// Basic validation: must not be a file path or a common word
-								if !strings.Contains(p, "/") && !strings.HasPrefix(p, "0.") {
-									targets[p] = true
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return nil
-	})
-
-	var result []string
-	for t := range targets {
-		// Filter out noisy common words that might be caught
-		if t == "localhost" || t == "127.0.0.1" || strings.Contains(t, ".") {
-			result = append(result, t)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
+// lookupHost resolves a hostname. It is a variable so tests can stay off the
+// network.
+var lookupHost = net.LookupHost
 
 // ProbeHost scans a target host to identify exposed services.
 // If fullScan is true, scans all 65535 ports (slower, ~30-60s).
@@ -140,26 +84,22 @@ func ProbeHost(target string, fullScan bool) []NetworkFinding {
 	var findings []NetworkFinding
 	var mu sync.Mutex
 
-	// DNS resolution for hostnames
+	// DNS resolution for hostnames. A name that does not resolve was not
+	// probed: there is nothing to connect to, which says nothing about the
+	// host's exposure. Reporting it as a MEDIUM finding put a "port-53" entry
+	// into every CI run, where Compose service names never resolve.
 	if target != "127.0.0.1" && net.ParseIP(target) == nil {
-		ips, err := net.LookupHost(target)
-		if err == nil && len(ips) > 0 {
-			findings = append(findings, NetworkFinding{
-				Target:   target,
-				Port:     53,
-				Service:  "DNS",
-				Severity: "INFO",
-				Message:  fmt.Sprintf("Resolved %s → %v", target, ips),
-			})
-		} else if err != nil {
-			findings = append(findings, NetworkFinding{
-				Target:   target,
-				Port:     53,
-				Service:  "DNS",
-				Severity: "MEDIUM",
-				Message:  fmt.Sprintf("Failed to resolve %s: %v", target, err),
-			})
+		ips, err := lookupHost(target)
+		if err != nil || len(ips) == 0 {
+			return nil
 		}
+		findings = append(findings, NetworkFinding{
+			Target:   target,
+			Port:     53,
+			Service:  "DNS",
+			Severity: "INFO",
+			Message:  fmt.Sprintf("Resolved %s → %v", target, ips),
+		})
 	}
 
 	timeout := 500 * time.Millisecond

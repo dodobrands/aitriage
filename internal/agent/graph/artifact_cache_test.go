@@ -104,22 +104,30 @@ func TestArtifactCacheKeyInvalidatesOnDispositionAndPolicyChange(t *testing.T) {
 	}
 }
 
-func TestArtifactCacheKeyIgnoresGeneratedVulnIDs(t *testing.T) {
+// A cached report names display ids, which follow the flagged line's content
+// rather than the fingerprint; a bundle must not be restored under ids it does
+// not contain. The id echoed in a disposition is not part of the key.
+func TestArtifactCacheKeyFollowsDisplayIDs(t *testing.T) {
 	base := artifactCacheTestState("True Positive")
 	key1, miss := buildArtifactCacheKey(base)
 	if miss != "" {
 		t.Fatalf("base key miss = %q", miss)
 	}
 
+	echoed := artifactCacheTestState("True Positive")
+	echoed.FindingDispositions[0].FindingID = "CS-AUTH-1A2B3C"
+	if key, _ := buildArtifactCacheKey(echoed); key != key1 {
+		t.Fatal("artifact cache key must not depend on the id a disposition echoes")
+	}
+
 	renamed := artifactCacheTestState("True Positive")
-	renamed.EnrichedFindings[0].VulnID = "CS-AUTH-042"
-	renamed.FindingDispositions[0].FindingID = "CS-AUTH-042"
+	renamed.EnrichedFindings[0].VulnID = "CS-AUTH-1A2B3C"
 	key2, miss := buildArtifactCacheKey(renamed)
 	if miss != "" {
 		t.Fatalf("renamed key miss = %q", miss)
 	}
-	if key1 != key2 {
-		t.Fatal("artifact cache key must not depend on generated CS-* IDs")
+	if key1 == key2 {
+		t.Fatal("artifact cache key must change when a finding's display id changes")
 	}
 }
 
@@ -372,14 +380,18 @@ func TestRunArtifactCacheWarmThenExactHitSkipsSecondaryLLMStages(t *testing.T) {
 	if hitState.ReportMarkdown != warmState.ReportMarkdown || hitState.AIFixSpec != warmState.AIFixSpec {
 		t.Fatalf("hit artifacts not byte-identical to warm:\nreport hit=%q warm=%q", hitState.ReportMarkdown, warmState.ReportMarkdown)
 	}
-	if !strings.Contains(hitState.ReportMarkdown, "Canonical Finding Inventory") || !strings.Contains(hitState.ReportMarkdown, "CS-MISC-001") {
+	if !strings.Contains(hitState.ReportMarkdown, "Canonical Finding Inventory") || !strings.Contains(hitState.ReportMarkdown, hitState.EnrichedFindings[0].VulnID) {
 		t.Fatalf("restored report missing canonical section: %q", hitState.ReportMarkdown)
 	}
 }
 
 func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", dir)
+	// No verdict cache: with R1's verdict cached, the second run would ask
+	// about R2 alone, and a model that answers a request with nothing at all
+	// leaves the triage incomplete rather than producing a fallback.
+	t.Setenv("AITRIAGE_CACHE_DIR", "")
+	t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", "")
 	t.Setenv("AITRIAGE_ARTIFACT_CACHE_DIR", dir)
 	pinConcurrency(t)
 
@@ -388,9 +400,9 @@ func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 		t.Fatalf("write project file: %v", err)
 	}
 
-	// A classifier that never classifies the finding forces an NR fallback,
+	// A classifier that keeps leaving one finding out forces an NR fallback,
 	// which is not cacheable — so the bundle must not be stored (strict mode).
-	warmState := artifactRunState(project)
+	warmState := fallbackRunState(project)
 	if err := Run(context.Background(), warmState, newFallbackRunLLM(t)); err != nil {
 		t.Fatalf("warm Run() error = %v", err)
 	}
@@ -403,7 +415,7 @@ func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 
 	// A second run must NOT get an exact hit (nothing eligible was stored).
 	hitLLM := newFallbackRunLLM(t)
-	hitState := artifactRunState(project)
+	hitState := fallbackRunState(project)
 	if err := Run(context.Background(), hitState, hitLLM); err != nil {
 		t.Fatalf("second Run() error = %v", err)
 	}
@@ -482,9 +494,20 @@ func (m *artifactRunLLM) Chat(ctx context.Context, messages []llm.Message) (stri
 	}
 }
 
-// fallbackRunLLM behaves like artifactRunLLM but never classifies findings
-// (the classification call returns an empty disposition list), forcing every
-// finding into the uncacheable NR-fallback path.
+// fallbackRunState has two findings for fallbackRunLLM: R1, which it
+// classifies, and R2, which it always leaves out.
+func fallbackRunState(project string) *AgentState {
+	state := artifactRunState(project)
+	state.CoreFindings = append(state.CoreFindings, core.CheckResult{
+		ID: "R2", Name: "Other issue", Status: core.Absent, Evidence: "other unsafe behavior", Severity: "HIGH", File: "app.go", Line: 1,
+	})
+	return state
+}
+
+// fallbackRunLLM behaves like artifactRunLLM but classifies only R1. R2 is
+// left out of every answer, a genuine omission that ends as an uncacheable
+// NR fallback. (A model that classifies nothing at all leaves the triage
+// incomplete instead.)
 type fallbackRunLLM struct{ inner *artifactRunLLM }
 
 func newFallbackRunLLM(t *testing.T) *fallbackRunLLM {
@@ -494,7 +517,13 @@ func newFallbackRunLLM(t *testing.T) *fallbackRunLLM {
 func (m *fallbackRunLLM) Chat(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
 	if len(messages) > 0 && strings.Contains(messages[0].Content, "Current Task: Finding Classification") {
 		m.inner.calls["classification"]++
-		return `{"finding_dispositions":[]}`, llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
+		var kept []classificationPromptFinding
+		for _, item := range parsePromptBatchFromUser(messages[1].Content) {
+			if item.Finding.ID == "R1" {
+				kept = append(kept, item)
+			}
+		}
+		return classifyAll(kept, "True Positive"), llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
 	}
 	return m.inner.Chat(ctx, messages)
 }

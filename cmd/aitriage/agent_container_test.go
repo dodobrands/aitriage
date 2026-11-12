@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,20 @@ func TestAgentContainerCommandUsesNativeInnerProcessAndReportMount(t *testing.T)
 	}
 	if strings.Contains(joined, "--api-key") {
 		t.Fatalf("secret-bearing flag leaked into container argv: %s", joined)
+	}
+}
+
+// The agent container must know where the writable reports mount is, or it
+// ignores the dismissals the Web UI and IDE tools record there for a
+// read-only project.
+func TestAgentContainerEnvNamesTheReportsMount(t *testing.T) {
+	for _, want := range []string{
+		"AITRIAGE_RUNTIME=container",
+		"AITRIAGE_REPORTS_DIR=/workspace/aitriage-reports",
+	} {
+		if !slices.Contains(agentContainerEnv, want) {
+			t.Errorf("agent container env %v is missing %q", agentContainerEnv, want)
+		}
 	}
 }
 

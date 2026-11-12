@@ -20,6 +20,19 @@ const (
 	FailOnConfirmed = "confirmed"
 
 	unlimitedThreshold = -1
+
+	// ReasonTriageIncomplete is the blocking reason recorded when AI triage did
+	// not finish. It applies under every fail_on except never: a gate that could
+	// pass because the provider failed would turn an outage into an approval.
+	ReasonTriageIncomplete = "triage_incomplete"
+)
+
+// Severity floors accepted by confirmed_min_severity, weakest first.
+const (
+	SeverityLow      = "LOW"
+	SeverityMedium   = "MEDIUM"
+	SeverityHigh     = "HIGH"
+	SeverityCritical = "CRITICAL"
 )
 
 // Policy defines the security requirements used to decide whether a repository
@@ -33,6 +46,14 @@ type Policy struct {
 	MaxMedium    int      `json:"max_medium"`
 	BlockSources []string `json:"block_sources,omitempty"`
 	BlockClasses []string `json:"block_classes,omitempty"`
+	// ConfirmedMinSeverity narrows fail_on=confirmed to confirmed findings at
+	// or above this severity (LOW, the default, keeps every confirmed finding
+	// blocking). It has no effect under any other fail_on.
+	ConfirmedMinSeverity string `json:"confirmed_min_severity,omitempty"`
+	// FPCriticalRequiresHighConfidence accepts a model's False Positive for a
+	// CRITICAL finding only when the model reports high confidence; anything
+	// less is kept as Needs Manual Review. It changes verdicts, not the gate.
+	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 }
 
 // Verdict is the CI/CD-ready answer to "can this project pass its security policy?".
@@ -116,6 +137,16 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 	var reasons []BlockingReason
 	sevCounts := res.Breakdown.CountBySeverity
 
+	if res.Breakdown.TriageFailedFindings > 0 {
+		reasons = append(reasons, BlockingReason{
+			Code: ReasonTriageIncomplete,
+			Message: fmt.Sprintf("AI triage did not complete: %d finding(s) have no verdict because the LLM provider failed or returned no usable verdicts. The gate cannot pass on an incomplete triage; re-run once the provider works",
+				res.Breakdown.TriageFailedFindings),
+			Count:     res.Breakdown.TriageFailedFindings,
+			Threshold: 0,
+		})
+	}
+
 	if policy.FailOn == FailOnAny && res.Breakdown.ActiveFindings > 0 {
 		reasons = append(reasons, BlockingReason{
 			Code:      "active_findings",
@@ -125,14 +156,16 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		})
 	}
 
-	if policy.FailOn == FailOnConfirmed && res.Breakdown.ConfirmedFindings > 0 {
-		reasons = append(reasons, BlockingReason{
-			Code: "confirmed_findings",
-			Message: fmt.Sprintf("%d confirmed finding(s) are not allowed by this policy (%d unreviewed finding(s) reported but not blocking)",
-				res.Breakdown.ConfirmedFindings, res.Breakdown.NeedsReviewFindings),
-			Count:     res.Breakdown.ConfirmedFindings,
-			Threshold: 0,
-		})
+	if policy.FailOn == FailOnConfirmed {
+		if blocking := confirmedAtOrAbove(res.Breakdown, policy.ConfirmedMinSeverity); blocking > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "confirmed_findings",
+				Message:   confirmedFindingsMessage(res.Breakdown, policy.ConfirmedMinSeverity, blocking),
+				Severity:  confirmedSeverityLabel(policy.ConfirmedMinSeverity),
+				Count:     blocking,
+				Threshold: 0,
+			})
+		}
 	}
 
 	criticalHigh := sevCounts["CRITICAL"] + sevCounts["HIGH"]
@@ -180,7 +213,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		if key == "" {
 			continue
 		}
-		if count := res.Breakdown.CountByClass[key]; count > 0 {
+		if count := blockedClassCount(res.Breakdown, key); count > 0 {
 			reasons = append(reasons, BlockingReason{
 				Code:      "blocked_class",
 				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
@@ -205,6 +238,22 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		Summary:         fmt.Sprintf("Security policy %q failed with %d blocking reason(s)", policy.Profile, len(reasons)),
 		BlockingReasons: reasons,
 	}
+}
+
+// blockedClassCount counts the active findings a block_classes entry names. An
+// entry may be a canonical class ("hardcoded_secret", or "hardcoded-secret" as
+// the configuration examples spell it) or a rule id, which is what classes
+// were before findings of several detectors were merged: a policy written
+// then must keep blocking the findings it blocked.
+func blockedClassCount(bd Breakdown, key string) int {
+	count := bd.CountByClass[key]
+	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
+		count = bd.CountByClass[c.Key]
+	}
+	if n := bd.CountByRule[key]; n > count {
+		count = n
+	}
+	return count
 }
 
 func appendThresholdReason(reasons []BlockingReason, code, severity string, count, threshold int) []BlockingReason {
@@ -238,7 +287,99 @@ func normalizePolicy(policy Policy) Policy {
 	}
 	policy.BlockSources = normalizeList(policy.BlockSources)
 	policy.BlockClasses = normalizeList(policy.BlockClasses)
+	policy.ConfirmedMinSeverity = NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity)
 	return policy
+}
+
+// NormalizeConfirmedMinSeverity returns the canonical severity floor. Empty
+// and unrecognised values become LOW: the floor can only ever relax the gate,
+// so a typo must fall back to the strictest reading rather than the loosest.
+func NormalizeConfirmedMinSeverity(value string) string {
+	if severity, ok := ParseConfirmedMinSeverity(value); ok {
+		return severity
+	}
+	return SeverityLow
+}
+
+// ParseConfirmedMinSeverity reports whether value names a supported floor.
+func ParseConfirmedMinSeverity(value string) (string, bool) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case SeverityLow:
+		return SeverityLow, true
+	case SeverityMedium:
+		return SeverityMedium, true
+	case SeverityHigh:
+		return SeverityHigh, true
+	case SeverityCritical:
+		return SeverityCritical, true
+	default:
+		return "", false
+	}
+}
+
+// severityFloorRank orders severities for the floor; higher is more severe.
+func severityFloorRank(severity string) int {
+	switch strings.ToUpper(strings.TrimSpace(severity)) {
+	case SeverityCritical:
+		return 4
+	case SeverityHigh:
+		return 3
+	case SeverityMedium:
+		return 2
+	case SeverityLow:
+		return 1
+	case "INFO":
+		return 0
+	default:
+		// A severity nobody can rank cannot be shown to sit below the floor,
+		// so it is treated as the most severe one.
+		return 4
+	}
+}
+
+// confirmedAtOrAbove counts the confirmed findings that block under the
+// floor. LOW keeps the historical behaviour: every confirmed finding counts,
+// whatever its severity label.
+func confirmedAtOrAbove(bd Breakdown, floor string) int {
+	floor = NormalizeConfirmedMinSeverity(floor)
+	if floor == SeverityLow {
+		return bd.ConfirmedFindings
+	}
+	minRank := severityFloorRank(floor)
+	count := 0
+	for severity, n := range bd.ConfirmedBySeverity {
+		if severityFloorRank(severity) >= minRank {
+			count += n
+		}
+	}
+	return count
+}
+
+func confirmedSeverityLabel(floor string) string {
+	if floor = NormalizeConfirmedMinSeverity(floor); floor == SeverityLow {
+		return ""
+	}
+	return floor
+}
+
+func confirmedFindingsMessage(bd Breakdown, floor string, blocking int) string {
+	reviewNote := unreviewedNote(bd)
+	if floor = NormalizeConfirmedMinSeverity(floor); floor == SeverityLow {
+		return fmt.Sprintf("%d confirmed finding(s) are not allowed by this policy (%s reported but not blocking)",
+			blocking, reviewNote)
+	}
+	return fmt.Sprintf("%d confirmed finding(s) at or above %s are not allowed by this policy (%d confirmed below %s and %s reported but not blocking)",
+		blocking, floor, bd.ConfirmedFindings-blocking, floor, reviewNote)
+}
+
+// unreviewedNote names the unreviewed findings and, separately, the ones the
+// model never classified, so a reader can tell "unsure" from "never seen".
+func unreviewedNote(bd Breakdown) string {
+	if bd.UnclassifiedFindings > 0 {
+		return fmt.Sprintf("%d unreviewed finding(s), %d of them never classified by the model,",
+			bd.NeedsReviewFindings, bd.UnclassifiedFindings)
+	}
+	return fmt.Sprintf("%d unreviewed finding(s)", bd.NeedsReviewFindings)
 }
 
 func normalizeProfile(profile string) string {
@@ -289,12 +430,21 @@ func normalizeKey(s string) string {
 func activeFindingsMessage(bd Breakdown) string {
 	switch {
 	case bd.ConfirmedFindings == 0 && bd.NeedsReviewFindings > 0:
-		return fmt.Sprintf("%d finding(s) have not been reviewed yet. None are confirmed exploitable, but this policy requires every finding to be triaged (confirmed, or dismissed as a false positive / accepted risk) before the gate can pass",
-			bd.NeedsReviewFindings)
+		return fmt.Sprintf("%d finding(s) have not been reviewed yet%s. None are confirmed exploitable, but this policy requires every finding to be triaged (confirmed, or dismissed as a false positive / accepted risk) before the gate can pass",
+			bd.NeedsReviewFindings, unclassifiedClause(bd))
 	case bd.NeedsReviewFindings > 0:
-		return fmt.Sprintf("%d confirmed and %d unreviewed finding(s) are open; this policy allows neither",
-			bd.ConfirmedFindings, bd.NeedsReviewFindings)
+		return fmt.Sprintf("%d confirmed and %d unreviewed finding(s) are open%s; this policy allows neither",
+			bd.ConfirmedFindings, bd.NeedsReviewFindings, unclassifiedClause(bd))
 	default:
 		return fmt.Sprintf("%d confirmed finding(s) are open; this policy allows none", bd.ConfirmedFindings)
 	}
+}
+
+// unclassifiedClause calls out unreviewed findings that have no model verdict
+// at all: re-running triage may resolve them, reviewing them by hand will.
+func unclassifiedClause(bd Breakdown) string {
+	if bd.UnclassifiedFindings == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d of them were never classified by the model)", bd.UnclassifiedFindings)
 }

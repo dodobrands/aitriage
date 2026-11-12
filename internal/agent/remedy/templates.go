@@ -17,11 +17,6 @@ var fixTemplates = map[string]FixTemplate{
 		Example:    "// Before:\nconst apiKey = \"sk-abc123...\"\n\n// After:\nconst apiKey = os.Getenv(\"API_KEY\")\nif apiKey == \"\" {\n    log.Fatal(\"API_KEY env variable is required\")\n}",
 		References: []string{"https://12factor.net/config", "https://owasp.org/www-project-top-ten/2021/A02_2021-Cryptographic_Failures"},
 	},
-	"ENTR-FRAGILE": {
-		Prompt:     "Add error handling to %s (line %d area). The file has many lines but missing error handling patterns. Wrap risky operations in error checks.",
-		Example:    "// Before:\nresult := riskyOperation()\n\n// After:\nresult, err := riskyOperation()\nif err != nil {\n    return fmt.Errorf(\"operation failed: %w\", err)\n}",
-		References: []string{"https://go.dev/blog/error-handling-and-go"},
-	},
 	"ENTR-04": {
 		Prompt:     "Remove AI assistant chat residue from %s (line %d). Comments like \"As an AI\" or \"I cannot\" should not appear in production code. Clean up all such comments.",
 		Example:    "// Remove comments like:\n// 'As an AI language model, I cannot...'\n// 'I apologize, but as an AI...'\n// These are artifacts from AI code generation sessions.",

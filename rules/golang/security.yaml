@@ -113,7 +113,9 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?m)^\s*_\s*=\s*\w+\.\w+\('
-    suggestion: "HIGH: Error return value discarded. Unhandled errors can mask security-critical failures (auth, crypto, I/O)."
+    # LOW, as gosec rates unchecked errors (G104) and for parity with
+    # FAST-LAZY-EXC: a discarded error is a reliability defect (CWE-703).
+    suggestion: "LOW: Error return value discarded. Unhandled errors can mask security-critical failures (auth, crypto, I/O)."
 
   - id: GO-WEAK-TLS
     name: "Weak TLS Version"

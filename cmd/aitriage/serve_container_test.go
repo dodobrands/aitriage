@@ -25,6 +25,8 @@ func TestContainerServeArgs(t *testing.T) {
 		filepath.Join(hostRoot, "aitriage-reports") + ":/workspace/aitriage-reports:rw",
 		cache + ":/home/aitriage/.cache:rw",
 		"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
+		// The baseline and dismissal tools write there: the project is read-only.
+		"AITRIAGE_REPORTS_DIR=/workspace/aitriage-reports",
 		"ghcr.io/dodobrands/aitriage:v1.7.0 serve --runtime native --profile safe --scan-root /workspace",
 	} {
 		if !strings.Contains(joined, want) {

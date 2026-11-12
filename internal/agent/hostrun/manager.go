@@ -222,10 +222,11 @@ func (m *Manager) create(ctx context.Context, opts StartOptions, parentRunID str
 		return nil, err
 	}
 
-	// Deterministic evidence: persist the same aitriage.sarif that CI Job 1
-	// produces (`aitriage scan --format sarif`), from the raw scan report. This
-	// is separate from AI triage and is written once at scan time.
-	if sarif, serr := rich.Report.ToSARIF(); serr == nil {
+	// Deterministic evidence: persist the same aitriage.sarif that
+	// `aitriage agent --sarif-out` writes, from the raw scan report without
+	// the findings project decisions dismissed. This is separate from AI
+	// triage and is written once at scan time.
+	if sarif, serr := pipeline.SARIF(pipeOpts, rich); serr == nil {
 		_ = run.WriteArtifact("aitriage.sarif", sarif)
 	}
 	return run, nil

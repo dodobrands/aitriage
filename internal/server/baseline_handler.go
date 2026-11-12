@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 )
 
 // A baseline accepts today's findings as the starting line so the gate judges
@@ -21,6 +21,15 @@ import (
 // the AI IDE tools expose the same capability against the same
 // `.aitriage-baseline.json` file, so a baseline created in one surface is
 // honoured by the others.
+//
+// The container runtime is the exception. It mounts the project read-only at
+// /workspace and only <project>/aitriage-reports read-write
+// (internal/runtime.DockerRunArgs), so writing the project file there can only
+// fail. The baseline the Web UI writes then goes to a local copy under the
+// reports directory, at a path that mirrors the scanned folder. The project's
+// own file — committed with the repository or written by `aitriage baseline`
+// — keeps applying alongside it: a finding accepted in either is accepted
+// (baseline.LoadAt). The IDE tools in the container use the same location.
 
 type baselineStatusResponse struct {
 	OK         bool           `json:"ok"`
@@ -30,6 +39,33 @@ type baselineStatusResponse struct {
 	BySeverity map[string]int `json:"by_severity,omitempty"`
 	CreatedAt  string         `json:"created_at,omitempty"`
 	UpdatedAt  string         `json:"updated_at,omitempty"`
+	// ReadOnly reports that the baseline in effect is only the project's own
+	// file, which this server cannot change or remove. Updating writes a local
+	// copy that applies on top of it; the file itself is changed from a
+	// terminal.
+	ReadOnly bool `json:"read_only,omitempty"`
+	// Note explains a local copy in effect: its findings are accepted in
+	// addition to the project's, and only reach CI once committed.
+	Note string `json:"note,omitempty"`
+}
+
+// describeBaseline reports b, the baseline that applies at loc.
+func describeBaseline(b *baseline.Baseline, loc statefile.Location) baselineStatusResponse {
+	stats := b.Stats()
+	resp := baselineStatusResponse{
+		OK:         true,
+		Exists:     true,
+		Path:       loc.CurrentFile(),
+		Total:      stats.Total,
+		BySeverity: stats.BySeverity,
+		CreatedAt:  b.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:  b.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		ReadOnly:   loc.Redirected() && !loc.HasCopy(),
+	}
+	if loc.HasCopy() {
+		resp.Note = statefile.LocalOverrideNote
+	}
+	return resp
 }
 
 // handleBaseline serves the baseline lifecycle: inspect, create/update, clear.
@@ -53,23 +89,16 @@ func (s *Server) baselineStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := baseline.Load(projectPath)
+	loc := baseline.Locate(projectPath)
+	existing, err := baseline.LoadAt(loc)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to read baseline: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	resp := baselineStatusResponse{
-		OK:   true,
-		Path: filepath.Join(projectPath, baseline.BaselineFile),
-	}
+	resp := baselineStatusResponse{OK: true, Path: loc.WriteFile()}
 	if existing != nil {
-		stats := existing.Stats()
-		resp.Exists = true
-		resp.Total = stats.Total
-		resp.BySeverity = stats.BySeverity
-		resp.CreatedAt = existing.CreatedAt.Format("2006-01-02T15:04:05Z")
-		resp.UpdatedAt = existing.UpdatedAt.Format("2006-01-02T15:04:05Z")
+		resp = describeBaseline(existing, loc)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -91,6 +120,7 @@ func (s *Server) baselineWrite(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusForbidden)
 		return
 	}
+	loc := baseline.Locate(projectPath)
 
 	// Run every scanner that is available, so the baseline covers what the
 	// project actually reports rather than only the built-in engine's share.
@@ -100,30 +130,28 @@ func (s *Server) baselineWrite(w http.ResponseWriter, r *http.Request) {
 	})
 
 	created := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
-	if existing, loadErr := baseline.Load(projectPath); loadErr == nil && existing != nil {
+	if existing, loadErr := baseline.LoadAt(loc); loadErr == nil && existing != nil {
 		// Preserve the original creation date so the record shows how long the
 		// project has been operating against a baseline.
 		created.CreatedAt = existing.CreatedAt
 	}
 
-	if err := baseline.Save(projectPath, created); err != nil {
-		jsonError(w, fmt.Sprintf("failed to write baseline: %v", err), http.StatusInternalServerError)
+	if err := baseline.SaveAt(loc, created); err != nil {
+		// The error already says the baseline could not be written.
+		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("Baseline written", "path", projectPath, "findings", len(created.Findings))
+	slog.Info("Baseline written", "path", loc.WriteFile(), "findings", len(created.Findings))
 
-	stats := created.Stats()
+	// In the container the project's own baseline keeps applying next to the
+	// copy just written, so report what applies now.
+	applied := created
+	if merged, loadErr := baseline.LoadAt(loc); loadErr == nil && merged != nil {
+		applied = merged
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(baselineStatusResponse{
-		OK:         true,
-		Exists:     true,
-		Path:       filepath.Join(projectPath, baseline.BaselineFile),
-		Total:      stats.Total,
-		BySeverity: stats.BySeverity,
-		CreatedAt:  created.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:  created.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-	})
+	_ = json.NewEncoder(w).Encode(describeBaseline(applied, loc))
 }
 
 func (s *Server) baselineClear(w http.ResponseWriter, r *http.Request) {
@@ -133,15 +161,25 @@ func (s *Server) baselineClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := filepath.Join(projectPath, baseline.BaselineFile)
+	loc := baseline.Locate(projectPath)
+	target := loc.WriteFile()
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		jsonError(w, fmt.Sprintf("failed to remove baseline: %v", err), http.StatusInternalServerError)
 		return
 	}
+	slog.Info("Baseline cleared", "path", target)
 
-	slog.Info("Baseline cleared", "path", projectPath)
+	resp := baselineStatusResponse{OK: true, Exists: false, Path: target}
+	// A read-only project's own baseline cannot be removed from here and keeps
+	// applying. Report it rather than claim that no baseline is left.
+	if loc.Redirected() {
+		if remaining, loadErr := baseline.LoadAt(loc); loadErr == nil && remaining != nil {
+			resp = describeBaseline(remaining, loc)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(baselineStatusResponse{OK: true, Exists: false, Path: target})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func requestedPathOrDefault(path string) string {

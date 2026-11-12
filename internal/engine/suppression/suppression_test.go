@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
+	"github.com/dodobrands/aitriage/internal/engine/core"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
+	"github.com/dodobrands/aitriage/internal/scanner/nfr"
 )
 
 // Dismissing a finding used to mean three different things: the Web UI wrote to
@@ -229,5 +232,155 @@ func TestOlderDismissalStillMatchesAfterCheckoutMoves(t *testing.T) {
 	current.Evidence = "pkg 2.0"
 	if _, ok := reloaded.SuppressesInProject(newRoot, current); ok {
 		t.Error("dismissal hid changed evidence")
+	}
+}
+
+// recordLikeTheCLI adds a dismissal the way `aitriage ignore add` builds it:
+// the file relative to the project, the line not part of the identity, and
+// the evidence only when --evidence was given.
+func recordLikeTheCLI(t *testing.T, store *Store, project, source, ruleID, file, evidence, reason, note string) Entry {
+	t.Helper()
+	entry, _, err := store.Add(baseline.Item{
+		Source:   source,
+		RuleID:   ruleID,
+		File:     baseline.RelativePath(project, file),
+		Evidence: evidence,
+	}, reason, note, "reviewer")
+	if err != nil {
+		t.Fatalf("add %s: %v", ruleID, err)
+	}
+	return entry
+}
+
+// scannedCore and scannedExternal map findings the way
+// orchestrator.ApplySuppressions does before asking the store.
+func scannedCore(root string, r core.CheckResult) baseline.Item {
+	return baseline.Relativize(root, baseline.FromCore([]core.CheckResult{r}))[0]
+}
+
+func scannedExternal(root string, f external.UnifiedFinding) baseline.Item {
+	return baseline.Relativize(root, baseline.FromExternal([]external.UnifiedFinding{f}))[0]
+}
+
+// `aitriage ignore add RULE --file F` without --evidence says it covers any
+// finding of RULE in F. A scanned finding always carries its evidence, so an
+// entry matched only by its exact fingerprint covered nothing at all.
+func TestDismissalWithoutEvidenceCoversTheRuleInItsFile(t *testing.T) {
+	project := t.TempDir()
+	store := New()
+	recordLikeTheCLI(t, store, project, "core", "SECRET-ASSIGN", "core/fns.py", "", "false-positive", "")
+
+	finding := core.CheckResult{ID: "SECRET-ASSIGN", Status: core.Absent, Severity: "CRITICAL",
+		File: filepath.Join(project, "core", "fns.py"), Line: 3, Evidence: "CLIENT_SECRET = '...'"}
+	if _, ok := store.SuppressesInProject(project, scannedCore(project, finding)); !ok {
+		t.Fatal("a dismissal recorded without evidence did not cover the finding it names")
+	}
+
+	elsewhereInFile := finding
+	elsewhereInFile.Line, elsewhereInFile.Evidence = 40, "API_SECRET = '...'"
+	if _, ok := store.SuppressesInProject(project, scannedCore(project, elsewhereInFile)); !ok {
+		t.Error("the dismissal did not cover another finding of the rule in the same file")
+	}
+
+	otherFile := finding
+	otherFile.File = filepath.Join(project, "core", "settings.py")
+	if _, ok := store.SuppressesInProject(project, scannedCore(project, otherFile)); ok {
+		t.Error("a dismissal scoped to one file hid the rule in another file")
+	}
+
+	otherRule := finding
+	otherRule.ID = "PY-EVAL"
+	if _, ok := store.SuppressesInProject(project, scannedCore(project, otherRule)); ok {
+		t.Error("a dismissal for one rule hid a different rule")
+	}
+
+	otherScanner := external.UnifiedFinding{Source: "semgrep", RuleID: "SECRET-ASSIGN", File: finding.File, Message: "secret"}
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, otherScanner)); ok {
+		t.Error("a dismissal for the built-in engine hid another scanner's finding")
+	}
+}
+
+// Without --file as well, the help example `ignore add CVE-2026-1 --source
+// trivy --reason accepted-risk` means the CVE wherever it is reported.
+func TestDismissalWithoutFileOrEvidenceCoversTheRuleEverywhere(t *testing.T) {
+	project := t.TempDir()
+	store := New()
+	recordLikeTheCLI(t, store, project, "trivy", "CVE-2026-1", "", "", "accepted-risk", "mitigated at the gateway")
+
+	for _, file := range []string{"requirements.txt", filepath.Join(project, "services", "api", "requirements.txt")} {
+		cve := external.UnifiedFinding{Source: "trivy", RuleID: "CVE-2026-1", Severity: "HIGH", File: file, Message: "pillow: arbitrary code execution"}
+		entry, ok := store.SuppressesInProject(project, scannedExternal(project, cve))
+		if !ok {
+			t.Fatalf("a project-wide dismissal did not cover the CVE in %s", file)
+		}
+		if entry.Reason != ReasonAcceptedRisk || entry.Note != "mitigated at the gateway" {
+			t.Errorf("matched entry = %+v, want the recorded decision", entry)
+		}
+	}
+
+	otherCVE := external.UnifiedFinding{Source: "trivy", RuleID: "CVE-2026-2", File: "requirements.txt", Message: "pillow"}
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, otherCVE)); ok {
+		t.Error("a dismissal for one CVE hid another")
+	}
+	sameIDOtherScanner := external.UnifiedFinding{Source: "semgrep", RuleID: "CVE-2026-1", File: "requirements.txt", Message: "pillow"}
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, sameIDOtherScanner)); ok {
+		t.Error("a dismissal for one scanner hid another scanner's finding with the same id")
+	}
+}
+
+// A dismissal that names the matched text, as the Web UI records it, still
+// covers exactly that finding and nothing broader.
+func TestDismissalWithEvidenceStaysExact(t *testing.T) {
+	project := t.TempDir()
+	store := New()
+	if _, _, err := store.Add(baseline.Item{Source: "semgrep", RuleID: "sqli", File: "a.php", Line: 4, Evidence: "$_GET['id']"}, "false-positive", "", "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	same := external.UnifiedFinding{Source: "semgrep", RuleID: "sqli", File: filepath.Join(project, "a.php"), Line: 9, Message: "$_GET['id']"}
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, same)); !ok {
+		t.Fatal("an exact dismissal stopped matching its own finding")
+	}
+	changed := same
+	changed.Message = "$_POST['name']"
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, changed)); ok {
+		t.Error("an exact dismissal hid a different finding of the same rule in the same file")
+	}
+
+	// With evidence but no file the match stays exact, file included: it
+	// covers findings reported without a file, such as an NFR check.
+	recordLikeTheCLI(t, store, project, "nfr", "NFR-API-001", "", "No rate limiting", "wont-fix", "")
+	nfrFinding := baseline.Relativize(project, baseline.FromNFR([]nfr.NFRFinding{{RuleID: "NFR-API-001", Message: "No rate limiting"}}))[0]
+	if _, ok := store.SuppressesInProject(project, nfrFinding); !ok {
+		t.Error("an exact project-level dismissal did not cover its finding")
+	}
+	recordLikeTheCLI(t, store, project, "trivy", "CVE-2026-3", "", "pillow 9.0", "false-positive", "")
+	inAFile := external.UnifiedFinding{Source: "trivy", RuleID: "CVE-2026-3", File: "requirements.txt", Message: "pillow 9.0"}
+	if _, ok := store.SuppressesInProject(project, scannedExternal(project, inAFile)); ok {
+		t.Error("a dismissal recorded with evidence but no file widened to findings in a file")
+	}
+}
+
+// Entries written before paths were made relative stored absolute paths. One
+// recorded without evidence keeps covering its file in the original checkout
+// and after the checkout moves.
+func TestOlderDismissalWithoutEvidenceStillMatches(t *testing.T) {
+	oldRoot := t.TempDir()
+	newRoot := t.TempDir()
+	store := New()
+	if _, _, err := store.Add(baseline.Item{Source: "core", RuleID: "SECRET-ASSIGN", File: filepath.Join(oldRoot, "core", "fns.py")}, "false-positive", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	current := baseline.Item{Source: "core", RuleID: "SECRET-ASSIGN", File: "core/fns.py", Evidence: "CLIENT_SECRET = '...'"}
+	if _, ok := store.SuppressesInProject(oldRoot, current); !ok {
+		t.Error("an older dismissal without evidence stopped matching in its original checkout")
+	}
+	if _, ok := store.SuppressesInProject(newRoot, current); !ok {
+		t.Error("an older dismissal without evidence stopped matching after the checkout moved")
+	}
+	current.File = "core/settings.py"
+	if _, ok := store.SuppressesInProject(newRoot, current); ok {
+		t.Error("an older dismissal for one file hid the rule in another file")
 	}
 }

@@ -1,0 +1,50 @@
+package graph
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+// unclassifiedSummary renders the summary for findings whose dispositions
+// carry the given sources.
+func unclassifiedSummary(t *testing.T, sources ...string) string {
+	t.Helper()
+	t.Setenv("AITRIAGE_CLASSIFY_RETRIES", "")
+	state := &AgentState{}
+	for i, source := range sources {
+		f := EnrichedFinding{ID: "R", VulnID: fmt.Sprintf("CS-MISC-%06d", i), Type: "core", Severity: "HIGH", File: "app.py", Line: i + 1, Message: "issue"}
+		state.EnrichedFindings = append(state.EnrichedFindings, f)
+		state.FindingDispositions = append(state.FindingDispositions, FindingDisposition{
+			FindingIndex: i, FindingID: f.VulnID, Disposition: "Needs Manual Review", Rationale: "r", DispositionSource: source,
+		})
+	}
+	computeHealthCheck(state)
+	if err := generateSummary(state); err != nil {
+		t.Fatal(err)
+	}
+	return state.SummaryMarkdown
+}
+
+// When every unclassified finding was lost to a provider failure, retries
+// and batch size are not the remedy: the summary says to repeat the run.
+func TestNeedsReviewHintForProviderFailureDoesNotSuggestTuning(t *testing.T) {
+	summary := unclassifiedSummary(t, dispositionSourceTriageFailed, dispositionSourceTriageFailed)
+	want := "**Needs Review**: 2 (2 not triaged: the LLM provider failed — repeat the run once the provider is available)"
+	if !strings.Contains(summary, want) {
+		t.Fatalf("summary lacks %q:\n%s", want, summary)
+	}
+	if strings.Contains(summary, "AITRIAGE_CLASSIFY_RETRIES") || strings.Contains(summary, "AITRIAGE_BATCH_SIZE") {
+		t.Fatalf("summary suggests retry tuning for a provider failure:\n%s", summary)
+	}
+}
+
+// Findings the model skipped get the tuning hint, counted apart from the
+// ones the provider failure left untriaged.
+func TestNeedsReviewHintSeparatesModelOmissionsFromProviderFailures(t *testing.T) {
+	summary := unclassifiedSummary(t, dispositionSourceNRFallback, dispositionSourceTriageFailed, dispositionSourceLLM)
+	want := "**Needs Review**: 3 (1 unclassified: no model verdict — retries=2, batch=40; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`; 1 not triaged: the LLM provider failed — repeat the run once the provider is available)"
+	if !strings.Contains(summary, want) {
+		t.Fatalf("summary lacks %q:\n%s", want, summary)
+	}
+}

@@ -62,14 +62,19 @@ func runManagedContainer(parent context.Context, args []string, name string) err
 		if name != "" {
 			_ = exec.CommandContext(cleanupCtx, docker, "stop", "--time", "10", name).Run()
 		}
+		// The container was stopped on purpose, so the docker client's exit
+		// status after the signal says nothing about the audit; it is only
+		// reaped here so no process is left behind.
 		select {
-		case <-done:
+		case waitErr := <-done:
+			_ = waitErr
 		case <-cleanupCtx.Done():
 			if name != "" {
 				_ = exec.Command(docker, "rm", "-f", name).Run()
 			}
 			_ = cmd.Process.Kill()
-			<-done
+			waitErr := <-done
+			_ = waitErr
 		}
 		if parent.Err() != nil {
 			return parent.Err()

@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	gitignore "github.com/sabhiram/go-gitignore"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -42,6 +41,9 @@ type ScanReport struct {
 	RulesApplied        int                  `json:"rules_applied"`
 	ScanDuration        time.Duration        `json:"scan_duration_ms"`
 	Config              *config.Config       `json:"-"` // not serialized; used by CLI
+	// IgnoredByConfig counts built-in engine findings removed by ignore.rules,
+	// keyed by the configuration entry that matched.
+	IgnoredByConfig map[string]int `json:"ignored_by_config,omitempty"`
 }
 
 // Scan runs a full deterministic scan of the project.
@@ -84,11 +86,13 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 	}
 
 	if len(opts.ExcludePaths) > 0 {
-		ignored := gitignore.CompileIgnoreLines(opts.ExcludePaths...)
+		// Same git-compatible matcher as ignore.paths and the ignore files, so a
+		// pattern such as app/legacy/ excludes the root-level directory only.
+		excluded := config.NewPathMatcher(opts.ExcludePaths)
 		kept := ws.Files[:0]
 		for _, file := range ws.Files {
 			rel, err := filepath.Rel(projectPath, file.Path)
-			if err != nil || !ignored.MatchesPath(filepath.ToSlash(rel)) {
+			if err != nil || !excluded.Excludes(filepath.ToSlash(rel), false) {
 				kept = append(kept, file)
 			}
 		}
@@ -188,6 +192,11 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 	}
 	results = deduped
 
+	// ignore.rules covers every finding the engine produced. engine.Run skips
+	// an ignored YAML rule before evaluating it, but the built-in heuristics
+	// (secret detection, scaffolding residue) are added without that check.
+	results, ignoredByConfig := dropIgnoredRules(ws.Config, results)
+
 	// Apply Audit Statuses
 	auditStore := core.NewAuditStore(projectPath)
 	for i := range results {
@@ -228,5 +237,28 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 		RulesApplied:        len(results),
 		ScanDuration:        time.Since(start),
 		Config:              ws.Config,
+		IgnoredByConfig:     ignoredByConfig,
 	}, nil
+}
+
+// dropIgnoredRules removes built-in engine findings that ignore.rules
+// silences and counts them by the configuration entry that matched.
+func dropIgnoredRules(cfg *config.Config, results []core.CheckResult) ([]core.CheckResult, map[string]int) {
+	if cfg == nil || len(cfg.Ignore.Rules) == 0 {
+		return results, nil
+	}
+	matcher := config.NewRuleMatcher(cfg.Ignore.Rules)
+	var counts map[string]int
+	kept := results[:0]
+	for _, result := range results {
+		if entry, ok := matcher.Match(result.ID, config.CoreRuleSources...); ok {
+			if counts == nil {
+				counts = map[string]int{}
+			}
+			counts[entry]++
+			continue
+		}
+		kept = append(kept, result)
+	}
+	return kept, counts
 }

@@ -20,7 +20,11 @@ import (
 // v3 adds the output language: the same findings rendered in another language
 // are different artifacts, and reusing an English bundle for a Russian run would
 // silently serve the wrong document.
-const artifactCacheSchemaVersion = 3
+// v4: findings are project-relative, merged across detectors, and carry
+// CS-<CLASS>-<hex> display ids derived from line content, so the ids join the
+// key; a v3 report or fix spec names absolute paths and counter ids that no
+// longer exist.
+const artifactCacheSchemaVersion = 4
 
 type artifactCacheKeyContext struct {
 	SchemaVersion       int      `json:"schema_version"`
@@ -30,7 +34,11 @@ type artifactCacheKeyContext struct {
 	FixSpecVersion      string   `json:"fixspec_prompt_version"`
 	Language            string   `json:"language"`
 	FindingFingerprints []string `json:"finding_fingerprints"`
-	DispositionHashes   []string `json:"disposition_hashes"`
+	// FindingIDs are the display ids the cached report and fix spec name.
+	// They follow the flagged line's content, which Fingerprint does not
+	// cover, so they are part of the key.
+	FindingIDs        []string `json:"finding_ids"`
+	DispositionHashes []string `json:"disposition_hashes"`
 }
 
 type artifactBundleCache struct {
@@ -272,10 +280,12 @@ func buildArtifactCacheKey(state *AgentState) (string, string) {
 		FixSpecVersion:      prompts.FixSpecPromptVersion,
 		Language:            prompts.NormalizeLanguage(state.Language),
 		FindingFingerprints: make([]string, 0, len(state.EnrichedFindings)),
+		FindingIDs:          make([]string, 0, len(state.EnrichedFindings)),
 		DispositionHashes:   make([]string, 0, len(state.FindingDispositions)),
 	}
 	for _, finding := range state.EnrichedFindings {
 		ctx.FindingFingerprints = append(ctx.FindingFingerprints, Fingerprint(finding))
+		ctx.FindingIDs = append(ctx.FindingIDs, finding.VulnID)
 	}
 	for _, disposition := range state.FindingDispositions {
 		ctx.DispositionHashes = append(ctx.DispositionHashes, hashArtifactDisposition(disposition))

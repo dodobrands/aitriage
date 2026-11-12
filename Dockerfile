@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build
 
 # ─── Stage 2: Build Go binary ─────────────────────────────────────────────────
-FROM golang:1.25.13-bookworm AS go-builder
+FROM golang:1.26.11-bookworm AS go-builder
 WORKDIR /app
 
 # C deps for tree-sitter CGO
@@ -27,7 +27,7 @@ RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.Version=${AITRIAGE_VERSION}" 
 # Build the latest upstream Gitleaks release with patched Go dependencies. The
 # upstream v8.30.1 asset was built with Go 1.24.11 and x/crypto 0.35.0, both of
 # which now have fixable HIGH CVEs. Module source is authenticated by Go sumdb.
-FROM --platform=$BUILDPLATFORM golang:1.25.13-bookworm AS gitleaks-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm AS gitleaks-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
@@ -46,9 +46,9 @@ RUN go mod download github.com/zricethezav/gitleaks/v8@v8.30.1 && \
 #
 # Every pin below answers a CVE the image gate reported, and each one has to be
 # revisited whenever a new advisory lands — this is the same maintenance that
-# blocked v1.11.1. Current set: Go 1.26.6 (stdlib), x/crypto 0.55.0,
+# blocked v1.11.1. Current set: Go 1.26.11 (stdlib), x/crypto 0.55.0,
 # x/net 0.56.0, x/mod 0.40.0, gRPC-Go 1.83.2.
-FROM --platform=$BUILDPLATFORM golang:1.26.6-bookworm AS trivy-builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm AS trivy-builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

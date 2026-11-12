@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,6 +47,10 @@ var (
 	agentFailScore     int
 	agentHealthProfile string
 	agentRuntime       string
+
+	agentProbeCompose                     bool
+	agentConfirmedMinSeverity             string
+	agentFPCriticalRequiresHighConfidence bool
 )
 
 var agentCmd = &cobra.Command{
@@ -85,24 +92,58 @@ func init() {
 	agentCmd.Flags().StringVar(&agentTriageOut, "triage-out", "", "Write the canonical JSON inventory of every triaged finding to this file (for CI/CD)")
 	agentCmd.Flags().StringVar(&agentManifestOut, "manifest-out", "", "Write scanner execution coverage and statuses to this JSON file")
 	agentCmd.Flags().StringVar(&agentSARIFOut, "sarif-out", "", "Write deterministic AITriage findings as SARIF")
-	agentCmd.Flags().StringVar(&agentFailOn, "fail-on", "never", "CI gate: exit 1 when 'critical' (active CRITICAL/HIGH after AI triage), 'any' finding, or 'never'")
+	agentCmd.Flags().StringVar(&agentFailOn, "fail-on", "never", "CI gate: exit 1 when 'critical' (active CRITICAL/HIGH after AI triage), 'confirmed' (findings AI triage confirmed), 'any' finding, or 'never'")
 	agentCmd.Flags().IntVar(&agentFailScore, "fail-score", 0, "CI gate: exit 1 if the post-AI Health Check score is below this threshold (0 = disabled)")
 	agentCmd.Flags().StringVar(&agentHealthProfile, "health-profile", "", "Health Check policy profile: baseline, standard, strict")
 	agentCmd.Flags().StringVar(&agentRuntime, "runtime", "container", "Where to run: container (default, full scanner bundle) or native (development only)")
+	agentCmd.Flags().BoolVar(&agentProbeCompose, "probe-compose", false, "Also probe the service hosts declared in docker-compose files (opt-in; results describe the network, not the code, and are never scored)")
+	agentCmd.Flags().StringVar(&agentConfirmedMinSeverity, "confirmed-min-severity", "", "With --fail-on confirmed: block only on confirmed findings at or above LOW, MEDIUM, HIGH or CRITICAL (default LOW: every confirmed finding blocks)")
+	agentCmd.Flags().BoolVar(&agentFPCriticalRequiresHighConfidence, "fp-critical-requires-high-confidence", false, "Accept an AI false-positive verdict for a CRITICAL finding only when the model reports high confidence; otherwise keep it for manual review")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
+	if err := validateAgentFlags(); err != nil {
+		return err
+	}
+	// Past flag validation every failure is about the run, not about how the
+	// command was invoked: the full usage text would only bury the real error
+	// (it used to follow every red CI run, policy failures included).
+	cmd.SilenceUsage = true
+
+	var err error
 	switch agentRuntime {
 	case "container", "":
-		return runAgentInContainer(cmd.Context(), cmd, args)
+		err = runAgentInContainer(cmd.Context(), cmd, args)
 	case "native":
-		return runAgentNative(cmd, args)
+		err = runAgentNative(cmd, args)
+	}
+	var child *exitStatusError
+	if errors.Is(err, ErrAuditIncomplete) || errors.Is(err, ErrPolicyViolation) || errors.As(err, &child) {
+		// Execute reports these with the right exit status; cobra's own
+		// "Error:" line would only repeat it.
+		cmd.SilenceErrors = true
+	}
+	return err
+}
+
+// validateAgentFlags rejects flag values that cannot be acted on, before any
+// work starts.
+func validateAgentFlags() error {
+	switch agentRuntime {
+	case "container", "", "native":
 	default:
 		return fmt.Errorf("unsupported agent runtime %q: use container or native", agentRuntime)
 	}
+	if strings.TrimSpace(agentConfirmedMinSeverity) != "" {
+		if _, ok := healthcheck.ParseConfirmedMinSeverity(agentConfirmedMinSeverity); !ok {
+			return fmt.Errorf("invalid --confirmed-min-severity %q: use LOW, MEDIUM, HIGH or CRITICAL", agentConfirmedMinSeverity)
+		}
+	}
+	return nil
 }
 
 func runAgentNative(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
 	projectPath := "."
 	if len(args) > 0 {
 		projectPath = args[0]
@@ -135,8 +176,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		DisableThinking: llmCfg.DisableThinking,
 	})
 	if err != nil {
-		cmd.SilenceUsage = true
-		return err
+		return auditIncomplete(err)
 	}
 
 	fmt.Fprintf(os.Stderr, "🔍 AITriage Agent starting...\n\n")
@@ -149,6 +189,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 			ProbeHost:    agentProbe,
 			RunExternal:  true,
 			FullPortScan: agentFullScan,
+			ProbeCompose: agentProbeCompose,
 		},
 		Policy: policy,
 		LLM: pipeline.LLMIdentity{
@@ -181,24 +222,26 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		}{ScannerCoverage: coverage, Scanners: richResult.ScannerExecutions}
 		data, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
-			return err
+			return auditIncomplete(err)
 		}
-		if err := os.WriteFile(agentManifestOut, append(data, '\n'), 0o600); err != nil {
-			return fmt.Errorf("write scanner manifest: %w", err)
+		if err := os.WriteFile(agentManifestOut, append(data, '\n'), artifactFileMode()); err != nil {
+			return auditIncomplete(fmt.Errorf("write scanner manifest: %w", err))
 		}
 	}
 	if agentSARIFOut != "" {
-		data, err := richResult.Report.ToSARIF()
+		// Findings a project decision dismissed are left out, as `aitriage
+		// scan` leaves out audit-log dismissals.
+		data, err := pipeline.SARIF(opts, richResult)
 		if err != nil {
-			return fmt.Errorf("build SARIF: %w", err)
+			return auditIncomplete(fmt.Errorf("build SARIF: %w", err))
 		}
-		if err := os.WriteFile(agentSARIFOut, data, 0o600); err != nil {
-			return fmt.Errorf("write SARIF: %w", err)
+		if err := os.WriteFile(agentSARIFOut, data, artifactFileMode()); err != nil {
+			return auditIncomplete(fmt.Errorf("write SARIF: %w", err))
 		}
 	}
 	if os.Getenv("AITRIAGE_RUNTIME") == "container" {
 		if len(missingScanners) > 0 {
-			return fmt.Errorf("full audit aborted: required scanner execution(s) did not complete: %s", strings.Join(missingScanners, ", "))
+			return auditIncomplete(fmt.Errorf("full audit aborted: required scanner execution(s) did not complete: %s", strings.Join(missingScanners, ", ")))
 		}
 	}
 
@@ -207,7 +250,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "   ✓ NFR: %d issues\n", len(richResult.NFR))
 	fmt.Fprintf(os.Stderr, "   ✓ Deploy: %d issues\n", len(richResult.Deploy))
 
-	if agentProbe != "" {
+	if agentProbe != "" || agentProbeCompose {
 		fmt.Fprintf(os.Stderr, "   ✓ Network: %d ports open\n", len(richResult.Network))
 	}
 	fmt.Fprintf(os.Stderr, "   Health Check (pre-AI, core-only): %s (%d/100)\n\n", richResult.Report.SecurityGrade, richResult.Report.SecurityScore)
@@ -221,37 +264,24 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 
 	state := pipeline.BuildState(opts, richResult)
 
-	if _, err := pipeline.RunState(ctx, state, client); err != nil {
-		return fmt.Errorf("LLM analysis failed: %w", err)
+	// A provider failure during triage still yields a complete state: every
+	// finding has a disposition (the unclassified ones marked triage-failed)
+	// and the gate fails with triage_incomplete. Only an abort comes back
+	// without one.
+	_, runErr := pipeline.RunState(ctx, state, client)
+	var incomplete *graph.TriageIncompleteError
+	if runErr != nil && !errors.As(runErr, &incomplete) {
+		return auditIncomplete(fmt.Errorf("LLM analysis failed: %w", runErr))
 	}
 
 	fmt.Fprintf(os.Stderr, "\n📝 FINAL REPORT:\n\n%s\n\n", state.ReportMarkdown)
 	fmt.Fprintf(os.Stderr, "🛠 AI FIX SPECIFICATION:\n\n%s\n\n", state.AIFixSpec)
 
-	// Persist artifacts to files when requested (CI/CD consumes these).
-	if agentReportOut != "" {
-		if err := os.WriteFile(agentReportOut, []byte(state.ReportMarkdown), 0o600); err != nil {
-			return fmt.Errorf("failed to write report to %s: %w", agentReportOut, err)
-		}
-		fmt.Fprintf(os.Stderr, "   ✓ Report written to %s\n", agentReportOut)
-	}
-	if agentFixSpecOut != "" {
-		if err := os.WriteFile(agentFixSpecOut, []byte(state.AIFixSpec), 0o600); err != nil {
-			return fmt.Errorf("failed to write fix spec to %s: %w", agentFixSpecOut, err)
-		}
-		fmt.Fprintf(os.Stderr, "   ✓ Fix spec written to %s\n", agentFixSpecOut)
-	}
-	if agentSummaryOut != "" {
-		if err := os.WriteFile(agentSummaryOut, []byte(state.SummaryMarkdown), 0o600); err != nil {
-			return fmt.Errorf("failed to write summary to %s: %w", agentSummaryOut, err)
-		}
-		fmt.Fprintf(os.Stderr, "   ✓ Summary written to %s\n", agentSummaryOut)
-	}
-	if agentTriageOut != "" {
-		if err := writeTriageArtifact(agentTriageOut, state); err != nil {
-			return fmt.Errorf("failed to write triage findings to %s: %w", agentTriageOut, err)
-		}
-		fmt.Fprintf(os.Stderr, "   ✓ Canonical triage findings written to %s\n", agentTriageOut)
+	// Persist artifacts to files when requested (CI/CD consumes these), also
+	// when triage did not complete: the scan already ran and its findings are
+	// exactly what the next person needs to look at.
+	if err := writeAgentArtifacts(state); err != nil {
+		return auditIncomplete(err)
 	}
 
 	// Auto-write actionable summary to GitHub Actions Step Summary.
@@ -261,13 +291,8 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		writeAgentGHASummary(state)
 	}
 
-	// CI/CD GATE: decide the exit code from the post-AI Health Check verdict.
-	// False Positives are already excluded from state.HealthCheck, so the gate
-	// only trips on findings the AI triage considered real.
-	shouldFail := !state.HealthCheck.Verdict.Passed
-
-	// STEP 3: INTERACTIVE CONSULTATION
-	if !agentNoChat {
+	// STEP 3: INTERACTIVE CONSULTATION (pointless when the provider just failed)
+	if !agentNoChat && incomplete == nil {
 		fmt.Fprintf(os.Stderr, "💬 Step 3/3: Consultation mode (type 'exit' to quit)\n")
 
 		messages := []llm.Message{
@@ -279,14 +304,68 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		runConsultation(ctx, client, messages)
 	}
 
-	if shouldFail {
-		printPolicyFailure(os.Stderr, state.HealthCheck.Verdict)
-		cmd.SilenceErrors = true
+	return agentOutcome(os.Stderr, state, incomplete)
+}
+
+// writeAgentArtifacts writes every requested output file from a finished run.
+func writeAgentArtifacts(state *graph.AgentState) error {
+	if agentReportOut != "" {
+		if err := os.WriteFile(agentReportOut, []byte(state.ReportMarkdown), artifactFileMode()); err != nil {
+			return fmt.Errorf("failed to write report to %s: %w", agentReportOut, err)
+		}
+		fmt.Fprintf(os.Stderr, "   ✓ Report written to %s\n", agentReportOut)
+	}
+	if agentFixSpecOut != "" {
+		if err := os.WriteFile(agentFixSpecOut, []byte(state.AIFixSpec), artifactFileMode()); err != nil {
+			return fmt.Errorf("failed to write fix spec to %s: %w", agentFixSpecOut, err)
+		}
+		fmt.Fprintf(os.Stderr, "   ✓ Fix spec written to %s\n", agentFixSpecOut)
+	}
+	if agentSummaryOut != "" {
+		if err := os.WriteFile(agentSummaryOut, []byte(state.SummaryMarkdown), artifactFileMode()); err != nil {
+			return fmt.Errorf("failed to write summary to %s: %w", agentSummaryOut, err)
+		}
+		fmt.Fprintf(os.Stderr, "   ✓ Summary written to %s\n", agentSummaryOut)
+	}
+	if agentTriageOut != "" {
+		if err := writeTriageArtifact(agentTriageOut, state); err != nil {
+			return fmt.Errorf("failed to write triage findings to %s: %w", agentTriageOut, err)
+		}
+		fmt.Fprintf(os.Stderr, "   ✓ Canonical triage findings written to %s\n", agentTriageOut)
+	}
+	return nil
+}
+
+// agentOutcome turns a finished run into the command result. An incomplete
+// triage wins over the gate: its verdict is not authoritative, and CI must be
+// able to tell "re-run when the provider is back" (status 2) from "fix the
+// code" (status 1, ErrPolicyViolation). The gate cannot pass on an incomplete
+// triage either way, unless fail_on is never.
+func agentOutcome(w io.Writer, state *graph.AgentState, incomplete *graph.TriageIncompleteError) error {
+	if incomplete != nil {
+		_, _ = fmt.Fprintf(w, "\nAI triage did not complete: %s\nArtifacts were written; %d finding(s) without a verdict are marked triage-failed. Re-run once the LLM provider is available.\n",
+			incomplete.Reason, incomplete.Unclassified)
+		if !state.HealthCheck.Verdict.Passed {
+			printPolicyFailure(w, state.HealthCheck.Verdict)
+		}
+		return auditIncomplete(incomplete)
+	}
+	// CI/CD GATE: decide the exit code from the post-AI Health Check verdict.
+	// False Positives are already excluded from state.HealthCheck, so the gate
+	// only trips on findings the AI triage considered real.
+	if !state.HealthCheck.Verdict.Passed {
+		printPolicyFailure(w, state.HealthCheck.Verdict)
 		return ErrPolicyViolation
 	}
 	return nil
 }
 
+// agentEnvAllowlist names the variables forwarded into the agent container.
+// Only names are passed (Docker reads the values), so secrets never reach
+// argv. Tuning variables are included because a container run silently
+// ignored them otherwise; host path variables (cache and reports
+// directories) are deliberately absent: a host path means nothing inside the
+// container, which gets its own mounts.
 var agentEnvAllowlist = []string{
 	"AITRIAGE_LLM_API_KEY",
 	"AITRIAGE_LLM_PROVIDER",
@@ -295,11 +374,28 @@ var agentEnvAllowlist = []string{
 	"AITRIAGE_LLM_DISABLE_THINKING",
 	"AITRIAGE_LLM_TIMEOUT",
 	"AITRIAGE_BATCH_SIZE",
+	"AITRIAGE_CLASSIFY_RETRIES",
+	"AITRIAGE_CONCURRENCY",
+	"AITRIAGE_LLM_BUDGET",
+	"AITRIAGE_POC_BUDGET",
+	"AITRIAGE_GATING",
+	"AITRIAGE_RESPECT_GITIGNORE",
+	"AITRIAGE_SCAN_VENDORED",
 	"GEMINI_API_KEY",
 	"GOOGLE_API_KEY",
 	"ANTHROPIC_API_KEY",
 	"OPENAI_API_KEY",
 	"GROQ_API_KEY",
+}
+
+// agentContainerEnv is set inside the agent container. AITRIAGE_REPORTS_DIR
+// names the writable reports mount, where the Web UI and IDE tools in the
+// container record dismissals for the read-only project, so the run applies
+// them.
+var agentContainerEnv = []string{
+	"AITRIAGE_RUNTIME=container",
+	"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
+	"AITRIAGE_REPORTS_DIR=/workspace/aitriage-reports",
 }
 
 func runAgentInContainer(ctx context.Context, cmd *cobra.Command, args []string) error {
@@ -352,14 +448,22 @@ func runAgentInContainer(ctx context.Context, cmd *cobra.Command, args []string)
 		Interactive: !agentNoChat,
 		TTY:         false,
 		EnvPassed:   agentEnvAllowlist,
-		EnvSet: []string{
-			"AITRIAGE_RUNTIME=container",
-			"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
-		},
-		Argv: inner,
+		EnvSet:      agentContainerEnv,
+		Argv:        inner,
 	})
 
-	return runManagedContainer(ctx, dockerArgs, name)
+	return containerExitStatus(runManagedContainer(ctx, dockerArgs, name))
+}
+
+// containerExitStatus passes the containerised agent's exit status through:
+// 1 (policy violation) and 2 (audit incomplete) must reach CI unchanged, and
+// the agent inside already printed why.
+func containerExitStatus(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return &exitStatusError{code: exitErr.ExitCode()}
+	}
+	return err
 }
 
 // agentContainerCommandArgs reproduces the public agent flags for the native
@@ -419,6 +523,13 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 		args = append(args, "--fail-score", fmt.Sprint(agentFailScore))
 	}
 	appendStringFlag("--health-profile", agentHealthProfile)
+	if agentProbeCompose {
+		args = append(args, "--probe-compose")
+	}
+	appendStringFlag("--confirmed-min-severity", agentConfirmedMinSeverity)
+	if agentFPCriticalRequiresHighConfidence {
+		args = append(args, "--fp-critical-requires-high-confidence")
+	}
 	args = append(args, ".")
 	return args, nil
 }
@@ -482,12 +593,16 @@ func agentPolicyFromFlags(cmd *cobra.Command, cfg *config.Config) healthcheck.Po
 	failOnSet := cmd.Flags().Changed("fail-on")
 	failScoreSet := cmd.Flags().Changed("fail-score")
 	policy = healthpolicy.ApplyOverrides(policy, healthpolicy.Overrides{
-		Profile:         agentHealthProfile,
-		ProfileSet:      cmd.Flags().Changed("health-profile"),
-		FailOn:          agentFailOn,
-		FailOnSet:       failOnSet,
-		MinimumScore:    agentFailScore,
-		MinimumScoreSet: failScoreSet,
+		Profile:                             agentHealthProfile,
+		ProfileSet:                          cmd.Flags().Changed("health-profile"),
+		FailOn:                              agentFailOn,
+		FailOnSet:                           failOnSet,
+		MinimumScore:                        agentFailScore,
+		MinimumScoreSet:                     failScoreSet,
+		ConfirmedMinSeverity:                agentConfirmedMinSeverity,
+		ConfirmedMinSeveritySet:             cmd.Flags().Changed("confirmed-min-severity"),
+		FPCriticalRequiresHighConfidence:    agentFPCriticalRequiresHighConfidence,
+		FPCriticalRequiresHighConfidenceSet: cmd.Flags().Changed("fp-critical-requires-high-confidence"),
 	})
 	if failScoreSet && !failOnSet && policy.FailOn == healthcheck.FailOnNever {
 		policy.FailOn = healthcheck.FailOnCritical
