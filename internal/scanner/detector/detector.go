@@ -25,6 +25,10 @@ const (
 
 type scoreCard struct {
 	scores map[Stack]int
+	// manifest is set when a dependency manifest or project file (package.json,
+	// requirements.txt, go.mod, .csproj, ...) in this directory scored, as
+	// opposed to an entry-point file such as main.py or asgi.py alone.
+	manifest bool
 }
 
 // DetectProjects attempts to identify all technology stacks and their bounding boxes (ProjectContexts).
@@ -51,6 +55,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 
 		// Node.js / JS
 		if base == "package.json" {
+			sc.manifest = true
 			if hasPackageJSONWithDep(f, "next") {
 				sc.scores[NextJS] += 100
 			} else if hasPackageJSONWithDep(f, "express") && hasExpressRuntimeImport(ws.Files, dir) {
@@ -71,6 +76,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 			(strings.HasSuffix(base, ".txt") && strings.Contains(filepath.Dir(f.Path), "requirements")) ||
 			(strings.HasSuffix(base, ".in") && strings.Contains(filepath.Dir(f.Path), "requirements"))
 		if isPythonDepFile {
+			sc.manifest = true
 			if hasPythonDep(f, "fastapi") {
 				sc.scores[FastAPI] += 100
 			} else if hasPythonDep(f, "django") {
@@ -91,12 +97,15 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 				sc.scores[Flask] += 80
 			}
 		}
-		if base == "manage.py" {
+		// A manage.py marks a Django project only when it is Django's: other
+		// frameworks use the same name for their own command scripts.
+		if base == "manage.py" && hasPythonDep(f, "django") {
 			sc.scores[Django] += 90
 		}
 
 		// .NET
 		if strings.HasSuffix(base, ".csproj") || strings.HasSuffix(base, ".fsproj") {
+			sc.manifest = true
 			if hasDotnetDep(f, "Microsoft.AspNetCore") || hasDotnetWebSDK(f) {
 				sc.scores[AspNetCore] += 100
 			}
@@ -104,6 +113,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 
 		// Go
 		if base == "go.mod" {
+			sc.manifest = true
 			sc.scores[Go] += 100
 		}
 	}
@@ -140,6 +150,8 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 	}
 
 	// If nothing was detected at all, create a Universal fallback project
+	projects = mergeEntryPointProjects(projects, dirScores)
+
 	if len(projects) == 0 {
 		projects = append(projects, &core.ProjectContext{
 			RootPath: ws.RootPath,
@@ -150,6 +162,7 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 	}
 
 	// Step 3: Assign files to the closest project root
+	var orphans []*core.FileInfo
 	for _, f := range ws.Files {
 		// Keep the same policy for rule execution as for stack detection. The
 		// workspace still indexes these files (and reports them in TotalFiles), but
@@ -172,10 +185,51 @@ func DetectProjects(ws *core.Workspace) []*core.ProjectContext {
 
 		if bestProject != nil {
 			bestProject.Files = append(bestProject.Files, f)
+		} else {
+			orphans = append(orphans, f)
 		}
 	}
 
+	// Files outside every detected project (a root Dockerfile, compose or
+	// deployment manifests next to a service in a subdirectory, a library
+	// project the detector does not recognise) still get the universal rules.
+	if len(orphans) > 0 {
+		projects = append(projects, &core.ProjectContext{
+			RootPath: ws.RootPath,
+			ScanRoot: ws.RootPath,
+			Stack:    string(UnknownStack),
+			Config:   ws.Config,
+			Files:    orphans,
+		})
+	}
+
 	return projects
+}
+
+// mergeEntryPointProjects drops a project that was found only through an
+// entry-point file (main.py, app.py, asgi.py) when an enclosing directory is
+// already a project of the same stack. A Django settings package with an
+// asgi.py, or an app/ directory with main.py, is part of the enclosing
+// application, not a second one; splitting it made project-level checks look
+// at half of the application.
+func mergeEntryPointProjects(projects []*core.ProjectContext, scores map[string]*scoreCard) []*core.ProjectContext {
+	kept := projects[:0]
+	for _, p := range projects {
+		if sc := scores[p.RootPath]; sc != nil && !sc.manifest && hasSameStackAncestor(p, projects) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept
+}
+
+func hasSameStackAncestor(p *core.ProjectContext, projects []*core.ProjectContext) bool {
+	for _, other := range projects {
+		if other != p && other.Stack == p.Stack && other.RootPath != p.RootPath && isSubPath(p.RootPath, other.RootPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSubPath(path, rootPath string) bool {

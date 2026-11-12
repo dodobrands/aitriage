@@ -334,9 +334,22 @@ func (e *Engine) Run(ctx *core.ProjectContext) []core.CheckResult {
 }
 
 func (e *Engine) matchesExtension(r Rule, f *core.FileInfo) bool {
-	for _, ext := range r.Extensions {
-		if strings.EqualFold(ext, f.Extension) || strings.EqualFold(ext, filepath.Base(f.Path)) {
+	return matchesFileName(r.Extensions, f.Extension, filepath.Base(f.Path))
+}
+
+// matchesFileName reports whether a file matches one of a rule's extensions.
+// An entry is an extension (".py"), an exact base name ("Dockerfile"), or a
+// base-name glob ("Dockerfile.*", "*.dockerfile"); all compare case-insensitively.
+func matchesFileName(entries []string, ext, base string) bool {
+	lowerBase := strings.ToLower(base)
+	for _, entry := range entries {
+		if strings.EqualFold(entry, ext) || strings.EqualFold(entry, base) {
 			return true
+		}
+		if strings.ContainsAny(entry, "*?[") {
+			if ok, err := filepath.Match(strings.ToLower(entry), lowerBase); err == nil && ok {
+				return true
+			}
 		}
 	}
 	return false

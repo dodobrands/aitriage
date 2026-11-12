@@ -106,3 +106,18 @@ func TestASTRuleHonoursInlineIgnore(t *testing.T) {
 		t.Errorf("got lines %v, want [8]", got)
 	}
 }
+
+func TestExtensionsAcceptBaseNameGlobs(t *testing.T) {
+	entries := []string{"Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile"}
+	for _, tc := range []struct {
+		base string
+		want bool
+	}{
+		{"Dockerfile", true}, {"dockerfile", true}, {"Dockerfile.prod", true}, {"api.Dockerfile", true},
+		{"Containerfile", true}, {"Dockerfile-notes.md", false}, {"main.go", false},
+	} {
+		if got := matchesFileName(entries, filepath.Ext(tc.base), tc.base); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.base, got, tc.want)
+		}
+	}
+}

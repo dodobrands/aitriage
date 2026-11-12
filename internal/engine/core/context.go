@@ -323,20 +323,36 @@ type ProjectContext struct {
 // FindFilesByExtension returns all files matching the given extensions in the project.
 func (ctx *ProjectContext) FindFilesByExtension(extensions ...string) []*FileInfo {
 	extMap := make(map[string]bool)
+	var globs []string
 	for _, ext := range extensions {
-		extMap[strings.ToLower(ext)] = true
+		lower := strings.ToLower(ext)
+		extMap[lower] = true
+		if strings.ContainsAny(lower, "*?[") {
+			globs = append(globs, lower)
+		}
 	}
 
 	var matched []*FileInfo
 	for _, f := range ctx.Files {
 		// Most rules match extensions (for example, ".go"), but some
 		// configuration files such as Dockerfile have no extension. Let those
-		// rules match the filename without changing FileInfo.Extension semantics.
-		if extMap[strings.ToLower(f.Extension)] || extMap[strings.ToLower(filepath.Base(f.Path))] {
+		// rules match the filename, or a base-name glob such as "Dockerfile.*",
+		// without changing FileInfo.Extension semantics.
+		base := strings.ToLower(filepath.Base(f.Path))
+		if extMap[strings.ToLower(f.Extension)] || extMap[base] || matchesAnyGlob(globs, base) {
 			matched = append(matched, f)
 		}
 	}
 	return matched
+}
+
+func matchesAnyGlob(globs []string, base string) bool {
+	for _, g := range globs {
+		if ok, err := filepath.Match(g, base); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GetFile expects a relative path relative to the PROJECT root and returns its FileInfo if it exists.
