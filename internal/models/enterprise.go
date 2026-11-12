@@ -44,13 +44,6 @@ type Product struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
-type ProductMember struct {
-	ProductID int64     `json:"product_id"`
-	UserID    int64     `json:"user_id"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type Engagement struct {
 	ID             int64      `json:"id"`
 	ProductID      int64      `json:"product_id"`
@@ -119,21 +112,6 @@ type Finding struct {
 	VerificationLastRunAt *time.Time `json:"verification_last_run_at"`
 }
 
-func (f *Finding) IsOverSLA() bool {
-	if f.SLADeadline == nil || f.Status == "resolved" || f.Status == "closed" {
-		return false
-	}
-	return time.Now().After(*f.SLADeadline)
-}
-
-func (f *Finding) DaysToSLA() int {
-	if f.SLADeadline == nil {
-		return 0
-	}
-	duration := time.Until(*f.SLADeadline)
-	return int(duration.Hours() / 24)
-}
-
 type RunwaySession struct {
 	ID              int64     `json:"id"`
 	ProductID       int64     `json:"product_id"`
@@ -151,16 +129,6 @@ type RunwaySession struct {
 	ErrorMessage    *string   `json:"error_message"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
-}
-
-type FindingNote struct {
-	ID        int64     `json:"id"`
-	FindingID int64     `json:"finding_id"`
-	AuthorID  *int64    `json:"author_id"`
-	Content   string    `json:"content"`
-	NoteType  string    `json:"note_type"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type AuditLog struct {
@@ -186,31 +154,4 @@ type Notification struct {
 	IsRead    bool      `json:"is_read"`
 	Link      *string   `json:"link"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-type SystemConfig struct {
-	ID        int64     `json:"id"`
-	Key       string    `json:"config_key"`
-	Value     string    `json:"config_val"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type TopologyNode struct {
-	ID       string                 `json:"id"`
-	Label    string                 `json:"label"`
-	Type     string                 `json:"type"`
-	Group    string                 `json:"group"`
-	Metadata map[string]interface{} `json:"metadata"`
-}
-
-type TopologyEdge struct {
-	Source   string                 `json:"source"`
-	Target   string                 `json:"target"`
-	Label    string                 `json:"label"`
-	Metadata map[string]interface{} `json:"metadata"`
-}
-
-type Topology struct {
-	Nodes []TopologyNode `json:"nodes"`
-	Edges []TopologyEdge `json:"edges"`
 }

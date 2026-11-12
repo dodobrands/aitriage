@@ -59,28 +59,6 @@ type MatchResult struct {
 	Variables map[string]string // $VAR -> captured source code
 }
 
-// Match executes a tree-sitter query against the source code and returns results
-func Match(ext string, content []byte, queryString string) ([]MatchResult, error) {
-	lang, err := GetLanguage(ext)
-	if err != nil {
-		return nil, err
-	}
-
-	parser := GetParser()
-	defer PutParser(parser)
-
-	if err := parser.SetLanguage(lang); err != nil {
-		return nil, fmt.Errorf("failed to set language: %w", err)
-	}
-	tree := parser.Parse(content, nil)
-	if tree == nil {
-		return nil, fmt.Errorf("failed to parse")
-	}
-	defer tree.Close()
-
-	return MatchInTree(lang, tree, content, queryString)
-}
-
 // MatchInTree executes a query against an existing tree and returns results
 func MatchInTree(lang *tree_sitter.Language, tree *tree_sitter.Tree, content []byte, queryString string) ([]MatchResult, error) {
 	query, err := tree_sitter.NewQuery(lang, queryString)

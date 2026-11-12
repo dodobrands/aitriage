@@ -15,17 +15,6 @@ func NewNotificationRepository(db *sql.DB) *NotificationRepository {
 	return &NotificationRepository{db: db}
 }
 
-func (r *NotificationRepository) Create(ctx context.Context, n *models.Notification) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO notifications (user_id, title, body, type, is_read, link)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, n.UserID, n.Title, n.Body, n.Type, n.IsRead, n.Link)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
 func (r *NotificationRepository) ListByUser(ctx context.Context, userID int64, unreadOnly bool) ([]models.Notification, error) {
 	query := `SELECT id, user_id, title, body, type, is_read, link, created_at FROM notifications WHERE user_id = ?`
 	if unreadOnly {

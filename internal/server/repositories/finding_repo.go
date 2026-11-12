@@ -50,10 +50,6 @@ func scanFinding(scanner findingScanner) (models.Finding, error) {
 	return f, err
 }
 
-func (r *FindingRepository) getIgnoredStatus(ctx context.Context, codeSnippet *string, defaultStatus string) string {
-	return ignoredFindingStatus(ctx, r.db, codeSnippet, defaultStatus)
-}
-
 type findingQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -74,21 +70,6 @@ func ignoredFindingStatus(ctx context.Context, db findingQueryer, codeSnippet *s
 		}
 	}
 	return defaultStatus
-}
-
-func (r *FindingRepository) Create(ctx context.Context, f *models.Finding) (int64, error) {
-	if f.Status == "" {
-		f.Status = "open"
-	}
-	status := r.getIgnoredStatus(ctx, f.CodeSnippet, f.Status)
-	res, err := r.db.ExecContext(ctx, `
-		INSERT INTO findings (engagement_id, product_id, rule_id, title, severity, cvss_score, cve_id, cwe_id, file_path, line_number, col_number, code_snippet, description, impact, fix_suggestion, references_, hash_code, status, kanban_column, stack)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, f.EngagementID, f.ProductID, f.RuleID, f.Title, f.Severity, f.CVSSScore, f.CVEID, f.CWEID, f.FilePath, f.LineNumber, f.ColNumber, f.CodeSnippet, f.Description, f.Impact, f.FixSuggestion, f.References, f.HashCode, status, f.KanbanColumn, f.Stack)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
 }
 
 func (r *FindingRepository) BulkCreate(ctx context.Context, findings []models.Finding) error {
@@ -123,26 +104,6 @@ func (r *FindingRepository) BulkCreate(ctx context.Context, findings []models.Fi
 	}
 
 	return tx.Commit()
-}
-
-func (r *FindingRepository) Deduplicate(ctx context.Context, productID int64) error {
-	// Simple deduplication logic marking older identical hash_codes as duplicates
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE findings 
-		SET is_duplicate = 1, duplicate_of = (
-			SELECT MIN(f2.id) FROM findings f2 
-			WHERE f2.hash_code = findings.hash_code 
-			AND f2.product_id = findings.product_id 
-			AND f2.id != findings.id
-		)
-		WHERE product_id = ? 
-		AND id != (
-			SELECT MIN(f3.id) FROM findings f3 
-			WHERE f3.hash_code = findings.hash_code 
-			AND f3.product_id = findings.product_id
-		)
-	`, productID)
-	return err
 }
 
 func (r *FindingRepository) GetByID(ctx context.Context, id int64) (*models.Finding, error) {
@@ -244,18 +205,6 @@ func (r *FindingRepository) ListAll(ctx context.Context) ([]models.Finding, erro
 		}
 	}
 	return findings, rows.Err()
-}
-
-// EnsureSLA evaluates Findings and marks those past deadline as sla_breached
-func (r *FindingRepository) EnsureSLA(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE findings 
-		SET sla_breached = 1 
-		WHERE sla_deadline IS NOT NULL 
-		AND COALESCE(LOWER(status), 'open') NOT IN ('resolved', 'fixed', 'closed', 'mitigated', 'risk_accepted', 'accepted_risk', 'false_positive')
-		AND CURRENT_TIMESTAMP > sla_deadline
-	`)
-	return err
 }
 
 func (r *FindingRepository) UpdateKanbanColumn(ctx context.Context, id int64, column string) error {

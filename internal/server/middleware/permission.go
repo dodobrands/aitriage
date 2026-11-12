@@ -51,9 +51,6 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// RateLimiter is a placeholder for per-IP rate limiting (currently using global limiter).
-type RateLimiter struct{}
-
 var globalLimiter = rate.NewLimiter(rate.Every(time.Second/10), 50) // 10 requests per second, burst of 50
 
 // RateLimitMiddleware enforces global rate limiting

@@ -133,24 +133,6 @@ type FilterResult struct {
 	Baseline []core.CheckResult // Findings that ARE in the baseline (accepted)
 }
 
-// Filter separates scan results into new findings and baselined (accepted) findings.
-func Filter(results []core.CheckResult, b *Baseline) FilterResult {
-	if b == nil || len(b.Findings) == 0 {
-		return FilterResult{New: results}
-	}
-
-	var fr FilterResult
-	for _, r := range results {
-		fp := Fingerprint(r)
-		if _, exists := b.Findings[fp]; exists {
-			fr.Baseline = append(fr.Baseline, r)
-		} else {
-			fr.New = append(fr.New, r)
-		}
-	}
-	return fr
-}
-
 // FilterInProject matches core findings using the same project-relative paths
 // that NewFromItems stores. It also retains matching for older baseline files.
 func FilterInProject(projectPath string, results []core.CheckResult, b *Baseline) FilterResult {

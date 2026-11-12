@@ -7,18 +7,6 @@ import (
 	"github.com/dodobrands/aitriage/internal/server/repositories"
 )
 
-type TopologyNode struct {
-	ID     string `json:"id"`
-	Type   string `json:"type"`
-	Status string `json:"status"`
-	Risk   string `json:"risk"`
-}
-
-type TopologyLink struct {
-	Source string `json:"source"`
-	Target string `json:"target"`
-}
-
 type TopologyResponse struct {
 	Ok    bool                        `json:"ok"`
 	Nodes []repositories.TopologyNode `json:"nodes"`

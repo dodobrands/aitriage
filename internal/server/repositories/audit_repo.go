@@ -15,14 +15,6 @@ func NewAuditRepository(db *sql.DB) *AuditRepository {
 	return &AuditRepository{db: db}
 }
 
-func (r *AuditRepository) Log(ctx context.Context, l *models.AuditLog) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, old_value, new_value, ip_address, user_agent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, l.UserID, l.Username, l.Action, l.EntityType, l.EntityID, l.OldValue, l.NewValue, l.IPAddress, l.UserAgent)
-	return err
-}
-
 func (r *AuditRepository) List(ctx context.Context, entityType string, limit, offset int) ([]models.AuditLog, error) {
 	query := `
 		SELECT id, user_id, username, action, entity_type, entity_id, old_value, new_value, ip_address, user_agent, created_at

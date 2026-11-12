@@ -46,14 +46,6 @@ func (r RichScanResult) MissingRequiredScanners() []string {
 	return missing
 }
 
-// SystemPrompt is the base agent persona.
-const SystemPrompt = `You are AITriage, an expert security engineer AI assistant.
-You help developers find and fix security vulnerabilities in their code.
-You have access to deterministic scan results from static analysis tools.
-Always be specific: cite file names and line numbers.
-Prioritize critical findings. Be concise but thorough.
-Respond in the same language as the user's question.`
-
 // BuildAnalysisPrompt constructs the analysis prompt from scan results.
 func BuildAnalysisPrompt(rich RichScanResult) string {
 	var sb strings.Builder
@@ -125,13 +117,4 @@ func BuildAnalysisPrompt(rich RichScanResult) string {
 
 	sb.WriteString("\nPlease analyze these findings, prioritize them, and provide specific remediation recommendations. Connect the architecture diagram with the findings if possible.")
 	return sb.String()
-}
-
-// BuildConsultationPrompt constructs the prompt for Q&A mode.
-func BuildConsultationPrompt(question string, previousAnalysis string) string {
-	return fmt.Sprintf(`Based on the security analysis above, answer the following question:
-
-%s
-
-Be specific, cite findings and line numbers where relevant.`, question)
 }

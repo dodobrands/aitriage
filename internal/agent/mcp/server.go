@@ -17,18 +17,6 @@ type Server struct {
 	guard   *PathGuard
 }
 
-// NewServer builds a server with the full profile and no path confinement.
-// Backward-compatible entry point (e.g. Claude Desktop via `serve`).
-func NewServer(version string) *Server {
-	s, err := NewServerWithConfig(version, Config{Profile: ProfileFull})
-	if err != nil {
-		// The full profile builds no guard, so this cannot fail; panic guards
-		// against a future regression rather than a runtime condition.
-		panic(fmt.Sprintf("NewServer: %v", err))
-	}
-	return s
-}
-
 // NewServerWithConfig builds a server with an explicit profile and optional
 // scan-root confinement.
 func NewServerWithConfig(version string, cfg Config) (*Server, error) {

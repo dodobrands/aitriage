@@ -43,15 +43,6 @@ func (r *UserRepository) Create(ctx context.Context, u *models.User) (int64, err
 	return res.LastInsertId()
 }
 
-func (r *UserRepository) Update(ctx context.Context, u *models.User) error {
-	_, err := r.db.ExecContext(ctx, `
-		UPDATE users 
-		SET email = ?, full_name = ?, password_hash = ?, global_role = ?, is_active = ?, avatar_url = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?
-	`, u.Email, u.FullName, u.PasswordHash, u.GlobalRole, u.IsActive, u.AvatarURL, u.ID)
-	return err
-}
-
 func (r *UserRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	return err

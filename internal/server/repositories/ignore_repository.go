@@ -123,22 +123,3 @@ func (r *IgnoreRepository) ClearAll(ctx context.Context) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM ignored_findings`)
 	return err
 }
-
-// FindByHash looks up an ignored finding by content hash.
-func (r *IgnoreRepository) FindByHash(ctx context.Context, contentHash string) (*IgnoredFinding, bool, error) {
-	var e IgnoredFinding
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, vuln_id, rule_id, file_path, line_number, COALESCE(code_snippet,''), content_hash,
-		       COALESCE(vulnerability_class,''), reason, created_at, COALESCE(created_by,'')
-		FROM ignored_findings WHERE content_hash = ? LIMIT 1
-	`, contentHash).Scan(&e.ID, &e.VulnID, &e.RuleID, &e.FilePath, &e.LineNumber,
-		&e.CodeSnippet, &e.ContentHash, &e.VulnerabilityClass, &e.Reason,
-		&e.CreatedAt, &e.CreatedBy)
-	if err == sql.ErrNoRows {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to find ignored finding: %w", err)
-	}
-	return &e, true, nil
-}

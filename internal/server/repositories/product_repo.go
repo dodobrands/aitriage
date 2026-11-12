@@ -101,68 +101,6 @@ func (r *ProductRepository) AddMember(ctx context.Context, productID, userID int
 	return err
 }
 
-func (r *ProductRepository) RemoveMember(ctx context.Context, productID, userID int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM product_members WHERE product_id = ? AND user_id = ?`, productID, userID)
-	return err
-}
-
-func (r *ProductRepository) GetMembers(ctx context.Context, productID int64) ([]models.ProductMember, error) {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT product_id, user_id, role, created_at 
-		FROM product_members WHERE product_id = ?
-	`, productID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	var members []models.ProductMember
-	for rows.Next() {
-		var m models.ProductMember
-		if err := rows.Scan(&m.ProductID, &m.UserID, &m.Role, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		members = append(members, m)
-	}
-	return members, nil
-}
-
-func (r *ProductRepository) GetUserRole(ctx context.Context, productID, userID int64) (string, error) {
-	var role string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT role FROM product_members WHERE product_id = ? AND user_id = ?
-	`, productID, userID).Scan(&role)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil // no role
-		}
-		return "", err
-	}
-	return role, nil
-}
-
-// ProductType Methods
-func (r *ProductRepository) CreateProductType(ctx context.Context, pt *models.ProductType) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `INSERT INTO product_types (name, description) VALUES (?, ?)`, pt.Name, pt.Description)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
-func (r *ProductRepository) GetProductTypeByID(ctx context.Context, id int64) (*models.ProductType, error) {
-	var pt models.ProductType
-	err := r.db.QueryRowContext(ctx, `SELECT id, name, description, created_at FROM product_types WHERE id = ?`, id).
-		Scan(&pt.ID, &pt.Name, &pt.Description, &pt.CreatedAt)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("product type not found")
-		}
-		return nil, err
-	}
-	return &pt, nil
-}
-
 func (r *ProductRepository) ListProductTypes(ctx context.Context) ([]models.ProductType, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id, name, description, created_at FROM product_types`)
 	if err != nil {
@@ -179,16 +117,6 @@ func (r *ProductRepository) ListProductTypes(ctx context.Context) ([]models.Prod
 		pts = append(pts, pt)
 	}
 	return pts, nil
-}
-
-func (r *ProductRepository) UpdateProductType(ctx context.Context, pt *models.ProductType) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE product_types SET name = ?, description = ? WHERE id = ?`, pt.Name, pt.Description, pt.ID)
-	return err
-}
-
-func (r *ProductRepository) DeleteProductType(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM product_types WHERE id = ?`, id)
-	return err
 }
 
 // FindOrCreateByPath looks up a product by name (derived from scan path).

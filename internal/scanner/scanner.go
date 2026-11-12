@@ -2,7 +2,6 @@ package scanner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	gitignore "github.com/sabhiram/go-gitignore"
 	"log/slog"
@@ -43,11 +42,6 @@ type ScanReport struct {
 	RulesApplied        int                  `json:"rules_applied"`
 	ScanDuration        time.Duration        `json:"scan_duration_ms"`
 	Config              *config.Config       `json:"-"` // not serialized; used by CLI
-}
-
-// ToJSON serializes ScanReport to JSON. Used by MCP tools and agent mode.
-func (r ScanReport) ToJSON() ([]byte, error) {
-	return json.Marshal(r)
 }
 
 // Scan runs a full deterministic scan of the project.
