@@ -65,13 +65,12 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v9 of the action supports golangci-lint v2 (v6 could only install v1).
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pinned: a new linter release must not break CI without a code change.
           # Keep in step with .golangci.yml and update deliberately.
           version: v2.15.0
-          args: --timeout=5m
-          install-mode: goinstall
 
       - name: Test
         run: CGO_ENABLED=1 go test -race -coverprofile=coverage.out ./...
