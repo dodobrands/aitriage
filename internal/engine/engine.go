@@ -297,15 +297,17 @@ func (e *Engine) Run(ctx *core.ProjectContext) []core.CheckResult {
 				if evidence != "" {
 					mu.Lock()
 					results = append(results, core.CheckResult{
-						ID:         rule.ID,
-						Name:       rule.Name,
-						Status:     core.Absent,
-						Evidence:   fmt.Sprintf("Rule %s found issue in %s", rule.ID, f.Path),
-						Suggestion: rule.Suggestion,
-						Framework:  ctx.Stack,
-						Severity:   rule.Severity,
-						Line:       line,
-						File:       f.Path,
+						ID:           rule.ID,
+						Name:         rule.Name,
+						Status:       core.Absent,
+						Evidence:     fmt.Sprintf("Rule %s found issue in %s", rule.ID, f.Path),
+						Suggestion:   rule.Suggestion,
+						Framework:    ctx.Stack,
+						Severity:     rule.Severity,
+						Line:         line,
+						File:         f.Path,
+						CWE:          rule.Metadata["cwe"],
+						OWASPMapping: rule.Metadata["owasp"],
 					})
 					mu.Unlock()
 				}
@@ -391,6 +393,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "No lockfile for " + strings.Join(missing, ", ") + " in " + ctx.RootPath,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}
@@ -419,6 +422,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Missing required file matching: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}
@@ -474,6 +478,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Required pattern not found: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
 			})
 			mu.Unlock()
 		}

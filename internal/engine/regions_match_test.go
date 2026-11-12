@@ -130,3 +130,24 @@ func TestRegionsMultiLineMatchInCommentDoesNotHideLiveCode(t *testing.T) {
 		t.Errorf("got lines %v, want [3]", got)
 	}
 }
+
+func TestFindingsCarryRuleMetadata(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.py"), []byte("os.system(cmd)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := core.NewWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	rule := models.Rule{ID: "T-META", Stack: "universal", Extensions: []string{".py"}, Target: "all", Regions: RegionsCode,
+		Pattern: `os\.system\(`, Severity: "HIGH", Metadata: map[string]string{"cwe": "CWE-78", "owasp": "A05:2025"}}
+	e := &Engine{}
+	e.compileRule(&rule)
+	e.Rules = []models.Rule{rule}
+	res := e.Run(&core.ProjectContext{RootPath: dir, ScanRoot: dir, Files: ws.Files, Stack: "unknown", Config: ws.Config})
+	if len(res) != 1 || res[0].CWE != "CWE-78" || res[0].OWASPMapping != "A05:2025" {
+		t.Errorf("results = %+v", res)
+	}
+}

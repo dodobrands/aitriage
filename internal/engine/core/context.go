@@ -39,6 +39,7 @@ type CheckResult struct {
 	File           string      `json:"file"`
 	Confidence     float64     `json:"confidence"`
 	OWASPMapping   string      `json:"owasp_mapping,omitempty"`
+	CWE            string      `json:"cwe,omitempty"`
 	ReasoningChain []string    `json:"reasoning_chain,omitempty"`
 }
 
