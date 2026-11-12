@@ -601,6 +601,7 @@ report format. The AI panels report that they are offline instead of failing the
 | Full audit failed | Keep the error visible and repair the runtime; do not present a reduced scan as the final verdict |
 | `aitriage agent` exited `2` | The audit did not complete. If `triage-findings.json` says `triage_status: failed`, its reason names the provider error (key, rate limit, timeout): re-run when the provider is available. If `manifest.json` shows a scanner as missing or failed, repair the runtime |
 | Many findings are `Needs Manual Review (unclassified)` | The model returned no verdict for them. Re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE` |
+| Semgrep findings in a large file come and go between runs | Semgrep stops analysing a file after repeated rule timeouts, and timeouts depend on machine load. The summary names the files Semgrep analysed only partly, and `manifest.json` lists them under `scanners[].partial_files` with the reason (`timeout`, `parse_error`, `error`). If such a file is generated, exclude it with `ignore.paths` |
 | A warning says an `ignore.paths` pattern no longer excludes a path | Patterns use `.gitignore` syntax now. Add the suggested entry if the path should stay out of scope |
 | A dismissed finding still fails CI | Commit `.aitriage-suppressions.json`. A dismissal made in the Web UI or an AI IDE under the container runtime sits in `aitriage-reports/suppressions/…` until you move it into that file. `aitriage agent` applies the file; the raw `aitriage scan` does not |
 

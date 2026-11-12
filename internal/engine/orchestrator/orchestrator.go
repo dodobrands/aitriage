@@ -71,6 +71,25 @@ func reportedFindings(n int, err error) int {
 
 const externalScannerTimeout = 10 * time.Minute
 
+// scannerRun is what one external scanner run produced.
+type scannerRun struct {
+	findings []external.UnifiedFinding
+	// partial lists the files the scanner analysed only partly, if it reports
+	// them.
+	partial []external.PartialFile
+	// version is the version the scanner printed with its results; empty means
+	// it is asked for separately.
+	version string
+}
+
+// findingsOnly adapts a scanner that reports nothing but findings.
+func findingsOnly(fn func(context.Context) ([]external.UnifiedFinding, error)) func(context.Context) (scannerRun, error) {
+	return func(ctx context.Context) (scannerRun, error) {
+		findings, err := fn(ctx)
+		return scannerRun{findings: findings}, err
+	}
+}
+
 // RunAllScanners executes all SAST, NFR, Deploy, Git, Network and architecture diagram generators concurrently.
 func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 	var wg sync.WaitGroup
@@ -147,19 +166,24 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 			// run executes one scanner with a hard upper bound, records its status,
 			// and appends findings. Request cancellation still propagates through the
 			// parent context; an abandoned Web/MCP run cannot leak child processes.
-			run := func(name, label string, fn func(context.Context) ([]external.UnifiedFinding, error)) {
+			run := func(name, label string, fn func(context.Context) (scannerRun, error)) {
 				defer swg.Done()
 				if !external.IsInstalled(name) {
 					record(external.ScannerExecution{Scanner: label, Status: external.StatusMissing})
 					fmt.Fprintf(os.Stderr, "   ▶ %s — MISSING (not installed)\n", label)
 					return
 				}
-				version := external.ToolVersion(ctx, name)
 				start := time.Now()
 				scanCtx, cancel := context.WithTimeout(ctx, externalScannerTimeout)
 				defer cancel()
-				findings, err := fn(scanCtx)
+				out, err := fn(scanCtx)
 				dur := time.Since(start).Milliseconds()
+				// A version printed with the results is the one that produced them
+				// and costs no second start of the tool.
+				version := out.version
+				if version == "" {
+					version = external.ToolVersion(ctx, name)
+				}
 				if err != nil {
 					status := external.StatusFailed
 					if scanCtx.Err() == context.DeadlineExceeded {
@@ -169,40 +193,46 @@ func RunAllScanners(ctx context.Context, opts Options) llm.RichScanResult {
 					fmt.Fprintf(os.Stderr, "   ▶ %s ✗ FAILED: %v\n", label, err)
 					return
 				}
-				findings = external.FilterTestLikeFindings(findings)
+				findings := external.FilterTestLikeFindings(out.findings)
 				// Authoritative scope gate: vendored trees and ignored files are
 				// not this project's code, whatever the tool decided to read.
 				findings = external.FilterOutOfScope(opts.ProjectPath, findings)
+				partial := external.ScopePartialFiles(opts.ProjectPath, out.partial)
 				addFindings(findings)
-				record(external.ScannerExecution{Scanner: label, Status: external.StatusCompleted, Version: version, Findings: len(findings), DurationMs: dur})
-				fmt.Fprintf(os.Stderr, "   ▶ %s ✓ %d findings (%dms)\n", label, len(findings), dur)
+				record(external.ScannerExecution{Scanner: label, Status: external.StatusCompleted, Version: version, Findings: len(findings), DurationMs: dur, PartialFiles: partial})
+				note := ""
+				if len(partial) > 0 {
+					note = fmt.Sprintf("; %d file(s) analysed only partly: %s", external.PartialFileCount(partial), external.PartialFilesSummary(partial))
+				}
+				fmt.Fprintf(os.Stderr, "   ▶ %s ✓ %d findings (%dms)%s\n", label, len(findings), dur, note)
 			}
 
 			swg.Add(1)
-			go run("semgrep", "semgrep", func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
+			go run("semgrep", "semgrep", func(scanCtx context.Context) (scannerRun, error) {
 				// Mandatory taint rules must be loadable; otherwise the full audit
 				// fails closed instead of running Semgrep without them.
 				if taintErr != nil {
-					return nil, fmt.Errorf("mandatory taint rules unavailable: %w", taintErr)
+					return scannerRun{}, fmt.Errorf("mandatory taint rules unavailable: %w", taintErr)
 				}
 				// Registry "auto" rules and the trusted AITriage taint rules run
 				// simultaneously in one Semgrep pass.
-				return external.RunSemgrepConfigs(scanCtx, opts.ProjectPath, taintRuleIDs, "auto", taintCfgPath)
+				scan, err := external.ScanSemgrep(scanCtx, opts.ProjectPath, taintRuleIDs, "auto", taintCfgPath)
+				return scannerRun{findings: scan.Findings, partial: scan.PartialFiles, version: scan.Version}, err
 			})
 			swg.Add(1)
-			go run("gitleaks", "gitleaks", func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
+			go run("gitleaks", "gitleaks", findingsOnly(func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
 				return external.RunGitleaks(scanCtx, opts.ProjectPath)
-			})
+			}))
 			swg.Add(1)
-			go run("bandit", "bandit", func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
+			go run("bandit", "bandit", findingsOnly(func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
 				return external.RunBandit(scanCtx, opts.ProjectPath)
-			})
+			}))
 			for _, scanType := range []string{"fs", "config"} {
 				st := scanType
 				swg.Add(1)
-				go run("trivy", "trivy_"+st, func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
+				go run("trivy", "trivy_"+st, findingsOnly(func(scanCtx context.Context) ([]external.UnifiedFinding, error) {
 					return external.RunTrivy(scanCtx, opts.ProjectPath, st)
-				})
+				}))
 			}
 
 			swg.Wait()

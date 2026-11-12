@@ -236,23 +236,34 @@ var containerMounts = []string{"/github/workspace", "/workspace", "/project", "/
 // relativize expresses a scanner-reported path relative to the project root so
 // it can be matched against ignore patterns, which are root-relative.
 func (f *ScopeFilter) relativize(clean string) string {
+	if rel, ok := f.placeUnderRoot(clean); ok {
+		return rel
+	}
+	// A path that cannot be placed under the root is judged whole.
+	return strings.TrimPrefix(clean, "/")
+}
+
+// placeUnderRoot returns clean relative to the project root, and false when
+// the path lies outside the project, such as a scanner's own configuration in
+// a temporary directory. clean is slash-separated.
+func (f *ScopeFilter) placeUnderRoot(clean string) (string, bool) {
 	for _, root := range []string{f.root, f.realRoot} {
 		if root == "" {
 			continue
 		}
 		root = filepath.ToSlash(root)
 		if clean == root {
-			return ""
+			return "", true
 		}
 		if prefix := strings.TrimSuffix(root, "/") + "/"; strings.HasPrefix(clean, prefix) {
-			return strings.TrimPrefix(clean, prefix)
+			return strings.TrimPrefix(clean, prefix), true
 		}
 	}
 	// Relative paths are reported against the project root: Trivy targets and
 	// git history always are, and the other tools are when the root is the
 	// working directory.
 	if !strings.HasPrefix(clean, "/") {
-		return clean
+		return clean, !filepath.IsAbs(filepath.FromSlash(clean))
 	}
 	// A container run reports paths under the directory the project was
 	// mounted at rather than the host path this filter was built for. Only a
@@ -260,11 +271,10 @@ func (f *ScopeFilter) relativize(clean string) string {
 	// deeper in a path is an ordinary directory of the project.
 	for _, mount := range containerMounts {
 		if strings.HasPrefix(clean, mount+"/") {
-			return strings.TrimPrefix(clean, mount+"/")
+			return strings.TrimPrefix(clean, mount+"/"), true
 		}
 	}
-	// A path that cannot be placed under the root is judged whole.
-	return strings.TrimPrefix(clean, "/")
+	return "", false
 }
 
 // FilterOutOfScope drops findings that point outside the audited application.

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
 // unclassifiedNotes explains the Needs Review findings without an accepted
@@ -165,6 +166,38 @@ func rawResultsNote(state *AgentState) string {
 		note += ": " + strings.Join(parts, ", ")
 	}
 	return note + "._"
+}
+
+// partialTimeoutFilesShown caps the files a partial-coverage note names.
+const partialTimeoutFilesShown = 5
+
+// partialCoverageNotes returns one note per scanner that analysed files only
+// partly, naming the files where rules timed out: those are the findings that
+// can differ between runs.
+func partialCoverageNotes(executions []external.ScannerExecution) []string {
+	var notes []string
+	for _, ex := range executions {
+		if len(ex.PartialFiles) == 0 {
+			continue
+		}
+		var timedOut []string
+		for _, pf := range ex.PartialFiles {
+			if pf.Reason == external.PartialTimeout {
+				timedOut = append(timedOut, "`"+pf.File+"`")
+			}
+		}
+		note := fmt.Sprintf("_`%s` analysed %d file(s) only partly (%s), so findings in them may be missing.",
+			ex.Scanner, external.PartialFileCount(ex.PartialFiles), external.PartialFilesSummary(ex.PartialFiles))
+		if len(timedOut) > 0 {
+			list := strings.Join(timedOut[:min(len(timedOut), partialTimeoutFilesShown)], ", ")
+			if extra := len(timedOut) - partialTimeoutFilesShown; extra > 0 {
+				list += fmt.Sprintf(" and %d more file(s)", extra)
+			}
+			note += " Rule timeouts depend on machine load, so findings in " + list + " can differ between runs."
+		}
+		notes = append(notes, note+" The files are listed under `partial_files` in the scanner manifest._")
+	}
+	return notes
 }
 
 // iacReportOnlyLine says how many IaC misconfiguration findings the policy

@@ -19,6 +19,73 @@ type semgrepOutput struct {
 			Line int `json:"line"`
 		} `json:"start"`
 	} `json:"results"`
+	// Errors are the problems Semgrep met while scanning. It exits 0 with them,
+	// so a run that completed may still have skipped part of a file.
+	Errors []semgrepError `json:"errors"`
+	// Version is the Semgrep version that produced the results.
+	Version string `json:"version"`
+}
+
+// semgrepError is one entry of Semgrep's "errors" list.
+type semgrepError struct {
+	// Type is a string ("Timeout", "Syntax error") or an array whose first
+	// element names the kind (["PartialParsing", [...]]).
+	Type  json.RawMessage `json:"type"`
+	Path  string          `json:"path"`
+	Spans []struct {
+		File string `json:"file"`
+	} `json:"spans"`
+}
+
+// kind returns the error kind named by Type.
+func (e semgrepError) kind() string {
+	var name string
+	if json.Unmarshal(e.Type, &name) == nil {
+		return name
+	}
+	var tuple []json.RawMessage
+	if json.Unmarshal(e.Type, &tuple) == nil && len(tuple) > 0 && json.Unmarshal(tuple[0], &name) == nil {
+		return name
+	}
+	return ""
+}
+
+// file returns the file the error is about, or "" for an error that is not
+// about one file (a rule that failed to load, a network problem).
+func (e semgrepError) file() string {
+	if strings.TrimSpace(e.Path) != "" {
+		return e.Path
+	}
+	for _, span := range e.Spans {
+		if strings.TrimSpace(span.File) != "" {
+			return span.File
+		}
+	}
+	return ""
+}
+
+// partialReason maps a Semgrep error kind to a PartialFile reason.
+func partialReason(kind string) string {
+	k := strings.ToLower(kind)
+	switch {
+	case strings.Contains(k, "timeout"):
+		return PartialTimeout
+	case k == "partialparsing", strings.Contains(k, "syntax error"), strings.Contains(k, "lexical error"), strings.Contains(k, "ast builder error"):
+		return PartialParseError
+	default:
+		return PartialError
+	}
+}
+
+// SemgrepScan is the result of one Semgrep pass.
+type SemgrepScan struct {
+	Findings []UnifiedFinding
+	// PartialFiles are the files Semgrep reported errors for, with paths as
+	// Semgrep printed them; ScopePartialFiles prepares them for output.
+	PartialFiles []PartialFile
+	// Version is the Semgrep version printed with the results, or "".
+	// "semgrep --version" needs a second start of Semgrep, about five seconds.
+	Version string
 }
 
 // RunSemgrep runs semgrep with a single config and returns unified findings.
@@ -38,8 +105,15 @@ func RunSemgrep(ctx context.Context, path, config string) ([]UnifiedFinding, err
 // its canonical id so, e.g., FAST-XSS always surfaces as FAST-XSS regardless of
 // how Semgrep qualifies it.
 func RunSemgrepConfigs(ctx context.Context, path string, taintRuleIDs []string, configs ...string) ([]UnifiedFinding, error) {
+	scan, err := ScanSemgrep(ctx, path, taintRuleIDs, configs...)
+	return scan.Findings, err
+}
+
+// ScanSemgrep is RunSemgrepConfigs that also returns the files Semgrep
+// analysed only partly.
+func ScanSemgrep(ctx context.Context, path string, taintRuleIDs []string, configs ...string) (SemgrepScan, error) {
 	if !IsInstalled("semgrep") {
-		return nil, fmt.Errorf("semgrep not installed")
+		return SemgrepScan{}, fmt.Errorf("semgrep not installed")
 	}
 	if len(configs) == 0 {
 		configs = []string{"auto"}
@@ -56,11 +130,16 @@ func RunSemgrepConfigs(ctx context.Context, path string, taintRuleIDs []string, 
 
 	result, err := RunTool(ctx, "semgrep", args...)
 	if err != nil {
-		return nil, fmt.Errorf("semgrep execution failed: %w", err)
+		return SemgrepScan{}, fmt.Errorf("semgrep execution failed: %w", err)
 	}
+	return parseSemgrepOutput(result.Stdout, taintRuleIDs)
+}
+
+// parseSemgrepOutput reads Semgrep's JSON output.
+func parseSemgrepOutput(stdout string, taintRuleIDs []string) (SemgrepScan, error) {
 	var output semgrepOutput
-	if err := json.Unmarshal([]byte(result.Stdout), &output); err != nil {
-		return nil, fmt.Errorf("failed to parse semgrep output: %w", err)
+	if err := json.Unmarshal([]byte(stdout), &output); err != nil {
+		return SemgrepScan{}, fmt.Errorf("failed to parse semgrep output: %w", err)
 	}
 
 	taint := make(map[string]bool, len(taintRuleIDs))
@@ -68,12 +147,12 @@ func RunSemgrepConfigs(ctx context.Context, path string, taintRuleIDs []string, 
 		taint[id] = true
 	}
 
-	findings := make([]UnifiedFinding, 0, len(output.Results))
+	scan := SemgrepScan{Findings: make([]UnifiedFinding, 0, len(output.Results)), Version: normalizeToolVersion(output.Version)}
 	for _, r := range output.Results {
 		if isGeneratedArtifactPath(r.Path) {
 			continue
 		}
-		findings = append(findings, UnifiedFinding{
+		scan.Findings = append(scan.Findings, UnifiedFinding{
 			Source:   "semgrep",
 			RuleID:   normalizeTaintRuleID(r.RuleID, taint),
 			Severity: normalizeSeverity(r.Extra.Severity),
@@ -82,7 +161,14 @@ func RunSemgrepConfigs(ctx context.Context, path string, taintRuleIDs []string, 
 			Line:     r.Start.Line,
 		})
 	}
-	return findings, nil
+	for _, e := range output.Errors {
+		file := e.file()
+		if file == "" {
+			continue
+		}
+		scan.PartialFiles = append(scan.PartialFiles, PartialFile{File: file, Reason: partialReason(e.kind()), Count: 1})
+	}
+	return scan, nil
 }
 
 // normalizeTaintRuleID maps a Semgrep check_id back to a canonical AITriage taint
