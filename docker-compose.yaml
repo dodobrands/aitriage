@@ -31,10 +31,14 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-super-secret-development-key-change-in-prod}
       - DB_PATH=/app/data/aitriage.db
+      # Inside the image the server runs in-process and must listen on all
+      # container interfaces for the published port to reach it.
+      - AITRIAGE_RUNTIME=container
       - TERM=xterm-256color
     ports:
-      - "8080:8080"
-    command: ["web", "--port", "8080", "--host-prefix", "/host"]
+      # The dashboard has no authentication: publish it on localhost only.
+      - "127.0.0.1:8080:8080"
+    command: ["web", "--runtime", "native", "--port", "8080", "--host-prefix", "/host"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
       interval: 10s
@@ -56,7 +60,8 @@ services:
       dockerfile: Dockerfile
     command: ["serve", "--transport", "sse", "--port", "9090"]
     ports:
-      - "9090:9090"
+      # No authentication on the SSE endpoint: publish it on localhost only.
+      - "127.0.0.1:9090:9090"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}

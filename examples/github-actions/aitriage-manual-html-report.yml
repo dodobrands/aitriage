@@ -2,6 +2,10 @@
 #
 # On-demand, non-blocking HTML report. This is useful for private repositories
 # without GitHub Code Security or for a one-off audit before a release.
+#
+# Required repository variable: AITRIAGE_ALLOWED_ACTOR_ID, the numeric GitHub
+# account ID allowed to run this workflow (gh api users/<login> --jq .id).
+# Without it every job is skipped.
 name: AITriage Manual HTML Report
 
 on:

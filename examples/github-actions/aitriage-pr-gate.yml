@@ -2,6 +2,10 @@
 #
 # Fast deterministic gate for pull requests and the protected main branch.
 # It does not call an LLM or require provider credentials.
+#
+# Required repository variable: AITRIAGE_ALLOWED_ACTOR_ID, the numeric GitHub
+# account ID allowed to run this workflow (gh api users/<login> --jq .id).
+# Without it every job is skipped.
 name: AITriage PR Gate
 
 on:

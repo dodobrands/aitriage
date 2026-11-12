@@ -1,3 +1,4 @@
+---
 name: 🐛 Bug Report
 about: Create a report to help us improve AITriage detections.
 title: "[BUG] "
@@ -24,6 +25,6 @@ If applicable, add the code snippet or SARIF output here:
 ```
 
 **Environment (please complete the following information):**
- - OS: [e.g. macOS, Linux]
- - AITriage Version: [e.g. 1.5.0]
+ - OS: [e.g. macOS, Linux, Windows]
+ - AITriage Version: [output of `aitriage version`, e.g. AITriage v1.13.0]
  - Stack: [e.g. Next.js, Go]

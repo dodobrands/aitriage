@@ -12,7 +12,7 @@
 
 - id: aitriage
   name: AITriage Security Scan
-  description: Run AITriage security scan on changed files
+  description: Run the AITriage deterministic scan on the whole repository
   entry: aitriage scan . --fail-on critical
   language: golang
   types: [file]
@@ -21,7 +21,7 @@
 
 - id: aitriage-secrets
   name: AITriage Secret Detection
-  description: Check for hardcoded secrets using Shannon Entropy analysis
+  description: Run only the universal checks (secrets, Shannon entropy, AI residue) on the whole repository
   entry: aitriage scan . --fail-on critical --universal-only
   language: golang
   types: [file]

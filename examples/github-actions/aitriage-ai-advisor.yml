@@ -2,6 +2,10 @@
 #
 # Non-blocking AI triage for trusted code. The agent performs a full scan,
 # including recent Git history, then writes an actionable summary and fix spec.
+#
+# Required repository variable: AITRIAGE_ALLOWED_ACTOR_ID, the numeric GitHub
+# account ID allowed to run this workflow (gh api users/<login> --jq .id).
+# Without it every job is skipped.
 name: AITriage AI Advisor
 
 on:

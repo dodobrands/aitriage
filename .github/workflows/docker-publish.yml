@@ -2,8 +2,10 @@ name: Publish Docker Image (GHCR)
 
 # Builds the all-in-one AITriage image ONCE here and publishes it to the
 # GitHub Container Registry. The consumer-facing Docker Action (action.yml)
-# then pulls this pre-built image instead of rebuilding the Dockerfile on
-# every run, cutting Action runtime from ~15 min to a few seconds.
+# then pulls a pre-built image instead of rebuilding the Dockerfile on every
+# run, cutting Action runtime from ~15 min to a few seconds. The Action and
+# development CLI builds use the :v1 tag, which this workflow never moves (see
+# the metadata step); released CLIs use the exact v<version> tag pushed here.
 
 on:
   push:

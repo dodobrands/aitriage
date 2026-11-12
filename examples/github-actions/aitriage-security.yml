@@ -4,6 +4,10 @@
 # Layer 1 collects deterministic evidence but never blocks a change on raw
 # findings. Layer 2 is mandatory AI triage and the sole policy gate: it makes
 # the final decision only after false positives have been classified.
+#
+# Required repository variable: AITRIAGE_ALLOWED_ACTOR_ID, the numeric GitHub
+# account ID allowed to run this workflow (gh api users/<login> --jq .id).
+# Without it every job is skipped.
 name: AITriage Security
 
 on:
@@ -54,8 +58,8 @@ jobs:
           fetch-depth: 1
 
       - name: Collect deterministic findings
-        # Use the maintained v1 release line. Consumers receive the digest pin
-        # after the next Action release advances this reference (see WF-001).
+        # The maintained v1 release line. Unlike the actions above it is not
+        # SHA-pinned; pin a release commit if your policy requires that.
         uses: dodobrands/aitriage@v1
         with:
           command: scan

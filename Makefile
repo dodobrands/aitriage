@@ -1,39 +1,51 @@
 # ==============================================================================
-# AITriage - Premium Build System
+# AITriage developer Makefile. Run `make help` to list the targets.
 # ==============================================================================
 
-BINARY_NAME=aitriage
-VERSION=1.5.0
-LDFLAGS="-s -w -X main.Version=${VERSION}"
+BINARY_NAME = aitriage
+# Local builds identify as "dev" and use the rolling scanner image
+# (ghcr.io/dodobrands/aitriage:v1). Override to pin one release's image, e.g.
+# `make build VERSION=v1.13.0`. Tag releases are built by
+# .github/workflows/release.yml, not by this Makefile.
+VERSION ?= dev
+LDFLAGS = -s -w -X main.Version=$(VERSION)
+# Local image built by docker-build and used by the docker-* targets.
+IMAGE ?= aitriage:latest
+# Project scanned by docker-tui, docker-web and docker-scan.
+PROJECT ?= $(CURDIR)
 
-.PHONY: all build test clean format install release launch docker-build docker-tui docker-web docker-scan build-web sync-web web-up up enterprise-up down
+.DEFAULT_GOAL := all
+.PHONY: help all build test lint clean format install release build-web sync-web web-up launch up enterprise-up down docker-build docker-tui docker-web docker-scan
 
 # Colors
-BLUE=\033[34m
-GREEN=\033[32m
-RESET=\033[0m
+BLUE = \033[34m
+GREEN = \033[32m
+RESET = \033[0m
 
-all: format test build
+help: ## List the available targets
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build:
+all: format test build ## Format, test and build (default target)
+
+build: ## Build bin/aitriage (run sync-web first to embed the real Web UI)
 	@echo "$(BLUE)Building AITriage binary...$(RESET)"
-	@go build -ldflags $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/aitriage
+	@go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/aitriage
 	@echo "$(GREEN)Build complete: bin/$(BINARY_NAME)$(RESET)"
 
-test:
-	@echo "$(BLUE)Executing test suite...$(RESET)"
+test: ## Run the Go test suite
+	@echo "$(BLUE)Running Go tests...$(RESET)"
 	@go test ./... -v
 
-lint:
+lint: ## Run golangci-lint
 	@echo "$(BLUE)Running golangci-lint...$(RESET)"
 	@golangci-lint run ./...
 
-clean:
+clean: ## Remove bin/ and go clean output
 	@echo "$(BLUE)Cleaning build artifacts...$(RESET)"
 	@rm -rf bin/
 	@go clean
 
-format:
+format: ## Format Go sources, then run the web formatter (failures ignored)
 	@echo "$(BLUE)Formatting Go sources...$(RESET)"
 	@go fmt ./...
 	@if command -v goimports > /dev/null; then goimports -w .; fi
@@ -41,95 +53,81 @@ format:
 	@if command -v gci > /dev/null; then gci write --section Standard --section Default --section "Prefix(github.com/dodobrands/aitriage)" .; fi
 	@echo "$(BLUE)Formatting Web sources...$(RESET)"
 	@if [ -d "web" ]; then \
-		cd web && npm run format || true; \
+	    cd web && npm run format || true; \
 	fi
-	@echo "$(GREEN)Code formatting and structural verification complete.$(RESET)"
+	@echo "$(GREEN)Formatting complete.$(RESET)"
 
-install: build
-	@echo "$(BLUE)Installing binary to GOPATH...$(RESET)"
-	@cp bin/$(BINARY_NAME) $(GOPATH)/bin/$(BINARY_NAME)
+install: build ## Copy bin/aitriage into GOBIN (default: GOPATH/bin)
+	@dest="$$(go env GOBIN)"; [ -n "$$dest" ] || dest="$$(go env GOPATH)/bin"; \
+	    mkdir -p "$$dest" && cp bin/$(BINARY_NAME) "$$dest/$(BINARY_NAME)" && \
+	    echo "$(GREEN)Installed $$dest/$(BINARY_NAME)$(RESET)"
 
-release:
-	@echo "$(BLUE)Running release pipeline...$(RESET)"
-	@goreleaser release --snapshot --clean
+# tree-sitter needs CGO, so this builds only the host platform: cross-compiling
+# every platform would need C toolchains this target does not assume.
+release: ## GoReleaser snapshot build for this machine (publishes nothing)
+	@echo "$(BLUE)Running GoReleaser snapshot build for the host platform...$(RESET)"
+	@goreleaser build --snapshot --clean --single-target
 
 # ─── Web UI ───────────────────────────────────────────────────────────────────
 
-build-web:
+build-web: ## Build the web frontend from the lockfile (npm ci + npm run build)
 	@echo "$(BLUE)Building Web frontend...$(RESET)"
-	@cd web && npm install && npm run build
+	@cd web && npm ci && npm run build
 
-sync-web: build-web
+sync-web: build-web ## Build the frontend and copy web/dist into internal/server/ui/dist
 	@echo "$(BLUE)Synchronizing Web assets...$(RESET)"
 	@mkdir -p internal/server/ui/dist
 	@cp -r web/dist/* internal/server/ui/dist/
 	@echo "$(GREEN)Assets synchronized to internal/server/ui/dist$(RESET)"
 
-web-up: up
+web-up: up ## Alias of up
 
-# ─── Docker ───────────────────────────────────────────────────────────────────
+# ─── Docker Compose (docker-compose.yaml) ─────────────────────────────────────
+# The image build compiles the Web UI itself (see the Dockerfile).
 
-# 🚀 ONE COMMAND: Build frontend + backend inside Docker & launch
-# Usage: make launch
-launch:
-	@echo "$(BLUE)🚀 Building & launching AITriage (frontend + backend in Docker)...$(RESET)"
+launch: ## Build and start the compose web service, then print its URLs
+	@echo "$(BLUE)Building and starting the AITriage web service (docker compose)...$(RESET)"
 	@docker compose up -d --build web
 	@echo ""
-	@echo "$(GREEN)╔══════════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(GREEN)║  AITriage is running!                                ║$(RESET)"
-	@echo "$(GREEN)║  Web UI:  http://localhost:8080                      ║$(RESET)"
-	@echo "$(GREEN)║  Health:  http://localhost:8080/api/health            ║$(RESET)"
-	@echo "$(GREEN)║                                                      ║$(RESET)"
-	@echo "$(GREEN)║  Default login:  admin / admin                       ║$(RESET)"
-	@echo "$(GREEN)║  Stop:  make down                                    ║$(RESET)"
-	@echo "$(GREEN)╚══════════════════════════════════════════════════════╝$(RESET)"
+	@echo "$(GREEN)AITriage web service started.$(RESET)"
+	@echo "  Web UI:  http://localhost:8080"
+	@echo "  Health:  http://localhost:8080/api/health"
+	@echo "  Login:   none. The dashboard has no authentication; keep it local."
+	@echo "  Stop:    make down"
 
-up: sync-web
-	@echo "$(BLUE)Starting AITriage Enterprise Stack...$(RESET)"
+up: ## Build and start the compose web service
+	@echo "$(BLUE)Starting the AITriage web service (docker compose)...$(RESET)"
 	@docker compose up -d --build web
-	@echo "$(GREEN)AITriage is running! Web UI: http://localhost:8080$(RESET)"
+	@echo "$(GREEN)AITriage web service started: http://localhost:8080$(RESET)"
 
-enterprise-up: sync-web
-	@echo "$(BLUE)Starting AITriage Enterprise Stack (Production)...$(RESET)"
-	@docker compose up -d --build
-	@echo "$(GREEN)AITriage Enterprise is running! Web UI: http://localhost:8080$(RESET)"
+enterprise-up: up ## Alias of up (kept for existing docs and scripts)
 
-down:
-	@echo "$(BLUE)Stopping AITriage Enterprise Stack...$(RESET)"
+down: ## Stop and remove the compose services
+	@echo "$(BLUE)Stopping AITriage (docker compose)...$(RESET)"
 	@docker compose down
 	@echo "$(GREEN)AITriage has been stopped.$(RESET)"
 
+# ─── Docker (local image) ─────────────────────────────────────────────────────
+# PROJECT defaults to the current directory: make docker-tui PROJECT=/path/to/app
 
-docker-build:
-	@./scripts/build_docker.sh
+docker-build: ## Build the local scanner image (aitriage:latest)
+	@echo "$(BLUE)Building $(IMAGE)...$(RESET)"
+	@docker build --build-arg AITRIAGE_VERSION=$(VERSION) -t $(IMAGE) .
 
-# Interactive TUI with all scanners (semgrep, trivy, gitleaks, bandit)
-# Usage: make docker-tui                     ← scans current directory
-#        make docker-tui PROJECT=/path/to/app ← scans specific project
-docker-tui: docker-build
-	@echo "🚀 Launching TUI in Docker..."
+docker-tui: docker-build ## Interactive TUI scan of PROJECT in the local image
 	@docker run --rm -it \
-		-e GEMINI_API_KEY=$${GEMINI_API_KEY:-} \
-		-e TERM=xterm-256color \
-		-v $${PROJECT:-$(PWD)}:/project:ro \
-		aitriage:latest scan /project -i
+	    -e GEMINI_API_KEY \
+	    -e TERM=xterm-256color \
+	    -v "$(PROJECT):/project:ro" \
+	    $(IMAGE) scan /project -i
 
-# Web dashboard in browser at http://localhost:8080
-# Usage: make docker-web                     ← scans current directory
-#        make docker-web PROJECT=/path/to/app ← scans specific project
-docker-web: sync-web docker-build
-	@echo "🌐 Starting Web UI → http://localhost:8080"
-	@docker run --rm -it \
-		-e GEMINI_API_KEY=$${GEMINI_API_KEY:-} \
-		-p 8080:8080 \
-		-v $${PROJECT:-$(PWD)}:/project:ro \
-		aitriage:latest web --port 8080 --host-prefix /project
+# Uses the CLI's managed Web launcher (the same path as `aitriage web`) with the
+# local image: PROJECT is mounted read-only, state is written to
+# PROJECT/aitriage-reports/, and the port is published on 127.0.0.1 only.
+docker-web: docker-build build ## Web UI for PROJECT from the local image on http://localhost:8080
+	@AITRIAGE_IMAGE=$(IMAGE) ./bin/$(BINARY_NAME) web --project "$(PROJECT)" --port 8080
 
-# CLI scan with JSON output (for CI/CD)
-# Usage: make docker-scan                     ← scans current directory
-#        make docker-scan PROJECT=/path/to/app ← scans specific project
-docker-scan: docker-build
+docker-scan: docker-build ## JSON scan of PROJECT in the local image (for CI/CD)
 	@docker run --rm \
-		-v $${PROJECT:-$(PWD)}:/project:ro \
-		aitriage:latest scan /project --format json
-
+	    -v "$(PROJECT):/project:ro" \
+	    $(IMAGE) scan /project --format json

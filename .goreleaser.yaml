@@ -1,9 +1,10 @@
 # ==============================================================================
 # AITriage — GoReleaser Configuration
 # ==============================================================================
-# Builds cross-platform binaries, publishes to GitHub Releases,
-# and generates checksums.
-# Triggered by: git tag v* → .github/workflows/release.yml
+# Used by `make release` (a host-only snapshot build) and validated by
+# `goreleaser check` in .github/workflows/ci.yml. Tag releases do NOT use this
+# file: .github/workflows/release.yml builds each platform natively, because
+# tree-sitter needs CGO.
 # ==============================================================================
 
 version: 2
@@ -17,7 +18,8 @@ builds:
     main: ./cmd/aitriage
     binary: aitriage
     env:
-      - CGO_ENABLED=0
+      # tree-sitter bindings do not compile without CGO.
+      - CGO_ENABLED=1
     goos:
       - linux
       - darwin
@@ -77,7 +79,7 @@ release:
   header: |
     ## AITriage v{{ .Version }}
 
-    AI-Powered Security Audit Engine with 187 built-in rules across 11 technology stacks.
+    Deterministic security scanner for AI-generated codebases, with optional AI triage.
 
     ### Install
     ```bash

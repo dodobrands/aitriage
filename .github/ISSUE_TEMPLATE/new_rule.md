@@ -1,5 +1,6 @@
-name: 🚀 New Vibe-Rule Profile
-about: Propose a new SAST / Vibe detection rule for the community
+---
+name: 🚀 New Detection Rule
+about: Propose a new detection rule for the AITriage rules library
 title: "[RULE] "
 labels: enhancement, rule-proposal
 assignees: ''
@@ -7,13 +8,20 @@ assignees: ''
 ---
 
 **Pattern Description**
-What specific AI "vibe", hallucination, or vulnerability are we trying to catch?
+What AI-generated code pattern, hallucination, or vulnerability should this rule catch?
 
-**Proposed Stack**
+**Proposed Stack** (one of the categories under `rules/`)
 - [ ] Universal
-- [ ] Next.js
+- [ ] Python
+- [ ] Next.js / React
 - [ ] FastAPI
-- [ ] Go 
+- [ ] Django
+- [ ] Flask
+- [ ] Express.js
+- [ ] Go
+- [ ] ASP.NET Core
+- [ ] LLM / AI Security
+- [ ] Docker / IaC
 
 **Severity**
 `CRITICAL` / `HIGH` / `MEDIUM` / `LOW`
@@ -23,5 +31,8 @@ What specific AI "vibe", hallucination, or vulnerability are we trying to catch?
 // Example code that should fail
 ```
 
-**Proposed Regex / AST Query:**
-Provide the `tree-sitter` snippet or compiled Regex here.
+**Proposed Rule:**
+A YAML rule in the format described in `rules/README.md` (regex, tree-sitter AST query, or `mode: taint`).
+```yaml
+- id: MY-RULE-ID
+```
