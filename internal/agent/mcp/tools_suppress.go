@@ -133,16 +133,8 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 				Line:     input.Line,
 				Evidence: input.Evidence,
 			}
-			switch {
-			case item.File == "" && !input.RuleWide:
-				return nil, suppressResult{}, fmt.Errorf(
-					"file is required to dismiss a finding: pass the file it is in, and its evidence to dismiss only that finding. "+
-						"Without a file this dismissal %s; set rule_wide to true if that is what you mean",
-					dismissalScope(item))
-			case item.File != "" && input.RuleWide:
-				return nil, suppressResult{}, fmt.Errorf(
-					"rule_wide records a dismissal that is not tied to a file, so it takes no file: drop file, or drop rule_wide to dismiss %s in %s only",
-					item.RuleID, item.File)
+			if err := suppression.ValidateScope(item, input.RuleWide); err != nil {
+				return nil, suppressResult{}, err
 			}
 			entry, replaced, addErr := record.Add(item, input.Reason, input.Note, "ai-ide")
 			if addErr != nil {
@@ -158,9 +150,9 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			}
 			result := listSuppressions(record)
 			result.Action = "add"
-			result.Scope = "This dismissal " + dismissalScope(item) + "."
+			result.Scope = "This dismissal " + suppression.DescribeScope(item) + "."
 			result.Summary = fmt.Sprintf("%s %s (%s) as %s. %s %s",
-				verb, entry.RuleID, sourceName(entry.Source), entry.Reason, result.Scope, decisionsReach(record.Location))
+				verb, entry.RuleID, suppression.SourceName(entry.Source), entry.Reason, result.Scope, decisionsReach(record.Location))
 			return nil, withLocalNote(result, record.Location), nil
 
 		case "remove":
@@ -194,33 +186,6 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			return nil, suppressResult{}, fmt.Errorf("unknown action %q (supported: list, add, remove)", input.Action)
 		}
 	})
-}
-
-// dismissalScope says which findings a dismissal of item covers, the way
-// suppression.Store.Suppresses matches it: with evidence only the finding
-// that carries it, without evidence every finding of the rule in its file, and
-// without a file either, every one anywhere in the project.
-func dismissalScope(item baseline.Item) string {
-	source := sourceName(item.Source)
-	switch {
-	case item.Evidence == "" && item.File == "":
-		return fmt.Sprintf("covers every %s finding of %s anywhere in the project, including ones reported later", source, item.RuleID)
-	case item.Evidence == "":
-		return fmt.Sprintf("covers every %s finding of %s in %s, including ones reported later", source, item.RuleID, item.File)
-	case item.File == "":
-		return fmt.Sprintf("covers only %s findings of %s that are reported without a file and carry this evidence", source, item.RuleID)
-	default:
-		return fmt.Sprintf("covers only the %s finding of %s in %s that carries this evidence", source, item.RuleID, item.File)
-	}
-}
-
-// sourceName is the scanner a dismissal recorded without a source applies to:
-// findings of the built-in engine.
-func sourceName(source string) string {
-	if strings.TrimSpace(source) == "" {
-		return "core"
-	}
-	return source
 }
 
 // decisionsReach says which surfaces see a decision once it is written.
