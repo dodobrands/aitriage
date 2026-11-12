@@ -22,7 +22,8 @@ rules:
              left: (string)
              right: (identifier)))
         (#match? @func "^(Query|Exec|QueryRow)$"))
-    suggestion: "CRITICAL: SQL query built with string concatenation. Use parameterized queries."
+    severity: CRITICAL
+    suggestion: "SQL query built with string concatenation. Use parameterized queries."
 
   - id: GO-PATH-TRAVERSAL
     name: "Path Traversal Risk"
@@ -41,7 +42,8 @@ rules:
              right: (identifier)))
         (#match? @pkg "^(os|ioutil)$")
         (#match? @func "^(Open|ReadFile)$"))
-    suggestion: "CRITICAL: Path concatenation in file operations. Sanitize user input."
+    severity: CRITICAL
+    suggestion: "Path concatenation in file operations. Sanitize user input."
 
   - id: GO-HTTP-DOS
     name: "Insecure HTTP Server (DoS Risk)"
@@ -55,7 +57,8 @@ rules:
           field: (field_identifier) @func)
         (#eq? @mod "http")
         (#eq? @func "ListenAndServe"))
-    suggestion: "HIGH: `http.ListenAndServe` lacks timeouts. Use `http.Server` struct."
+    severity: HIGH
+    suggestion: "`http.ListenAndServe` lacks timeouts. Use `http.Server` struct."
 
   - id: GO-CONTEXT-LESS
     name: "Context-less Network Call"
@@ -69,7 +72,8 @@ rules:
         arguments: (argument_list (_) @arg)
         (#match? @func "^(Get|Post|Do)$")
         (#not-type? @arg "context_identifier"))
-    suggestion: "MEDIUM: Network call likely missing Context/Timeout. Use `WithContext`."
+    severity: MEDIUM
+    suggestion: "Network call likely missing Context/Timeout. Use `WithContext`."
 
   - id: GO-CMD-INJECTION
     name: "Command Injection (os/exec)"
@@ -78,7 +82,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'exec\.Command\s*\(\s*(?:fmt\.Sprintf|.*\+)'
-    suggestion: "CRITICAL: Shell command built with string concatenation/formatting. Pass arguments as separate strings to exec.Command()."
+    severity: CRITICAL
+    suggestion: "Shell command built with string concatenation/formatting. Pass arguments as separate strings to exec.Command()."
 
   - id: GO-MATH-RAND
     name: "Insecure Randomness (math/rand)"
@@ -87,7 +92,8 @@ rules:
     target: all
     pattern: '"math/rand"'
     condition: "not_contains:crypto/rand"
-    suggestion: "HIGH: math/rand is not cryptographically secure. Use crypto/rand for tokens, keys, and security-sensitive values."
+    severity: HIGH
+    suggestion: "math/rand is not cryptographically secure. Use crypto/rand for tokens, keys, and security-sensitive values."
 
   - id: GO-TLS-SKIP
     name: "Disabled TLS Verification"
@@ -96,7 +102,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'InsecureSkipVerify\s*:\s*true'
-    suggestion: "HIGH: TLS certificate verification disabled. This makes connections vulnerable to MITM attacks."
+    severity: HIGH
+    suggestion: "TLS certificate verification disabled. This makes connections vulnerable to MITM attacks."
 
   - id: GO-UNSAFE-PTR
     name: "Unsafe Pointer Usage"
@@ -104,7 +111,8 @@ rules:
     extensions: [".go"]
     target: all
     pattern: 'unsafe\.Pointer'
-    suggestion: "MEDIUM: unsafe.Pointer bypasses Go's type safety. Minimize usage and audit carefully for memory corruption risks."
+    severity: MEDIUM
+    suggestion: "unsafe.Pointer bypasses Go's type safety. Minimize usage and audit carefully for memory corruption risks."
 
   - id: GO-ERR-BLANK
     name: "Error Assigned to Blank Identifier"
@@ -115,7 +123,8 @@ rules:
     pattern: '(?m)^\s*_\s*=\s*\w+\.\w+\('
     # LOW, as gosec rates unchecked errors (G104) and for parity with
     # FAST-LAZY-EXC: a discarded error is a reliability defect (CWE-703).
-    suggestion: "LOW: Error return value discarded. Unhandled errors can mask security-critical failures (auth, crypto, I/O)."
+    severity: LOW
+    suggestion: "Error return value discarded. Unhandled errors can mask security-critical failures (auth, crypto, I/O)."
 
   - id: GO-WEAK-TLS
     name: "Weak TLS Version"
@@ -123,7 +132,8 @@ rules:
     extensions: [".go"]
     target: all
     pattern: 'tls\.VersionTLS1[01]\b'
-    suggestion: "HIGH: TLS 1.0/1.1 are deprecated and have known vulnerabilities. Use tls.VersionTLS12 or tls.VersionTLS13."
+    severity: HIGH
+    suggestion: "TLS 1.0/1.1 are deprecated and have known vulnerabilities. Use tls.VersionTLS12 or tls.VersionTLS13."
 
   - id: GO-EMBED-SECRET
     name: "Embedded Secret File"
@@ -131,7 +141,8 @@ rules:
     extensions: [".go"]
     target: all
     pattern: '//go:embed\s+.*(?:\.env|secret|credential|private)'
-    suggestion: "CRITICAL: Sensitive file embedded in binary via go:embed. Secrets will be permanently baked into the compiled binary."
+    severity: CRITICAL
+    suggestion: "Sensitive file embedded in binary via go:embed. Secrets will be permanently baked into the compiled binary."
 
   - id: GO-SSRF
     name: "SSRF Risk"
@@ -139,7 +150,8 @@ rules:
     extensions: [".go"]
     target: all
     pattern: '(?i)http\.(Get|Post|NewRequest)\s*\(\s*(?:r\.|req\.|params|query)'
-    suggestion: "HIGH: User-controlled URL passed to HTTP request. Validate against an allowlist to prevent SSRF."
+    severity: HIGH
+    suggestion: "User-controlled URL passed to HTTP request. Validate against an allowlist to prevent SSRF."
 
   - id: GO-HARDCODED-CREDS
     name: "Hardcoded Credentials"
@@ -148,7 +160,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)(?:password|passwd|secret)\s*[:=]\s*"[^"]{8,}"'
-    suggestion: "HIGH: Hardcoded credentials in source code. Load from environment variables or a secrets manager."
+    severity: HIGH
+    suggestion: "Hardcoded credentials in source code. Load from environment variables or a secrets manager."
 
   - id: GO-SQL-SPRINTF
     name: "SQL Query via fmt.Sprintf"
@@ -156,4 +169,5 @@ rules:
     extensions: [".go"]
     target: all
     pattern: '(?i)fmt\.Sprintf\s*\(\s*"(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b'
-    suggestion: "CRITICAL: SQL query built with fmt.Sprintf. Use database/sql parameterized queries with ? or $1 placeholders."
+    severity: CRITICAL
+    suggestion: "SQL query built with fmt.Sprintf. Use database/sql parameterized queries with ? or $1 placeholders."

@@ -53,7 +53,8 @@ rules:
       - name: "Deno"
         manifests: ["deno.json", "deno.jsonc"]
         lockfiles: ["deno.lock"]
-    suggestion: "HIGH: A dependency manifest has no lockfile. Deployment will be nondeterministic and vulnerable to dependency hijacking. Commit the lockfile for the package manager named in the evidence."
+    severity: HIGH
+    suggestion: "A dependency manifest has no lockfile. Deployment will be nondeterministic and vulnerable to dependency hijacking. Commit the lockfile for the package manager named in the evidence."
 
   - id: ENTR-11
     name: "Placeholder Leaked to Production"
@@ -61,7 +62,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx", ".env"]
     target: all
     pattern: "(?i)(YOUR_API_KEY_HERE|REPLACE_ME|INSERT_TOKEN|change_me)"
-    suggestion: "HIGH: Placeholder left in code. Replace with actual configuration or logic."
+    severity: HIGH
+    suggestion: "Placeholder left in code. Replace with actual configuration or logic."
 
   - id: ENTR-12
     name: "God File Detected"
@@ -71,7 +73,8 @@ rules:
     condition: "large_file"
     exclude_tests: true
     exclude_paths: ["seed", "migration", "scripts/", "fixtures/", "testdata/"]
-    suggestion: "LOW: File exceeds 1500 lines. Refactor into smaller modules."
+    severity: LOW
+    suggestion: "File exceeds 1500 lines. Refactor into smaller modules."
 
   - id: ENTR-13
     name: "Debug Logs Spam"
@@ -79,7 +82,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
     pattern: '(?m)^(?:console\.log|print|fmt\.Println)\s*\(.*(here|test|debug|wtf|aaaa).*$'
-    suggestion: "LOW: Spammy debug logs found. Remove them before merging."
+    severity: LOW
+    suggestion: "Spammy debug logs found. Remove them before merging."
 
   - id: ENTR-17
     name: "Hardcoded Password"
@@ -87,7 +91,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".env"]
     target: all
     pattern: '(?i)password\s*[=:]\s*["\x27][^"\x27${}]{8,}["\x27]'
-    suggestion: "HIGH: Hardcoded password found. Move to environment variables."
+    severity: HIGH
+    suggestion: "Hardcoded password found. Move to environment variables."
 
   - id: ENTR-18
     name: "Insecure Defaults"
@@ -96,7 +101,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: "(?i)(0\\.0\\.0\\.0|DEBUG\\s*=\\s*True|debug:\\s*true)"
-    suggestion: "HIGH: Application configured to listen on all interfaces or debug mode enabled."
+    severity: HIGH
+    suggestion: "Application configured to listen on all interfaces or debug mode enabled."
 
   - id: ENTR-19
     name: "Default Credentials"
@@ -104,7 +110,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".yaml", ".yml", ".env"]
     target: all
     pattern: "(?i)(admin:admin|root:root|postgres:postgres)"
-    suggestion: "HIGH: Default credentials detected. Change immediately."
+    severity: HIGH
+    suggestion: "Default credentials detected. Change immediately."
 
   - id: ENTR-20
     name: "AI Rules File Backdoor (.cursorrules Manipulation)"
@@ -112,7 +119,8 @@ rules:
     extensions: [".cursorrules", ".md", ".txt", "prompt"]
     target: code
     pattern: "(?i)(ignore security|skip security checks|do not sanitize|bypass auth|disable validation|never use parameterized)"
-    suggestion: "CRITICAL: Malicious instructions found in AI configuration files. Attackers may be manipulating your AI assistant to generate backdoored code."
+    severity: CRITICAL
+    suggestion: "Malicious instructions found in AI configuration files. Attackers may be manipulating your AI assistant to generate backdoored code."
 
   - id: ENTR-21
     name: "Weak Cryptographic Hash (MD5)"
@@ -120,7 +128,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go"]
     target: code
     pattern: "(?i)(import md5|const md5|crypto\\.createHash\\(['\"]md5['\"]\\)|hashlib\\.md5\\()"
-    suggestion: "HIGH: MD5 is cryptographically broken. Use SHA-256 or bcrypt."
+    severity: HIGH
+    suggestion: "MD5 is cryptographically broken. Use SHA-256 or bcrypt."
 
   - id: ENTR-WEAK-CRYPTO
     name: "Weak Cryptographic Hash (MD5/SHA1)"
@@ -128,7 +137,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go"]
     target: all
     pattern: "(?i)(md5|sha1|crypto\\.createHash\\s*\\(\\s*[\"'](md5|sha1)[\"']\\))"
-    suggestion: "HIGH: MD5/SHA1 detected. Use SHA-256 or better for security-sensitive hashing."
+    severity: HIGH
+    suggestion: "MD5/SHA1 detected. Use SHA-256 or better for security-sensitive hashing."
 
   - id: ENTR-OPEN-REDIRECT
     name: "Open Redirect Vulnerability"
@@ -136,7 +146,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go"]
     target: all
     pattern: '(?i)(res\.redirect|redirect)\s*\(.*?(req\.query|request\.args|Params).*?\)'
-    suggestion: "HIGH: User-controlled URL in redirect. Validate against an allowlist."
+    severity: HIGH
+    suggestion: "User-controlled URL in redirect. Validate against an allowlist."
 
   - id: ENTR-INSECURE-COOKIE
     name: "Insecure Cookie Configuration"
@@ -145,7 +156,8 @@ rules:
     target: all
     pattern: '(?i)(res\.cookie|set_cookie)\s*\(.*?\)'
     condition: "not_contains:HttpOnly"
-    suggestion: "MEDIUM: Cookie missing HttpOnly flag. Vulnerable to XSS token theft."
+    severity: MEDIUM
+    suggestion: "Cookie missing HttpOnly flag. Vulnerable to XSS token theft."
 
   - id: ENTR-HALLUCINATION
     name: "Potential Package Hallucinations"
@@ -153,7 +165,8 @@ rules:
     extensions: [".go", ".js", ".ts", ".py"]
     target: all
     pattern: "(?i)(import\\s+[\"'](fake-lib|utility-engine|agent-utils-core|magic-helper)[\"']|require\\([\"'](fake-lib|magic-helper)[\"']\\))"
-    suggestion: "HIGH: Reference to common AI-hallucinated packages. Verify these dependencies actually exist."
+    severity: HIGH
+    suggestion: "Reference to common AI-hallucinated packages. Verify these dependencies actually exist."
 
   - id: ENTR-FRAGILE-LOGIC
     name: "Brittle Logic (Missing Safety)"
@@ -161,7 +174,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go"]
     target: all
     pattern: '(?m)^(\s*)if\s+err\s*!=\s*nil\s*\{\s*return\s*nil\s*\}'
-    suggestion: "HIGH: Silent error return found. Implement proper logging and recovery."
+    severity: HIGH
+    suggestion: "Silent error return found. Implement proper logging and recovery."
 
   - id: ENTR-SSRF
     name: "SSRF Risk (URL from User Input)"
@@ -169,7 +183,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go"]
     target: all
     pattern: '(?i)(fetch|axios|requests?\.(get|post)|http\.(Get|Post)|urllib|httpx)\s*\(\s*(req\.|request\.|params|query|args)'
-    suggestion: "HIGH: User-controlled URL passed to HTTP client. Validate against an allowlist to prevent SSRF."
+    severity: HIGH
+    suggestion: "User-controlled URL passed to HTTP client. Validate against an allowlist to prevent SSRF."
 
   - id: ENTR-NOSQL-INJECTION
     name: "NoSQL Injection Operators"
@@ -177,7 +192,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)\.(find|findOne|aggregate)\s*\(\s*\{[^}]*\$(?:ne|gt|lt|regex|where|or|and)\b'
-    suggestion: "CRITICAL: MongoDB query with operator injection risk. Sanitize input and reject $ operators from user data."
+    severity: CRITICAL
+    suggestion: "MongoDB query with operator injection risk. Sanitize input and reject $ operators from user data."
 
   - id: ENTR-PRIVATE-KEY
     name: "Private Key in Source Code"
@@ -185,7 +201,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".env", ".yaml", ".yml", ".json"]
     target: all
     pattern: '-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----'
-    suggestion: "CRITICAL: Private key embedded in source code. Remove immediately and rotate the key."
+    severity: CRITICAL
+    suggestion: "Private key embedded in source code. Remove immediately and rotate the key."
 
   - id: ENTR-JWT-NONE
     name: "JWT None Algorithm Attack"
@@ -193,7 +210,8 @@ rules:
     extensions: [".ts", ".js", ".py"]
     target: all
     pattern: '(?i)algorithm[s]?\s*[:=]\s*[\[\(]?\s*["\x27]none["\x27]'
-    suggestion: "CRITICAL: JWT configured with 'none' algorithm. This disables signature verification entirely."
+    severity: CRITICAL
+    suggestion: "JWT configured with 'none' algorithm. This disables signature verification entirely."
 
   - id: ENTR-CORS-WILDCARD
     name: "CORS Wildcard Origin"
@@ -201,7 +219,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".cs"]
     target: all
     pattern: '(?i)(?:Access-Control-Allow-Origin|allowedOrigins?|origin)\s*[:=]\s*["\x27]\*["\x27]'
-    suggestion: "HIGH: CORS allows all origins. Restrict to specific trusted domains."
+    severity: HIGH
+    suggestion: "CORS allows all origins. Restrict to specific trusted domains."
 
   - id: ENTR-INNERHTML
     name: "Direct innerHTML Assignment"
@@ -209,7 +228,8 @@ rules:
     extensions: [".ts", ".js", ".tsx", ".jsx"]
     target: all
     pattern: '\.innerHTML\s*='
-    suggestion: "HIGH: Direct innerHTML assignment bypasses XSS protection. Use textContent or a sanitizer (DOMPurify)."
+    severity: HIGH
+    suggestion: "Direct innerHTML assignment bypasses XSS protection. Use textContent or a sanitizer (DOMPurify)."
 
   - id: ENTR-EVAL-FUNC
     name: "Dynamic Code via new Function()"
@@ -218,7 +238,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'new\s+Function\s*\('
-    suggestion: "CRITICAL: new Function() executes arbitrary code. Remove or sandbox."
+    severity: CRITICAL
+    suggestion: "new Function() executes arbitrary code. Remove or sandbox."
 
   - id: ENTR-INSECURE-RANDOM
     name: "Insecure Randomness (Math.random)"
@@ -226,7 +247,8 @@ rules:
     extensions: [".ts", ".js", ".tsx", ".jsx"]
     target: all
     pattern: 'Math\.random\s*\(\s*\)'
-    suggestion: "HIGH: Math.random() is not cryptographically secure. Use crypto.randomUUID() or crypto.getRandomValues() for tokens, keys, and IDs."
+    severity: HIGH
+    suggestion: "Math.random() is not cryptographically secure. Use crypto.randomUUID() or crypto.getRandomValues() for tokens, keys, and IDs."
 
   - id: ENTR-SENSITIVE-LOG
     name: "Sensitive Data in Console/Print"
@@ -234,7 +256,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
     pattern: '(?i)(?:console\.log|fmt\.Print|print)\s*\(.*(?:password|token|secret|api_?key|private_?key|bearer)'
-    suggestion: "HIGH: Sensitive data appears in console/print output. Mask before logging."
+    severity: HIGH
+    suggestion: "Sensitive data appears in console/print output. Mask before logging."
 
 # Three rules that used to follow here reused the ids ENTR-PROTO-POLLUTION,
 # ENTR-ZOMBIE-CODE and ENTR-SCAFFOLDING. The engine keeps only the first

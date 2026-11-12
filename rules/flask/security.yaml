@@ -12,7 +12,8 @@ rules:
     files: ["requirements.txt", "pyproject.toml", "Pipfile"]
     target: code
     pattern_not: '(?i)(flask-wtf|flask_wtf|wtforms|csrf|crsf)'
-    suggestion: "HIGH: No CSRF protection found. Install Flask-WTF and use CSRFProtect(app)."
+    severity: HIGH
+    suggestion: "No CSRF protection found. Install Flask-WTF and use CSRFProtect(app)."
 
   - id: FLASK-AUTH
     name: "Missing Authentication"
@@ -20,7 +21,8 @@ rules:
     files: ["requirements.txt", "pyproject.toml", "Pipfile"]
     target: code
     pattern_not: '(?i)(flask-login|flask_login|flask-jwt|flask_jwt|flask-security|authlib)'
-    suggestion: "HIGH: No authentication library found. Use Flask-Login or flask-jwt-extended."
+    severity: HIGH
+    suggestion: "No authentication library found. Use Flask-Login or flask-jwt-extended."
 
   - id: FLASK-RATELIMIT
     name: "Missing Rate Limiting"
@@ -28,7 +30,8 @@ rules:
     files: ["requirements.txt", "pyproject.toml", "Pipfile"]
     target: code
     pattern_not: '(?i)(flask-limiter|flask_limiter|slowapi|limits)'
-    suggestion: "HIGH: No rate limiter found. Use Flask-Limiter."
+    severity: HIGH
+    suggestion: "No rate limiter found. Use Flask-Limiter."
 
   - id: FLASK-HEADERS
     name: "Missing Security Headers"
@@ -36,7 +39,8 @@ rules:
     files: ["requirements.txt", "pyproject.toml", "Pipfile"]
     target: code
     pattern_not: '(?i)(flask-talisman|talisman|flask-seasurf|flask_talisman)'
-    suggestion: "HIGH: No security headers middleware. Use Flask-Talisman for HSTS, CSP, X-Frame-Options."
+    severity: HIGH
+    suggestion: "No security headers middleware. Use Flask-Talisman for HSTS, CSP, X-Frame-Options."
 
   - id: FLASK-ORM
     name: "Missing ORM (Parameterized Queries)"
@@ -44,7 +48,8 @@ rules:
     files: ["requirements.txt", "pyproject.toml", "Pipfile"]
     target: code
     pattern_not: '(?i)(sqlalchemy|flask-sqlalchemy|flask_sqlalchemy|peewee|tortoise|piccolo)'
-    suggestion: "HIGH: No ORM detected. Use Flask-SQLAlchemy to prevent SQL injection."
+    severity: HIGH
+    suggestion: "No ORM detected. Use Flask-SQLAlchemy to prevent SQL injection."
 
   - id: FLASK-SECRETS
     name: "Missing Secret Key Config"
@@ -53,7 +58,8 @@ rules:
     target: code
     pattern_not: '(?i)(os\.environ|os\.getenv|SECRET_KEY\s*=\s*os)'
     files: ["app.py", "config.py", "settings.py", "__init__.py"]
-    suggestion: "CRITICAL: No env-based SECRET_KEY found. Hardcoded secret keys compromise session security."
+    severity: CRITICAL
+    suggestion: "No env-based SECRET_KEY found. Hardcoded secret keys compromise session security."
 
   - id: FLASK-DEBUG
     name: "Debug Mode in Production"
@@ -61,7 +67,8 @@ rules:
     extensions: [".py"]
     target: code
     pattern: '(?i)app\.run\s*\([^)]*debug\s*=\s*True'
-    suggestion: "CRITICAL: app.run(debug=True) enables an interactive debugger with arbitrary code execution."
+    severity: CRITICAL
+    suggestion: "app.run(debug=True) enables an interactive debugger with arbitrary code execution."
 
   - id: FLASK-SSTI
     name: "Server-Side Template Injection"
@@ -69,7 +76,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'render_template_string\s*\('
-    suggestion: "CRITICAL: render_template_string() with user input enables SSTI (Remote Code Execution). Use render_template() with .html files."
+    severity: CRITICAL
+    suggestion: "render_template_string() with user input enables SSTI (Remote Code Execution). Use render_template() with .html files."
 
   - id: FLASK-PICKLE
     name: "Insecure Deserialization"
@@ -77,7 +85,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)(pickle\.loads?\(|marshal\.loads?\()'
-    suggestion: "CRITICAL: pickle/marshal deserialization from untrusted sources enables RCE. Use JSON."
+    severity: CRITICAL
+    suggestion: "pickle/marshal deserialization from untrusted sources enables RCE. Use JSON."
 
   - id: FLASK-OPEN-REDIRECT
     name: "Open Redirect"
@@ -85,7 +94,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)redirect\s*\(\s*request\.(args|form|values)\.get'
-    suggestion: "HIGH: User-controlled redirect URL. Validate against an allowlist to prevent phishing."
+    severity: HIGH
+    suggestion: "User-controlled redirect URL. Validate against an allowlist to prevent phishing."
 
   - id: FLASK-RAW-SQL
     name: "Raw SQL Query"
@@ -93,7 +103,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)db\.engine\.execute\s*\(|db\.session\.execute\s*\(\s*(?:f"|text\(f")'
-    suggestion: "CRITICAL: Raw SQL with string interpolation. Use SQLAlchemy ORM or text() with bound parameters."
+    severity: CRITICAL
+    suggestion: "Raw SQL with string interpolation. Use SQLAlchemy ORM or text() with bound parameters."
 
   - id: FLASK-SECRET-HARDCODED
     name: "Hardcoded Secret Key"
@@ -101,7 +112,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: "app\\.(?:secret_key|config\\[.SECRET_KEY.\\])\\s*=\\s*['\"][^'\"]{8,}['\"]"
-    suggestion: "CRITICAL: SECRET_KEY hardcoded. Load from environment variable: app.secret_key = os.environ['SECRET_KEY']."
+    severity: CRITICAL
+    suggestion: "SECRET_KEY hardcoded. Load from environment variable: app.secret_key = os.environ['SECRET_KEY']."
 
   - id: FLASK-SEND-FILE
     name: "Path Traversal via send_file"
@@ -109,7 +121,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'send_file\s*\(\s*(?:request\.|os\.path\.join\s*\(.*request\.)'
-    suggestion: "HIGH: User-controlled path in send_file(). Validate and sanitize filename. Use send_from_directory() with a fixed base path."
+    severity: HIGH
+    suggestion: "User-controlled path in send_file(). Validate and sanitize filename. Use send_from_directory() with a fixed base path."
 
   - id: FLASK-UNSAFE-COOKIE
     name: "Insecure Session Cookie"
@@ -117,4 +130,5 @@ rules:
     extensions: [".py"]
     target: all
     pattern: "SESSION_COOKIE_SECURE\\s*=\\s*False|SESSION_COOKIE_HTTPONLY\\s*=\\s*False"
-    suggestion: "HIGH: Session cookies missing Secure or HttpOnly flag. Set both to True in production."
+    severity: HIGH
+    suggestion: "Session cookies missing Secure or HttpOnly flag. Set both to True in production."

@@ -16,7 +16,8 @@ rules:
     pattern: 'except\s+Exception(?:\s+as\s+\w+)?:\s*\n\s*pass\s*(?:#.*)?\n'
     # LOW, as Bandit rates the same pattern (B110 try_except_pass): swallowing
     # errors is a reliability defect (CWE-703), not an exploitable flaw.
-    suggestion: "LOW: Blanket except:pass silently swallows errors. Log the exception or re-raise."
+    severity: LOW
+    suggestion: "Blanket except:pass silently swallows errors. Log the exception or re-raise."
 
   - id: FAST-SYNC-ASYNC
     name: "Sync in Async Check"
@@ -24,7 +25,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'async\s+def\s+\w+.*:\s*\n(?:\s*.*\n)*\s*\w+\.commit\(\)'
-    suggestion: "CRITICAL: Blocking db commit found inside async route handler."
+    severity: CRITICAL
+    suggestion: "Blocking db commit found inside async route handler."
 
   - id: FAST-SQLI
     name: "SQL Injection Risk"
@@ -32,7 +34,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)(db\.execute|conn\.execute).*f".*\{.*\}'
-    suggestion: "CRITICAL: Raw SQL interpolation detected. Use parameterized queries."
+    severity: CRITICAL
+    suggestion: "Raw SQL interpolation detected. Use parameterized queries."
 
   - id: FAST-PATH-TRAVERSAL
     name: "Path Traversal Risk"
@@ -46,7 +49,8 @@ rules:
           (string
             (interpolation)))
         (#eq? @func "open"))
-    suggestion: "CRITICAL: f-strings inside `open()` enable Path Traversal attacks."
+    severity: CRITICAL
+    suggestion: "f-strings inside `open()` enable Path Traversal attacks."
 
   - id: FAST-EVAL
     name: "Dangerous Eval/Exec"
@@ -58,7 +62,8 @@ rules:
         function: (identifier) @func_name
         arguments: (argument_list (_) @arg)
         (#match? @func_name "^(eval|exec)$"))
-    suggestion: "CRITICAL: Dynamic code execution via `eval` or `exec`. High risk of Shell Injection."
+    severity: CRITICAL
+    suggestion: "Dynamic code execution via `eval` or `exec`. High risk of Shell Injection."
 
   - id: FAST-SSTI
     name: "Server-Side Template Injection"
@@ -77,7 +82,8 @@ rules:
           attribute: (identifier) @render_func)
         (#match? @template_func "^(Template|Environment|from_string)$")
         (#eq? @render_func "render"))
-    suggestion: "CRITICAL: Template(user_input).render() — classic SSTI. Never pass user-controlled data to template constructors."
+    severity: CRITICAL
+    suggestion: "Template(user_input).render() — classic SSTI. Never pass user-controlled data to template constructors."
 
   - id: FAST-AUTH
     name: "Missing Authentication"
@@ -86,7 +92,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '(?i)(OAuth2PasswordBearer|HTTPBearer|HTTPBasic|APIKeyHeader|APIKeyQuery|jwt\.decode|jwt\.verify|firebase_admin\.auth|verify_id_token|get_current_user|CurrentUser)'
-    suggestion: "HIGH: No authentication mechanisms found."
+    severity: HIGH
+    suggestion: "No authentication mechanisms found."
 
   - id: FAST-AUTHZ
     name: "Missing Authorization"
@@ -95,7 +102,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '(?i)(Security\(|\bRole\b|\bpermission\b|\bscope\b|is_admin|require_role|check_permission|get_current_active_user|CurrentUser|current_user)'
-    suggestion: "HIGH: No authorization mechanisms found."
+    severity: HIGH
+    suggestion: "No authorization mechanisms found."
 
   - id: FAST-RATELIMIT
     name: "Missing Rate Limiting"
@@ -104,7 +112,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '(?i)(slowapi|Limiter)'
-    suggestion: "HIGH: No rate limiter dependency."
+    severity: HIGH
+    suggestion: "No rate limiter dependency."
 
   - id: FAST-ORM
     name: "Raw Database Access Without ORM"
@@ -113,7 +122,8 @@ rules:
     target: all
     pattern: '(?i)\b(sqlite3|psycopg|asyncpg|pymysql|mysql\.connector|pymongo|motor)\b'
     condition: "not_contains:sqlalchemy"
-    suggestion: "HIGH: Database driver detected without an ORM. Use parameterized queries or an ORM; do not interpolate untrusted SQL."
+    severity: HIGH
+    suggestion: "Database driver detected without an ORM. Use parameterized queries or an ORM; do not interpolate untrusted SQL."
 
   - id: FAST-CSRF
     name: "Missing CSRF Protection"
@@ -122,7 +132,8 @@ rules:
     target: all
     pattern: '(?i)(set_cookie|SessionMiddleware|request\.session|response\.set_cookie)'
     condition: "not_contains:csrf"
-    suggestion: "HIGH: Cookie/session authentication detected without CSRF protection. Validate an origin-bound CSRF token for state-changing requests."
+    severity: HIGH
+    suggestion: "Cookie/session authentication detected without CSRF protection. Validate an origin-bound CSRF token for state-changing requests."
 
   - id: FAST-SSRF
     name: "SSRF Risk"
@@ -130,7 +141,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)(?:httpx|aiohttp|requests)\.(get|post|put|delete)\s*\(\s*(?:request\.|params|query)'
-    suggestion: "HIGH: User-controlled URL in HTTP request. Validate against an allowlist."
+    severity: HIGH
+    suggestion: "User-controlled URL in HTTP request. Validate against an allowlist."
 
   - id: FAST-PICKLE
     name: "Insecure Deserialization"
@@ -138,7 +150,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)(pickle\.loads?\(|joblib\.load\()'
-    suggestion: "CRITICAL: pickle/joblib deserialization of untrusted data enables RCE. Use JSON."
+    severity: CRITICAL
+    suggestion: "pickle/joblib deserialization of untrusted data enables RCE. Use JSON."
 
   - id: FAST-SUBPROCESS
     name: "Unsafe Subprocess"
@@ -147,7 +160,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'subprocess\.\w+\(.*shell\s*=\s*True'
-    suggestion: "CRITICAL: subprocess with shell=True enables command injection. Use shell=False with argument list."
+    severity: CRITICAL
+    suggestion: "subprocess with shell=True enables command injection. Use shell=False with argument list."
 
   - id: FAST-YAML
     name: "Unsafe YAML Load"
@@ -156,7 +170,8 @@ rules:
     target: all
     pattern: 'yaml\.load\s*\('
     condition: "not_contains:SafeLoader"
-    suggestion: "CRITICAL: yaml.load() without SafeLoader enables arbitrary code execution. Use yaml.safe_load()."
+    severity: CRITICAL
+    suggestion: "yaml.load() without SafeLoader enables arbitrary code execution. Use yaml.safe_load()."
 
   - id: FAST-CORS-WILDCARD
     name: "CORS Allow All Origins"
@@ -164,7 +179,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'allow_origins\s*=\s*\[\s*"\*"\s*\]'
-    suggestion: "HIGH: CORS configured to allow all origins. Restrict to specific trusted domains."
+    severity: HIGH
+    suggestion: "CORS configured to allow all origins. Restrict to specific trusted domains."
 
   - id: FAST-HARDCODED-SECRET
     name: "Hardcoded Secret Key"
@@ -174,7 +190,8 @@ rules:
     exclude_tests: true
     pattern: "(?i)(?:secret_key|jwt_secret|api_key)\\s*[:=]\\s*['\"][^'\"]{8,}['\"]"
     condition: "not_contains:os.environ"
-    suggestion: "CRITICAL: Secret hardcoded. Load from pydantic-settings or environment variable."
+    severity: CRITICAL
+    suggestion: "Secret hardcoded. Load from pydantic-settings or environment variable."
 
   - id: FAST-OPEN-REDIRECT
     name: "Open Redirect"
@@ -182,7 +199,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)RedirectResponse\s*\(\s*(?:request\.|url\s*=\s*(?:query|params))'
-    suggestion: "HIGH: User-controlled redirect URL. Validate against an allowlist."
+    severity: HIGH
+    suggestion: "User-controlled redirect URL. Validate against an allowlist."
 
   - id: FAST-TEMPFILE
     name: "Insecure Temp File"
@@ -190,7 +208,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'tempfile\.mktemp\s*\('
-    suggestion: "MEDIUM: tempfile.mktemp() is vulnerable to race conditions. Use tempfile.mkstemp()."
+    severity: MEDIUM
+    suggestion: "tempfile.mktemp() is vulnerable to race conditions. Use tempfile.mkstemp()."
 
   # FAST-XSS is a Semgrep taint-mode rule (mode: taint). It is NOT executed by the
   # AITriage regex/AST engine; the engine skips it and the bundled Semgrep runs it
@@ -207,7 +226,7 @@ rules:
     mode: taint
     languages: [python]
     message: "HIGH: Reflected XSS — untrusted FastAPI request input reaches an HTML response without escaping. Wrap the value in html.escape()/markupsafe.escape() or render via an autoescaping template."
-    suggestion: "HIGH: Reflected XSS — untrusted FastAPI request input reaches an HTML response without escaping. Wrap the value in html.escape()/markupsafe.escape() or render via an autoescaping template."
+    suggestion: "Reflected XSS — untrusted FastAPI request input reaches an HTML response without escaping. Wrap the value in html.escape()/markupsafe.escape() or render via an autoescaping template."
     metadata:
       cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation"
       owasp: "A05:2025 - Injection"

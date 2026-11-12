@@ -72,8 +72,8 @@ Each rule is a YAML object with the following fields:
   exclude_paths: ["seed"]   # Skip paths containing any of these fragments (optional)
   pattern: 'regex_pattern'  # Go RE2 regex; a tree-sitter query for target: ast
   condition: "..."          # Optional, see Conditions
-  severity: HIGH            # Optional: CRITICAL | HIGH | MEDIUM | LOW
-  suggestion: "HIGH: Fix advice"  # Remediation; a severity prefix sets severity when `severity` is absent
+  severity: HIGH            # Required: CRITICAL | HIGH | MEDIUM | LOW
+  suggestion: "Fix advice"  # Remediation shown with the finding
 ```
 
 A rule runs only when its `stack` is `universal` or matches the detected (or
@@ -155,8 +155,10 @@ Custom rules accept `id`, `name`, `stack`, `extensions`, `target`, `pattern`,
 `aitriage rules install ./my-rules/` are copied to `~/.aitriage/packs/` and
 loaded when the engine runs natively on that machine (for example
 `aitriage scan`); a pack rule whose `id` already exists in the built-in catalog
-is ignored. Custom and pack rules take their severity only from `severity:`;
-the suggestion prefix is parsed for built-in rules alone.
+is ignored. Custom and pack rules should set `severity:`. For compatibility,
+a pack or custom rule without it may still start its suggestion with
+`CRITICAL: `, `HIGH: `, `MEDIUM: ` or `LOW: `; with neither, the rule runs as
+`LOW` and the engine logs a warning.
 
 ### Guidelines
 
@@ -165,7 +167,7 @@ the suggestion prefix is parsed for built-in rules alone.
    patterns RE2 rejects, and an invalid pattern silently degrades to a literal
    substring match (a `required_pattern` rule with one never fires)
 3. **Map to OWASP** — reference the relevant OWASP category in the suggestion
-4. **Set the severity** — `severity:`, or for built-in rules a CRITICAL / HIGH / MEDIUM / LOW prefix in the suggestion
+4. **Set the severity** — `severity:` (CRITICAL / HIGH / MEDIUM / LOW)
 5. **Actionable fix** — always explain the remediation, not just the problem
 
 ---

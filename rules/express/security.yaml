@@ -17,7 +17,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"helmet"'
-    suggestion: "HIGH: Helmet middleware not found. It sets critical HTTP security headers (HSTS, CSP, X-Frame-Options, etc.)."
+    severity: HIGH
+    suggestion: "Helmet middleware not found. It sets critical HTTP security headers (HSTS, CSP, X-Frame-Options, etc.)."
 
   - id: EXPRESS-NOSQL
     name: "NoSQL Injection Risk"
@@ -25,7 +26,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)\.(find|findOne|findOneAndUpdate|updateOne|deleteOne)\s*\(\s*req\.(body|query|params)'
-    suggestion: "CRITICAL: Raw user input passed directly to MongoDB query. An attacker can inject operators ($ne, $gt) to bypass authentication. Validate and sanitize input with a schema (Zod/Joi) first."
+    severity: CRITICAL
+    suggestion: "Raw user input passed directly to MongoDB query. An attacker can inject operators ($ne, $gt) to bypass authentication. Validate and sanitize input with a schema (Zod/Joi) first."
 
   - id: EXPRESS-SESSION-INSECURE
     name: "Insecure Session Configuration"
@@ -33,7 +35,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)session\s*\(\s*\{[^}]*(?:secure\s*:\s*false|httpOnly\s*:\s*false)'
-    suggestion: "HIGH: Session cookie missing secure or httpOnly flags. Cookies can be stolen via XSS or intercepted over HTTP."
+    severity: HIGH
+    suggestion: "Session cookie missing secure or httpOnly flags. Cookies can be stolen via XSS or intercepted over HTTP."
 
   - id: EXPRESS-EVAL
     name: "Server-Side eval()"
@@ -42,7 +45,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?m)^\s*eval\s*\('
-    suggestion: "CRITICAL: eval() on server-side enables arbitrary code execution. Remove entirely."
+    severity: CRITICAL
+    suggestion: "eval() on server-side enables arbitrary code execution. Remove entirely."
 
   - id: EXPRESS-CHILD-PROC
     name: "Unsafe child_process Usage"
@@ -51,7 +55,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)(?:exec|execSync)\s*\(\s*(?:`[^`]*\$\{|.*\+\s*(?:req\.|params|query|body))'
-    suggestion: "CRITICAL: Shell command built with user input. Use execFile() with argument arrays to prevent command injection."
+    severity: CRITICAL
+    suggestion: "Shell command built with user input. Use execFile() with argument arrays to prevent command injection."
 
   - id: EXPRESS-SSRF
     name: "SSRF Risk"
@@ -59,7 +64,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)(?:axios|fetch|http\.get|https\.get|got|node-fetch)\s*\(\s*(?:req\.|params|query|body)'
-    suggestion: "HIGH: User-controlled URL passed to HTTP client. Validate against an allowlist to prevent SSRF."
+    severity: HIGH
+    suggestion: "User-controlled URL passed to HTTP client. Validate against an allowlist to prevent SSRF."
 
   - id: EXPRESS-SQLI
     name: "SQL Injection Risk"
@@ -67,7 +73,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)(?:\.query|\.execute)\s*\(\s*(?:`[^`]*\$\{|.*\+\s*req\.)'
-    suggestion: "CRITICAL: SQL query built with template literal interpolation. Use parameterized queries."
+    severity: CRITICAL
+    suggestion: "SQL query built with template literal interpolation. Use parameterized queries."
 
   - id: EXPRESS-XSS
     name: "Reflected XSS via res.send"
@@ -75,7 +82,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: 'res\.(send|write)\s*\(.*req\.(query|params|body)'
-    suggestion: "HIGH: User input reflected directly in HTTP response. Escape output or use a template engine."
+    severity: HIGH
+    suggestion: "User input reflected directly in HTTP response. Escape output or use a template engine."
 
   - id: EXPRESS-CORS
     name: "Missing CORS Middleware"
@@ -84,7 +92,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"cors"'
-    suggestion: "MEDIUM: No CORS middleware found. Configure cors() with explicit origin allowlist."
+    severity: MEDIUM
+    suggestion: "No CORS middleware found. Configure cors() with explicit origin allowlist."
 
   - id: EXPRESS-RATELIMIT
     name: "Missing Rate Limiting"
@@ -93,7 +102,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(express-rate-limit|rate-limiter-flexible|express-slow-down)"'
-    suggestion: "HIGH: No rate limiting middleware detected. Install express-rate-limit to prevent brute-force and DoS."
+    severity: HIGH
+    suggestion: "No rate limiting middleware detected. Install express-rate-limit to prevent brute-force and DoS."
 
   - id: EXPRESS-AUTH
     name: "Missing Authentication"
@@ -102,7 +112,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(passport|express-jwt|jsonwebtoken|@clerk/express|express-session)"'
-    suggestion: "HIGH: No authentication library found. Use passport.js or express-jwt for route protection."
+    severity: HIGH
+    suggestion: "No authentication library found. Use passport.js or express-jwt for route protection."
 
   - id: EXPRESS-BODYPARSER-LIMIT
     name: "Missing Body Parser Size Limit"
@@ -111,7 +122,8 @@ rules:
     target: all
     pattern: '(?:bodyParser\.json|express\.json)\s*\(\s*\)'
     condition: "not_contains:limit"
-    suggestion: "MEDIUM: JSON body parser has no size limit. Large payloads can cause memory exhaustion (DoS). Set {limit: '1mb'}."
+    severity: MEDIUM
+    suggestion: "JSON body parser has no size limit. Large payloads can cause memory exhaustion (DoS). Set {limit: '1mb'}."
 
   - id: EXPRESS-MONGO-SANITIZE
     name: "Missing MongoDB Sanitization"
@@ -120,7 +132,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(express-mongo-sanitize|mongo-sanitize|sanitize)"'
-    suggestion: "HIGH: No MongoDB input sanitization library found. Install express-mongo-sanitize to strip $-operators from input."
+    severity: HIGH
+    suggestion: "No MongoDB input sanitization library found. Install express-mongo-sanitize to strip $-operators from input."
 
   - id: EXPRESS-OPEN-REDIRECT
     name: "Open Redirect"
@@ -128,4 +141,5 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: 'res\.redirect\s*\(\s*req\.(query|params|body)'
-    suggestion: "HIGH: User-controlled URL in redirect. Validate against an allowlist to prevent phishing."
+    severity: HIGH
+    suggestion: "User-controlled URL in redirect. Validate against an allowlist to prevent phishing."

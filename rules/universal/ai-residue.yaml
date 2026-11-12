@@ -13,7 +13,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: docs
     pattern: "(?i)(I apologize|As an AI|I cannot modify|ChatGPT|my previous mistake)"
-    suggestion: "MEDIUM: AI conversational residue detected. This suggests unvetted AI code generation. Review and clean."
+    severity: MEDIUM
+    suggestion: "AI conversational residue detected. This suggests unvetted AI code generation. Review and clean."
 
   - id: ENTR-ZOMBIE-CODE
     name: "Zombie Code"
@@ -21,7 +22,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
     target: all
     pattern: '(?s)/\*\s*OLD CODE.*?\*/|//\s*REPLACED BY AI.*?\n'
-    suggestion: "MEDIUM: Zombie code (AI-replaced blocks) found. Clean up your codebase."
+    severity: MEDIUM
+    suggestion: "Zombie code (AI-replaced blocks) found. Clean up your codebase."
 
   - id: ENTR-AI-RESIDUE
     name: "Chat Residue"
@@ -29,7 +31,8 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx", ".md"]
     target: all
     pattern: '(?i)(Revised plan:|Modified step:|As an AI assistant|Certainly! Here is)'
-    suggestion: "HIGH: AI chat artifacts found in production files. Verify code correctness manually."
+    severity: HIGH
+    suggestion: "AI chat artifacts found in production files. Verify code correctness manually."
 
   - id: ENTR-SCAFFOLDING
     name: "AI Scaffolding Residue"
@@ -37,4 +40,5 @@ rules:
     extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx", ".md"]
     target: all
     pattern: '(?i)(//\s*TODO:?\s*AI|//\s*Agent generated|/\*\s*Refined by AI\s*\*/|//\s*Placeholder for logic)'
-    suggestion: "MEDIUM: AI scaffolding markers found. The logic may be incomplete. Complete the implementation and remove markers."
+    severity: MEDIUM
+    suggestion: "AI scaffolding markers found. The logic may be incomplete. Complete the implementation and remove markers."

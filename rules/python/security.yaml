@@ -14,7 +14,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'subprocess\.\w+\(.*shell\s*=\s*True'
-    suggestion: "CRITICAL: subprocess with shell=True enables command injection. Use shell=False and pass arguments as a list."
+    severity: CRITICAL
+    suggestion: "subprocess with shell=True enables command injection. Use shell=False and pass arguments as a list."
 
   - id: PY-YAML-LOAD
     name: "Unsafe YAML Load"
@@ -24,7 +25,8 @@ rules:
     exclude_tests: true
     pattern: 'yaml\.load\s*\([^)]*\)'
     condition: "not_contains:SafeLoader"
-    suggestion: "CRITICAL: yaml.load() without SafeLoader can execute arbitrary Python objects. Use yaml.safe_load() instead."
+    severity: CRITICAL
+    suggestion: "yaml.load() without SafeLoader can execute arbitrary Python objects. Use yaml.safe_load() instead."
 
   - id: PY-PICKLE
     name: "Insecure Deserialization (pickle/marshal)"
@@ -33,7 +35,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)(pickle\.loads?\(|marshal\.loads?\(|shelve\.open\(|dill\.loads?\(|joblib\.load\()'
-    suggestion: "CRITICAL: Deserializing untrusted data via pickle/marshal enables Remote Code Execution. Use JSON for data exchange."
+    severity: CRITICAL
+    suggestion: "Deserializing untrusted data via pickle/marshal enables Remote Code Execution. Use JSON for data exchange."
 
   - id: PY-ASSERT-GUARD
     name: "Assert Used as Security Guard"
@@ -42,7 +45,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)assert\s+.*(is_admin|is_authenticated|has_perm|is_staff|is_superuser|authorized|role)'
-    suggestion: "HIGH: assert statements are stripped in optimized mode (-O). Use if/raise for security checks."
+    severity: HIGH
+    suggestion: "assert statements are stripped in optimized mode (-O). Use if/raise for security checks."
 
   - id: PY-TEMPFILE
     name: "Insecure Temp File Creation"
@@ -50,7 +54,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'tempfile\.mktemp\s*\('
-    suggestion: "MEDIUM: tempfile.mktemp() is vulnerable to race conditions. Use tempfile.mkstemp() or NamedTemporaryFile()."
+    severity: MEDIUM
+    suggestion: "tempfile.mktemp() is vulnerable to race conditions. Use tempfile.mkstemp() or NamedTemporaryFile()."
 
   - id: PY-EXEC
     name: "Dynamic Code Execution (exec/eval)"
@@ -59,7 +64,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?m)^\s*(?:exec|eval)\s*\('
-    suggestion: "CRITICAL: exec()/eval() with dynamic input enables arbitrary code execution. Avoid entirely or sandbox strictly."
+    severity: CRITICAL
+    suggestion: "exec()/eval() with dynamic input enables arbitrary code execution. Avoid entirely or sandbox strictly."
 
   - id: PY-LOGGING-SENSITIVE
     name: "Sensitive Data in Log Statements"
@@ -67,7 +73,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?i)(?:logging\.\w+|logger\.\w+|log\.\w+)\s*\(.*(?:password|passwd|secret|token|api_key|private_key|credit_card)'
-    suggestion: "HIGH: Sensitive data (password, token, secret) detected in log statement. Mask or redact before logging."
+    severity: HIGH
+    suggestion: "Sensitive data (password, token, secret) detected in log statement. Mask or redact before logging."
 
   - id: PY-TARFILE
     name: "Zip Slip / Path Traversal in Archive"
@@ -75,7 +82,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: '(?:tarfile\.open|zipfile\.ZipFile)\s*\(.*\)[\s\S]*?\.extractall\s*\('
-    suggestion: "HIGH: Extracting archives without path validation enables Zip Slip attacks. Validate each member path before extraction."
+    severity: HIGH
+    suggestion: "Extracting archives without path validation enables Zip Slip attacks. Validate each member path before extraction."
 
   - id: PY-REQUESTS-NOVERIFY
     name: "Disabled SSL Verification"
@@ -84,7 +92,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'verify\s*=\s*False'
-    suggestion: "HIGH: SSL verification disabled. This makes the connection vulnerable to MITM attacks."
+    severity: HIGH
+    suggestion: "SSL verification disabled. This makes the connection vulnerable to MITM attacks."
 
   - id: PY-HASHLIB-WEAK
     name: "Weak Hash Algorithm"
@@ -92,7 +101,8 @@ rules:
     extensions: [".py"]
     target: all
     pattern: 'hashlib\.(md5|sha1)\s*\('
-    suggestion: "HIGH: MD5/SHA1 are cryptographically broken. Use hashlib.sha256() or hashlib.sha3_256() for security-sensitive hashing."
+    severity: HIGH
+    suggestion: "MD5/SHA1 are cryptographically broken. Use hashlib.sha256() or hashlib.sha3_256() for security-sensitive hashing."
 
   - id: PY-BINDING-ALL
     name: "Binding to All Interfaces"
@@ -101,7 +111,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '\.run\s*\([^)]*host\s*=\s*["\x27]0\.0\.0\.0["\x27]'
-    suggestion: "MEDIUM: Server bound to 0.0.0.0 (all interfaces). Restrict to localhost or a specific IP in production."
+    severity: MEDIUM
+    suggestion: "Server bound to 0.0.0.0 (all interfaces). Restrict to localhost or a specific IP in production."
 
   - id: PY-COMPILE-EXEC
     name: "Dynamic Code Compilation"
@@ -110,4 +121,5 @@ rules:
     target: all
     exclude_tests: true
     pattern: 'compile\s*\([^)]+,\s*["\x27]\w+["\x27]\s*,\s*["\x27]exec["\x27]\s*\)'
-    suggestion: "CRITICAL: compile() with 'exec' mode enables arbitrary code execution. Avoid on untrusted input."
+    severity: CRITICAL
+    suggestion: "compile() with 'exec' mode enables arbitrary code execution. Avoid on untrusted input."

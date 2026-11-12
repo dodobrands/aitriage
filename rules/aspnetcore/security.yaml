@@ -12,7 +12,8 @@ rules:
     extensions: [".cs"]
     target: all
     pattern: 'builder\.AllowAnyOrigin\(\)\.AllowAnyMethod\(\)\.AllowAnyHeader\(\)'
-    suggestion: "CRITICAL: Overly permissive CORS policy allows cross-origin exploits."
+    severity: CRITICAL
+    suggestion: "Overly permissive CORS policy allows cross-origin exploits."
 
   - id: ASP-SQLI
     name: "SQL Injection Risk"
@@ -20,7 +21,8 @@ rules:
     extensions: [".cs"]
     target: all
     pattern: '(?i)(FromSqlRaw|ExecuteSqlRaw)\s*\($"[^"]*\{.*\}'
-    suggestion: "CRITICAL: Raw SQL interpolation detected in Entity Framework query."
+    severity: CRITICAL
+    suggestion: "Raw SQL interpolation detected in Entity Framework query."
 
   - id: ASP-XXE
     name: "XML External Entity Processing"
@@ -29,7 +31,8 @@ rules:
     target: all
     pattern: '(?i)(XmlReader\.Create|XmlDocument|XmlTextReader)'
     condition: "not_contains:DtdProcessing.Prohibit"
-    suggestion: "CRITICAL: XML parser without DtdProcessing.Prohibit. Enables XXE attacks (file read, SSRF). Set DtdProcessing = DtdProcessing.Prohibit."
+    severity: CRITICAL
+    suggestion: "XML parser without DtdProcessing.Prohibit. Enables XXE attacks (file read, SSRF). Set DtdProcessing = DtdProcessing.Prohibit."
 
   - id: ASP-DESER
     name: "Insecure Deserialization"
@@ -37,7 +40,8 @@ rules:
     extensions: [".cs"]
     target: all
     pattern: '(?i)(BinaryFormatter|SoapFormatter|LosFormatter|ObjectStateFormatter|JavaScriptSerializer|TypeNameHandling\.All|TypeNameHandling\.Auto)'
-    suggestion: "CRITICAL: Insecure deserialization detected. BinaryFormatter/TypeNameHandling.All enable RCE via gadget chains. Use System.Text.Json with strict typing."
+    severity: CRITICAL
+    suggestion: "Insecure deserialization detected. BinaryFormatter/TypeNameHandling.All enable RCE via gadget chains. Use System.Text.Json with strict typing."
 
   - id: ASP-PATH-TRAVERSAL
     name: "Path Traversal Risk"
@@ -45,7 +49,8 @@ rules:
     extensions: [".cs"]
     target: all
     pattern: '(?:Path\.Combine|File\.Open|File\.Read|StreamReader)\s*\(.*(?:Request|HttpContext|query|route)'
-    suggestion: "CRITICAL: User input in file path operation. Validate and canonicalize paths. Reject inputs containing '..' or absolute paths."
+    severity: CRITICAL
+    suggestion: "User input in file path operation. Validate and canonicalize paths. Reject inputs containing '..' or absolute paths."
 
   - id: ASP-CONN-STRING
     name: "Hardcoded Connection String"
@@ -54,7 +59,8 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)(?:Server|Data Source)\s*=.*(?:Password|Pwd)\s*='
-    suggestion: "HIGH: Connection string with embedded password. Move to appsettings.json with user-secrets or Azure Key Vault."
+    severity: HIGH
+    suggestion: "Connection string with embedded password. Move to appsettings.json with user-secrets or Azure Key Vault."
 
   - id: ASP-LOGGING-SENSITIVE
     name: "Sensitive Data in Logs"
@@ -62,7 +68,8 @@ rules:
     extensions: [".cs"]
     target: all
     pattern: '(?i)_logger\.(?:Log|Info|Warn|Error|Debug)\w*\s*\(.*(?:password|token|secret|creditCard|ssn)'
-    suggestion: "HIGH: Sensitive data (password, token, credit card) found in log statement. Mask or redact before logging."
+    severity: HIGH
+    suggestion: "Sensitive data (password, token, credit card) found in log statement. Mask or redact before logging."
 
   - id: ASP-AUTH-MISSING
     name: "Missing Authorization Attribute"
@@ -71,7 +78,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '\[Authorize\]|\[AllowAnonymous\]|RequireAuthorization'
-    suggestion: "HIGH: No [Authorize] attributes found. Controllers/endpoints may be accessible without authentication."
+    severity: HIGH
+    suggestion: "No [Authorize] attributes found. Controllers/endpoints may be accessible without authentication."
 
   - id: ASP-ANTIFORGERY
     name: "Missing Anti-Forgery Validation"
@@ -80,7 +88,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '\[ValidateAntiForgeryToken\]|AddAntiforgery|AutoValidateAntiforgeryToken'
-    suggestion: "HIGH: No anti-forgery token validation found. MVC/Razor pages are vulnerable to CSRF attacks."
+    severity: HIGH
+    suggestion: "No anti-forgery token validation found. MVC/Razor pages are vulnerable to CSRF attacks."
 
   - id: ASP-HARDCODED-CREDS
     name: "Hardcoded Credentials"
@@ -89,4 +98,5 @@ rules:
     target: all
     exclude_tests: true
     pattern: '(?i)(?:password|secret|apiKey)\s*=\s*"[^"]{8,}"'
-    suggestion: "HIGH: Hardcoded credentials in source code. Use IConfiguration with user-secrets or environment variables."
+    severity: HIGH
+    suggestion: "Hardcoded credentials in source code. Use IConfiguration with user-secrets or environment variables."

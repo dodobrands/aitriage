@@ -19,7 +19,8 @@ rules:
           property: (property_identifier) @prop)
         (#eq? @obj "jwt")
         (#eq? @prop "decode"))
-    suggestion: "CRITICAL: `jwt.decode()` does NOT verify the signature. Use `jwt.verify()` instead."
+    severity: CRITICAL
+    suggestion: "`jwt.decode()` does NOT verify the signature. Use `jwt.verify()` instead."
 
   - id: ENTR-07
     name: "TypeScript Surrender"
@@ -29,7 +30,8 @@ rules:
     exclude_tests: true
     pattern: '(?i)//\s*@ts-ignore|:\s*any\b'
     condition: "threshold:0.02"
-    suggestion: "HIGH: Excessive @ts-ignore or 'any' types. Fix type safety."
+    severity: HIGH
+    suggestion: "Excessive @ts-ignore or 'any' types. Fix type safety."
 
   - id: ENTR-09
     name: "Client-Side Secret Leak"
@@ -38,7 +40,8 @@ rules:
     target: all
     condition: "contains:'use client'"
     pattern: 'process\.env\.(DATABASE_URL|AUTH_SECRET|API_KEY|TOKEN\w*)'
-    suggestion: "CRITICAL: Never use raw process.env inside 'use client'. Prefix with NEXT_PUBLIC_."
+    severity: CRITICAL
+    suggestion: "Never use raw process.env inside 'use client'. Prefix with NEXT_PUBLIC_."
 
   - id: NEXT-AUTH
     name: "Missing Auth Middleware"
@@ -47,7 +50,8 @@ rules:
     target: filename
     pattern: 'middleware\.(ts|js)'
     condition: "missing"
-    suggestion: "HIGH: Missing Next.js middleware. Routes may be unauthenticated."
+    severity: HIGH
+    suggestion: "Missing Next.js middleware. Routes may be unauthenticated."
 
   - id: NEXT-CORS
     name: "Missing CORS"
@@ -56,7 +60,8 @@ rules:
     target: all
     pattern: 'export\s+(?:async\s+)?function\s+(?:GET|POST|PUT|DELETE|PATCH)'
     condition: "not_contains:Access-Control-Allow-Origin"
-    suggestion: "MEDIUM: Route handler missing CORS headers."
+    severity: MEDIUM
+    suggestion: "Route handler missing CORS headers."
 
   - id: NEXT-CSRF
     name: "Missing CSRF"
@@ -65,7 +70,8 @@ rules:
     target: all
     pattern: 'export\s+(?:async\s+)?function\s+(?:POST|PUT|DELETE|PATCH)'
     condition: "not_contains:csrf"
-    suggestion: "HIGH: Missing CSRF token validation on mutative route."
+    severity: HIGH
+    suggestion: "Missing CSRF token validation on mutative route."
 
   - id: NEXT-SQLI
     name: "SQL Injection Risk"
@@ -73,7 +79,8 @@ rules:
     extensions: [".ts", ".tsx", ".js", ".jsx"]
     target: all
     pattern: '(?i)(db\.query|db\.execute|sql)\s*`.*?\$\{.*?\}.*?`'
-    suggestion: "CRITICAL: Raw SQL interpolation detected. Use parameterized queries."
+    severity: CRITICAL
+    suggestion: "Raw SQL interpolation detected. Use parameterized queries."
 
   - id: REACT-XSS
     name: "Dangerous Property (XSS Risk)"
@@ -84,7 +91,8 @@ rules:
       (jsx_attribute
         name: (property_identifier) @attr_name
         (#eq? @attr_name "dangerouslySetInnerHTML"))
-    suggestion: "CRITICAL: Direct use of `dangerouslySetInnerHTML` bypasses XSS protection."
+    severity: CRITICAL
+    suggestion: "Direct use of `dangerouslySetInnerHTML` bypasses XSS protection."
 
   - id: JWT-HARDCODED
     name: "Hardcoded JWT Secret"
@@ -99,7 +107,8 @@ rules:
         arguments: (arguments (_) (string) @secret)
         (#eq? @obj "jwt")
         (#eq? @prop "sign"))
-    suggestion: "CRITICAL: Hardcoded string used as a JWT secret. Use environment variables."
+    severity: CRITICAL
+    suggestion: "Hardcoded string used as a JWT secret. Use environment variables."
 
   - id: REACT-HAPPY-PATH
     name: "Missing Async Error Handling"
@@ -114,7 +123,8 @@ rules:
           (expression_statement
             (await_expression)) @stmt)
         (#not-has-ancestor? @stmt try_statement))
-    suggestion: "HIGH: Async function missing `try/catch`. Will crash on network errors."
+    severity: HIGH
+    suggestion: "Async function missing `try/catch`. Will crash on network errors."
 
   - id: NEXT-AUTHZ
     name: "Missing Authorization Checks"
@@ -123,7 +133,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '(?i)(role|permission|authorize|casl|ability)'
-    suggestion: "HIGH: No role/permission authorization patterns detected."
+    severity: HIGH
+    suggestion: "No role/permission authorization patterns detected."
 
   - id: NEXT-VAL
     name: "Missing Input Validation"
@@ -132,7 +143,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(zod|yup|joi|class-validator)"'
-    suggestion: "HIGH: Input validation libraries missing."
+    severity: HIGH
+    suggestion: "Input validation libraries missing."
 
   - id: NEXT-RATELIMIT
     name: "Missing Rate Limiting"
@@ -141,7 +153,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(@upstash/ratelimit|rate-limiter-flexible|express-rate-limit)"'
-    suggestion: "HIGH: No rate limit libraries detected."
+    severity: HIGH
+    suggestion: "No rate limit libraries detected."
 
   - id: NEXT-ERROR
     name: "Missing Global Error Handling"
@@ -150,7 +163,8 @@ rules:
     target: filename
     condition: "missing"
     pattern: 'error\.(tsx|jsx)'
-    suggestion: "HIGH: Missing error.tsx boundary."
+    severity: HIGH
+    suggestion: "Missing error.tsx boundary."
 
   - id: NEXT-HEADERS
     name: "Missing Security Headers"
@@ -159,7 +173,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '(?i)(headers\(\)|securityHeaders)'
-    suggestion: "HIGH: No explicit security headers defined in next.config."
+    severity: HIGH
+    suggestion: "No explicit security headers defined in next.config."
 
   - id: NEXT-SECRETS
     name: "Missing Secrets Config"
@@ -168,7 +183,8 @@ rules:
     target: filename
     condition: "missing"
     pattern: '.*'
-    suggestion: "MEDIUM: Missing .env.example template."
+    severity: MEDIUM
+    suggestion: "Missing .env.example template."
 
   - id: NEXT-ORM
     name: "Missing ORM (Parameterized Queries)"
@@ -177,7 +193,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(prisma|drizzle-orm|typeorm|sequelize)"'
-    suggestion: "HIGH: No ORM found. Raw queries risk SQLi."
+    severity: HIGH
+    suggestion: "No ORM found. Raw queries risk SQLi."
 
   - id: NEXT-LOGGING
     name: "Missing Security Logging"
@@ -186,7 +203,8 @@ rules:
     target: raw
     condition: "required_pattern"
     pattern: '"(?i)(winston|pino|morgan)"'
-    suggestion: "MEDIUM: No dedicated logging library found."
+    severity: MEDIUM
+    suggestion: "No dedicated logging library found."
 
   - id: JS-PATH-TRAVERSAL
     name: "Path Traversal Risk (JS/TS)"
@@ -201,7 +219,8 @@ rules:
         arguments: (arguments (template_string) @arg)
         (#match? @obj "^(fs|path)$")
         (#match? @prop "^(readFile|writeFile|join|resolve)$"))
-    suggestion: "CRITICAL: User input in file system operations. Sanitize paths."
+    severity: CRITICAL
+    suggestion: "User input in file system operations. Sanitize paths."
 
   - id: JS-COMMAND-INJECTION
     name: "Command Injection Risk (JS/TS)"
@@ -215,7 +234,8 @@ rules:
         arguments: (arguments (template_string
           (template_substitution) @interp))
         (#match? @func "^(exec|spawn|execSync|spawnSync)$"))
-    suggestion: "HIGH: Shell command built with dynamic interpolation. Use execFile() with argument arrays."
+    severity: HIGH
+    suggestion: "Shell command built with dynamic interpolation. Use execFile() with argument arrays."
 
   - id: ENTR-PROTO-POLLUTION
     name: "Prototype Pollution Risk"
@@ -223,7 +243,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)(Object\.assign|JSON\.parse).*?\[.*?\]\s*='
-    suggestion: "HIGH: Potential Prototype Pollution. Verify input before merging."
+    severity: HIGH
+    suggestion: "Potential Prototype Pollution. Verify input before merging."
 
   - id: NEXT-UNSAFE-HREF
     name: "XSS via javascript: href"
@@ -231,7 +252,8 @@ rules:
     extensions: [".tsx", ".jsx", ".js"]
     target: all
     pattern: 'href\s*=\s*\{?\s*[`"\x27]javascript:'
-    suggestion: "CRITICAL: javascript: URI in href enables XSS. Validate URL protocols (allow only http/https/mailto)."
+    severity: CRITICAL
+    suggestion: "javascript: URI in href enables XSS. Validate URL protocols (allow only http/https/mailto)."
 
   - id: NEXT-SSRF
     name: "SSRF Risk in API Route"
@@ -239,7 +261,8 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)(?:fetch|axios)\s*\(\s*(?:req\.|request\.|searchParams|params)'
-    suggestion: "HIGH: User-controlled URL in server-side fetch. Validate against an allowlist."
+    severity: HIGH
+    suggestion: "User-controlled URL in server-side fetch. Validate against an allowlist."
 
   - id: NEXT-SERVER-ACTION-EXPOSED
     name: "Server Action Without Auth Check"
@@ -248,7 +271,8 @@ rules:
     target: all
     pattern: "^['\"]use server['\"]"
     condition: "not_contains:session"
-    suggestion: "HIGH: Server Action file without authentication check. Anyone can invoke these functions. Verify session/auth at the top."
+    severity: HIGH
+    suggestion: "Server Action file without authentication check. Anyone can invoke these functions. Verify session/auth at the top."
 
   - id: NEXT-MATH-RANDOM
     name: "Insecure Randomness"
@@ -256,7 +280,8 @@ rules:
     extensions: [".ts", ".js", ".tsx", ".jsx"]
     target: all
     pattern: 'Math\.random\s*\(\)'
-    suggestion: "HIGH: Math.random() is predictable. Use crypto.randomUUID() for tokens, IDs, and security-sensitive values."
+    severity: HIGH
+    suggestion: "Math.random() is predictable. Use crypto.randomUUID() for tokens, IDs, and security-sensitive values."
 
   - id: NEXT-CSP-MISSING
     name: "Missing Content Security Policy"
@@ -265,7 +290,8 @@ rules:
     target: all
     condition: "required_pattern"
     pattern: '(?i)(Content-Security-Policy|contentSecurityPolicy|CSP)'
-    suggestion: "HIGH: No Content Security Policy configured. CSP prevents XSS and data injection attacks."
+    severity: HIGH
+    suggestion: "No Content Security Policy configured. CSP prevents XSS and data injection attacks."
 
   - id: NEXT-PUBLIC-LEAK
     name: "Sensitive Data in NEXT_PUBLIC_ Variable"
@@ -273,7 +299,8 @@ rules:
     extensions: [".env", ".env.local"]
     target: all
     pattern: '(?i)NEXT_PUBLIC_\S*(SECRET|PASSWORD|PRIVATE|TOKEN|API_KEY|DATABASE)'
-    suggestion: "CRITICAL: NEXT_PUBLIC_ variables are exposed to the browser. Never prefix secrets with NEXT_PUBLIC_."
+    severity: CRITICAL
+    suggestion: "NEXT_PUBLIC_ variables are exposed to the browser. Never prefix secrets with NEXT_PUBLIC_."
 
   - id: NEXT-NOSQL
     name: "NoSQL Injection Risk"
@@ -281,4 +308,5 @@ rules:
     extensions: [".ts", ".js"]
     target: all
     pattern: '(?i)\.(find|findOne|aggregate)\s*\(\s*(?:req\.|searchParams|body|params)'
-    suggestion: "CRITICAL: User input passed directly to MongoDB query. Sanitize and validate input schema."
+    severity: CRITICAL
+    suggestion: "User input passed directly to MongoDB query. Sanitize and validate input schema."

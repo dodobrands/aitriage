@@ -157,31 +157,13 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		return nil, fmt.Errorf("failed to load embedded rules: %w", err)
 	}
 
-	e := &Engine{
-		Config: cfg,
-	}
+	e := &Engine{Config: cfg}
 
-	// Precompile patterns and parse severity
-	for i, r := range loadedRules {
-		// Parse Severity from Suggestion if not set
-		if r.Severity == "" {
-			parts := strings.SplitN(r.Suggestion, ": ", 2)
-			if len(parts) == 2 {
-				sel := strings.ToUpper(parts[0])
-				if sel == "CRITICAL" || sel == "HIGH" || sel == "MEDIUM" || sel == "LOW" {
-					loadedRules[i].Severity = sel
-					loadedRules[i].Suggestion = parts[1]
-				}
-			}
-		}
-
-		if loadedRules[i].Severity == "" {
-			loadedRules[i].Severity = "LOW" // Default fallback
-		}
-
+	// Built-in rules carry an explicit severity (enforced by rules/catalog_test.go).
+	for i := range loadedRules {
+		resolveSeverity(&loadedRules[i], false)
 		e.compileRule(&loadedRules[i])
 	}
-	e.Rules = loadedRules
 
 	// Load rule packs from ~/.aitriage/packs/
 	if packRules, err := loadPackRules(); err == nil && len(packRules) > 0 {
@@ -192,6 +174,7 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 		for i, r := range packRules {
 			if !seen[r.ID] {
 				seen[r.ID] = true
+				resolveSeverity(&packRules[i], true)
 				e.compileRule(&packRules[i])
 				loadedRules = append(loadedRules, packRules[i])
 			}
@@ -214,17 +197,36 @@ func NewEngine(cfg *config.Config) (*Engine, error) {
 				Suggestion: cr.Suggestion,
 				Severity:   cr.Severity,
 			}
-			if r.Pattern != "" {
-				c, err := regexp.Compile(r.Pattern)
-				if err == nil {
-					r.CompiledPattern = c
-				}
-			}
+			resolveSeverity(&r, true)
+			e.compileRule(&r)
 			loadedRules = append(loadedRules, r)
 		}
 	}
 
-	return &Engine{Rules: loadedRules, Config: cfg}, nil
+	e.Rules = loadedRules
+	return e, nil
+}
+
+// severities lists the values a rule severity may take.
+var severities = map[string]bool{"CRITICAL": true, "HIGH": true, "MEDIUM": true, "LOW": true}
+
+// resolveSeverity normalizes a rule's severity. Built-in rules must declare it
+// in the `severity` field. Rules from packs and project configuration predate
+// that field, so for them a legacy "SEVERITY: " prefix of the suggestion is
+// still honoured (and removed from the text). Anything else falls back to LOW
+// with a warning, so a rule never runs with an empty severity.
+func resolveSeverity(r *models.Rule, legacyPrefix bool) {
+	sev := strings.ToUpper(strings.TrimSpace(r.Severity))
+	if sev == "" && legacyPrefix {
+		if prefix, rest, ok := strings.Cut(r.Suggestion, ": "); ok && severities[strings.ToUpper(prefix)] {
+			sev, r.Suggestion = strings.ToUpper(prefix), rest
+		}
+	}
+	if !severities[sev] {
+		slog.Warn("Rule has no valid severity; using LOW", "rule", r.ID, "severity", r.Severity)
+		sev = "LOW"
+	}
+	r.Severity = sev
 }
 
 // Run executes the engine against a ProjectContext using a Single-Pass O(N) architecture.
