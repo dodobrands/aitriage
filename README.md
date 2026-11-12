@@ -329,6 +329,8 @@ Choose the closest template in [`examples/github-actions/`](examples/github-acti
 
 Copy the selected file to `.github/workflows/` and set what its header comment lists: the repository variable `AITRIAGE_ALLOWED_ACTOR_ID` (every job is skipped while it is empty) and, for the AI templates, the provider key in GitHub Secrets. Trigger it once, then verify the uploaded reports, SARIF, and post-AI gate before making the check required.
 
+The Action's `fail-on`, `fail-score` and `health-profile` inputs set the gate of `command: scan`. `command: agent` takes its gate from `args`, as the templates do, or from `.aitriage.yaml`. The agent exits `1` when the gate fails and `2` when the audit could not complete, for example because the provider rejected the key or rate-limited the run: treat `2` as a retry, not as a finding (see [exit codes](#exit-codes)). To accept one assessed finding, such as a CVE, record it with [`aitriage ignore add`](#silencing-rules-and-findings) and commit `.aitriage-suppressions.json`; the agent applies it in CI.
+
 For organizations, the application workflow may call one centrally managed reusable workflow. Use the exact approved repository and secret names; AITriage documentation intentionally does not guess them.
 
 ## 5. CLI
@@ -359,7 +361,7 @@ export GEMINI_API_KEY="..."
 aitriage agent . --no-chat
 ```
 
-`agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice.
+`agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice. It exits `1` when a configured gate fails and `2` when the audit could not complete ([exit codes](#exit-codes)).
 
 To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code).
 
@@ -378,12 +380,16 @@ aitriage-reports/
 │   ├── manifest.json         # state, scanner coverage, integrity metadata
 │   ├── scan.json             # AI IDE runs: deterministic input to triage
 │   └── audit.log             # AI IDE runs: run events
+├── baselines/                # container runtime: local baseline copies
+├── suppressions/             # container runtime: local dismissal copies
 ├── cache/                    # verdict and artifact cache
 ├── history/                  # deterministic scan history
 └── web/                      # local Web state
 ```
 
 Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this directory from every scanner and AI context so its own output cannot trigger another audit loop. List or remove AI IDE run bundles with `aitriage runs list .` and `aitriage runs clean .` (`--dry-run` previews; unfinished runs are kept unless you pass `--force`).
+
+Paths in every report are relative to the project root. When several scanners report the same vulnerability class at the same `file:line`, the report shows one finding that lists every scanner as an origin; different classes on one line stay separate. The summary header groups dependency CVEs by package, while the score and the gate still count each CVE. A finding's ID (`CS-<CLASS>-<6 hex>`; the full `stable_id` is in `triage-findings.json`) is derived from its class, its file and the content of the flagged line, so edits elsewhere in the file keep both the ID and the cached verdict. SARIF output keeps dismissed findings and marks them with `suppressions`.
 
 ## Scope, cost and the gate verdict
 
@@ -394,34 +400,78 @@ files `git` ignores and directories holding third-party or generated code
 (`vendor`, `node_modules`, `dist`, `.next`, `__pycache__`, `venv`). A `build` directory is
 scanned unless `git` ignores it: generated build output is ignored in practice, and a
 committed one, such as Go's `build/package/Dockerfile`, is your own. The same
-rules apply to the bundled Semgrep, Trivy, Gitleaks and Bandit, and to the git-history
-secret scan, so a vendored dependency is never reported as your vulnerability.
+rules apply to every scanner: the built-in engine, the bundled Semgrep, Trivy, Gitleaks and
+Bandit, the NFR and deploy checks, and the git-history secret scan, so a vendored dependency
+is never reported as your vulnerability.
 
-| Variable | Effect |
+| Setting | Effect |
 | :--- | :--- |
 | `AITRIAGE_RESPECT_GITIGNORE=false` | Audit ignored files too. Use when the question is "did a secret ever reach this working tree", not "is my application vulnerable" |
 | `AITRIAGE_SCAN_VENDORED=true` | Audit vendored and generated directories as if they were your own source |
 | `.aitriageignore` | Per-project excludes, same syntax as `.gitignore`, always honoured |
 | `ignore.paths` in `.aitriage.yaml` | Same syntax as `.gitignore`, relative to the project root, always honoured by every scanner |
 
+The built-in engine used to match `ignore.paths` as substrings, so `vendor` also hid
+`src/vendors/` and `.git` hid `.github/`. Such directories are scanned again; for one release
+AITriage warns about each pattern that no longer hides a path and names the entry to add if it
+should stay out of scope.
+
 The two variables change what the bundled scanners and the git-history scan cover; the
 built-in engine always skips ignored files and those directories. They are read by the
-process that runs the scanners: set them in the GitHub Action's job environment, or in your
-shell with `--runtime native` (development mode). The local container launcher used by
-`agent` and `web` forwards only provider keys, `AITRIAGE_LLM_*` settings and
-`AITRIAGE_BATCH_SIZE`.
+process that runs the scanners: set them in the GitHub Action's job environment or in your
+shell. The local container launcher used by `agent` and `web` forwards them along with provider
+keys, the `AITRIAGE_LLM_*` settings, `AITRIAGE_BATCH_SIZE`, `AITRIAGE_CLASSIFY_RETRIES`,
+`AITRIAGE_CONCURRENCY`, `AITRIAGE_POC_BUDGET` and `AITRIAGE_GATING`.
 
-Network findings describe the machine AITriage runs on rather than the repository: AITriage
-probes the services declared by a Compose file in the project root, and
-`aitriage agent --probe <host>` adds a host of your choice. These findings are reported but
-never counted in the repository's security score.
+Network findings describe the machine AITriage runs on rather than the repository, so probing
+is opt-in: `aitriage agent --probe-compose` probes the services declared by the project's
+Compose file, `--probe <host>` a host of your choice, and a Web scan probes only when it is
+asked to. A name that does not resolve, as Compose service names in CI do not, is not a
+finding. Network findings are reported, but never sent to the LLM and never counted in the
+score or the gate.
 
-Trivy applies the repository's own ignore file to both the dependency scan and the IaC
-scan: `.trivyignore`, or `.trivyignore.yaml` / `.trivyignore.yml`. Trivy reads one ignore
+Trivy reports dependency vulnerabilities and IaC misconfigurations (Terraform, Kubernetes
+manifests, Dockerfiles and similar files). It applies the repository's own ignore file to both
+scans: `.trivyignore`, or `.trivyignore.yaml` / `.trivyignore.yml`. Trivy reads one ignore
 file per run, so when both forms exist the YAML file is used and a warning names the one
 left out. The file is read from the repository root wherever AITriage runs, including the
 container. `scanners.trivy.ignore_unfixed` and `scanners.trivy.severity` in `.aitriage.yaml`
 narrow what Trivy reports; see the [configuration example](.aitriage.yaml.example).
+
+### Silencing rules and findings
+
+| Mechanism | What it silences |
+| :--- | :--- |
+| `ignore.rules` in `.aitriage.yaml` | Every finding of a rule, from any source: built-in rules and heuristics, Semgrep, Trivy, Gitleaks, Bandit, NFR, deploy and network checks. A bare ID matches any source; `gitleaks:generic-api-key`, `trivy:CVE-2024-1234` or `semgrep:<check-id>` match one scanner, and `core:`, `nfr:`, `deploy:` or `network:` one of AITriage's own checks |
+| An inline comment | The rules it names, at one place in the source: built-in, external-scanner and deploy findings |
+| `aitriage ignore add` | Findings a person reviewed and dismissed as a false positive, accepted risk or won't-fix, recorded in `.aitriage-suppressions.json` |
+
+Inline directives name the rules they silence. IDs compare whole, text after the list (such
+as a reason) is never read as an ID, and `all` silences every rule only as an ID of its own:
+
+```text
+token = "fixture"  # aitriage-ignore: B105, gitleaks:generic-api-key (test data)
+# aitriage-ignore-next-line: PY-SUBPROCESS
+# aitriage-ignore-file: ENTR-12    (first 10 lines; without IDs it covers every rule)
+```
+
+`aitriage-ignore` (or `aitriage:ignore`) covers its own line and the next one;
+`-next-line` covers only the next one.
+
+Commit `.aitriage-suppressions.json`: `aitriage agent` (in CI too), AI IDE runs and the Web UI
+apply it, and a dismissed finding is not sent to the LLM. This is how to accept a specific CVE
+in CI:
+
+```bash
+aitriage ignore add CVE-2024-1234 --source trivy --reason accepted-risk \
+  --note "the vulnerable parser never receives user input"
+```
+
+A decision matches findings of its `--source` and rule. Without `--file` it covers them
+anywhere in the project, with `--file` every one in that file, and `--evidence` makes it exact:
+only the finding whose matched text it quotes (with no `--file`, only a finding that has no
+file). Dismissals made in the Web UI or an AI IDE under the container runtime are kept in a
+local copy first; see the baseline notes below.
 
 ### Why the gate can fail with nothing confirmed
 
@@ -438,19 +488,36 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | :--- | :--- |
 | `fail_on: critical` (default) | Active CRITICAL/HIGH findings block |
 | `fail_on: any` | Any active finding blocks, reviewed or not |
-| `fail_on: confirmed` | Only findings someone confirmed block; unreviewed are reported, not blocking |
+| `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
-including the Action's default `scan` command, uses `critical`; `aitriage agent` exits non-zero
-only when a gate is configured or `--fail-on`/`--fail-score` is passed.
+including the Action's default `scan` command, uses `critical`; a raw scan confirms nothing, so
+`fail_on: confirmed` alone never blocks it. `aitriage agent` applies a gate only when one is
+configured in `.aitriage.yaml` or passed with `--fail-on`, `--fail-score` or `--health-profile`.
 
-A baseline is a property of the project, not of the tool that created it. It lives in
-`.aitriage-baseline.json` at the repository root, and every surface reads the same file: the CLI
-(`aitriage baseline`), the Web UI (SecureCoder → Baseline) and an AI IDE (`aitriage_baseline`).
-Under the MCP safe profile only inspection is offered, because accepting findings writes to the
-project.
+Under `fail_on: confirmed` the gate is only as stable as the model's verdicts, and verdicts
+differ noticeably between models on the same code. Pin one model (`llm.model` or `--model`)
+and re-check a project you know before switching to another.
+`fp_critical_requires_high_confidence: true` (`--fp-critical-requires-high-confidence`) keeps a
+CRITICAL finding for manual review unless the model calls it a false positive with high
+confidence. A false positive also needs evidence AITriage can check: a comment, a string, a
+configuration file or the flagged line itself is never accepted as a code mitigation.
+
+A baseline is a property of the project, not of the tool that created it. The shared record is
+`.aitriage-baseline.json` at the repository root, used by the CLI (`aitriage baseline`), the Web
+UI (SecureCoder → Baseline) and an AI IDE (`aitriage_baseline`); a Web scan can hide baselined
+findings. Under the MCP safe profile only inspection is offered, because accepting findings
+writes to the project.
+
+The container runtime mounts the project read-only, so there the Web UI and the MCP tools write
+baselines and dismissals to a local copy under `aitriage-reports/baselines/…` and
+`aitriage-reports/suppressions/…`. Scans in the container read the project file and that copy
+together, and the copy wins for the same entry. The copy is local and git-ignored, so CI and
+other checkouts never see it: move its contents into `.aitriage-baseline.json` or
+`.aitriage-suppressions.json` at the project root and commit that file. The host CLI
+(`aitriage baseline create .`, `aitriage ignore add`) writes those files directly.
 
 A baseline records findings from every scanner that ran when it was created: the built-in
 engine, Semgrep, Trivy, Gitleaks, Bandit, and the NFR and deploy checks. Network findings are
@@ -459,6 +526,22 @@ Gitleaks and Bandit findings only where those tools are installed locally.
 
 For a legacy codebase adopting AITriage, `aitriage baseline create .` is usually the right
 first move: it keeps every finding visible in reports while the gate judges only new work.
+
+### Exit codes
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | The gate passed, or no gate applies |
+| `1` | The security gate failed. Usage errors and setup problems caught before the run starts (Docker not running) also exit `1` |
+| `2` | `aitriage agent` could not complete the audit: no usable LLM provider or a provider failure (rejected key, rate limit, timeout), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
+
+A provider failure no longer discards the run. When triage is cut short, AITriage still writes
+every report: `triage-findings.json` records `triage_status: failed` and the reason, the
+summary, report and fix spec open with a banner, and findings left without a verdict are marked
+`triage-failed`. The gate then fails with `triage_incomplete` under every `fail_on` except
+`never`, so an outage cannot turn the check green. A failure in an optional stage (PoC traces,
+the report or fix-spec narrative) falls back to a deterministic rendering, is noted in the
+summary, and leaves the exit code to the gate.
 
 ### Controlling AI cost
 
@@ -470,8 +553,9 @@ a provider.
 | :--- | :--- |
 | Verdict cache | A re-run of the same findings reuses stored verdicts, and the report prints the reuse percentage. On for local `agent`, Web and AI IDE runs (`aitriage-reports/cache/`); in the GitHub Action, set the `verdict-cache-dir` input |
 | `AITRIAGE_GATING=on` | Send only CRITICAL/HIGH findings to the LLM. The rest get a deterministic `Needs Manual Review` — never an automatic dismissal. Set it where the scope variables above go |
-| `AITRIAGE_BATCH_SIZE` | Findings per request (default 150). Larger batches cost fewer round trips and more tokens per call |
-| Provider choice | Triage is classification, not composition. A small fast model is usually the better trade here; reserve a frontier model for narrative quality |
+| `AITRIAGE_BATCH_SIZE` | Findings per request (default 40; `llm.batch_size` in `.aitriage.yaml`). Larger batches cost fewer round trips, but weaker models drop items from long requests; a reply that cannot be parsed or misses more than a quarter of its findings is retried in halves |
+| `AITRIAGE_CLASSIFY_RETRIES` | Extra passes for findings the model left without a verdict (default 2). What is still left is `Needs Manual Review (unclassified)`, counted separately in the summary together with the retries and batch size used |
+| Provider choice | Cost depends on the model, and so do the verdicts (see [the gate](#why-the-gate-can-fail-with-nothing-confirmed)): pick one model deliberately and keep it pinned |
 
 If no provider key is set, Web still scans, scores, applies the policy and generates every
 report format. The AI panels report that they are offline instead of failing the run.
@@ -498,6 +582,10 @@ report format. The AI panels report that they are offline instead of failing the
 | The agent ran only `aitriage scan` | Ask it to use the AITriage MCP workflow; raw scan is not AI triage |
 | Web AI is unavailable | Export a supported provider API key before starting Web |
 | Full audit failed | Keep the error visible and repair the runtime; do not present a reduced scan as the final verdict |
+| `aitriage agent` exited `2` | The audit did not complete. If `triage-findings.json` says `triage_status: failed`, its reason names the provider error (key, rate limit, timeout): re-run when the provider is available. If `manifest.json` shows a scanner as missing or failed, repair the runtime |
+| Many findings are `Needs Manual Review (unclassified)` | The model returned no verdict for them. Re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE` |
+| A warning says an `ignore.paths` pattern no longer excludes a path | Patterns use `.gitignore` syntax now. Add the suggested entry if the path should stay out of scope |
+| A dismissed finding still fails CI | Commit `.aitriage-suppressions.json`. A dismissal made in the Web UI or an AI IDE under the container runtime sits in `aitriage-reports/suppressions/…` until you move it into that file. `aitriage agent` applies the file; the raw `aitriage scan` does not |
 
 ## Project documentation
 

@@ -4,7 +4,7 @@ author: 'dodobrands'
 
 inputs:
   command:
-    description: 'aitriage subcommand to run: scan (default), agent, fix, sbom.'
+    description: 'aitriage subcommand to run: scan (default), agent, fix, sbom. Exit 1 means the security gate failed. agent exits 2 when the audit could not complete (LLM provider failure, missing scanner): re-run it, it is not a verdict on the code.'
     required: false
     default: 'scan'
   project-dir:
@@ -20,31 +20,31 @@ inputs:
     required: false
     default: ''
   fail-on:
-    description: 'When to exit non-zero (blocks the job): critical, any, never.'
+    description: 'When command scan exits 1 (blocks the job): critical (active CRITICAL/HIGH), any, confirmed, never. confirmed blocks only AI-confirmed findings and is meant for command agent, whose gate comes from args (e.g. --fail-on confirmed) or .aitriage.yaml.'
     required: false
     default: 'critical'
   fail-score:
-    description: 'Fail if the Health Check score is below this threshold (0 disables score gating).'
+    description: 'Fail if the Health Check score is below this threshold (0 disables score gating). Command scan; for agent pass --fail-score in args.'
     required: false
     default: '0'
   health-profile:
-    description: 'Health Check policy profile for the Security Gate: baseline, standard, strict.'
+    description: 'Health Check policy profile for the Security Gate: baseline, standard, strict. Command scan; for agent pass --health-profile in args.'
     required: false
     default: ''
   stack:
-    description: 'Force a specific stack (e.g. nextjs, fastapi) instead of auto-detection.'
+    description: 'Force a specific stack (e.g. nextjs, fastapi) instead of auto-detection. Command scan only.'
     required: false
     default: ''
   diff:
-    description: 'Scan only files changed vs a git ref (e.g. origin/main, HEAD~1).'
+    description: 'Scan only files changed vs a git ref (e.g. origin/main, HEAD~1). Command scan only.'
     required: false
     default: ''
   baseline:
-    description: 'Report only NEW findings not present in the baseline (true/false).'
+    description: 'Report only NEW findings not present in the baseline (true/false). Command scan only.'
     required: false
     default: 'false'
   args:
-    description: 'Freeform extra args appended to the command (used for agent/fix/sbom or advanced flags).'
+    description: 'Freeform extra args appended to the command: the agent gate (--fail-on critical|any|confirmed|never, --fail-score, --health-profile, --confirmed-min-severity), report paths, or advanced scan flags.'
     required: false
     default: ''
   summary-file:
