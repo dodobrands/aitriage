@@ -129,6 +129,50 @@ func TestPathMatcherNegationDisablesTreePruning(t *testing.T) {
 	}
 }
 
+// A negated directory pattern re-includes the directory, not the files below
+// it that a pattern still excludes. It used to apply to every file below the
+// directory, so the whitelist "*", "!*/", "!*.go" scanned every file, and "*/"
+// with "!src/" every subdirectory of src/.
+func TestNegatedDirectoryReincludesTheDirectoryNotItsFiles(t *testing.T) {
+	cases := []struct {
+		lines []string
+		rel   string
+		isDir bool
+		want  bool
+	}{
+		{[]string{"*", "!*/", "!*.go"}, "src", true, false},
+		{[]string{"*", "!*/", "!*.go"}, "src/main.go", false, false},
+		{[]string{"*", "!*/", "!*.go"}, "src/app.py", false, true},
+		{[]string{"*", "!*/", "!*.go"}, "src/pkg/README.md", false, true},
+		{[]string{"*", "!*/", "!*.go"}, "Makefile", false, true},
+		{[]string{"*", "!*/", "!*.go", "vendor/"}, "vendor/lib.go", false, true},
+		{[]string{"/*", "!/src/", "!/main.go"}, "src/app.py", false, false},
+		{[]string{"/*", "!/src/", "!/main.go"}, "docs/guide.md", false, true},
+		{[]string{"*/", "!src/"}, "src/app.py", false, false},
+		{[]string{"*/", "!src/"}, "src/sub", true, true},
+		{[]string{"*/", "!src/"}, "src/sub/deep.py", false, true},
+		{[]string{"*/", "!src/"}, "main.go", false, false},
+		{[]string{"*.py", "!generated/"}, "generated/client.py", false, true},
+		{[]string{"*.py", "!generated/"}, "generated", true, false},
+		{[]string{"*.go", "!main.go/"}, "main.go", false, true}, // a directory pattern never names a file
+		// The deliberate difference from git stays: a later negation that names
+		// a path below an excluded directory re-includes it.
+		{[]string{"infra/", "!infra/prod/"}, "infra/prod/Dockerfile", false, false},
+		{[]string{"infra/", "!infra/prod/"}, "infra/dev/Dockerfile", false, true},
+		{[]string{"Dockerfile", "infra/", "!infra/prod/"}, "infra/prod/Dockerfile", false, true},
+		{[]string{"logs/", "!keep.log"}, "logs/keep.log", false, false},
+		{[]string{"*", "!*.go"}, "pkg/util/util.go", false, false},
+		{[]string{"*", "!*.go"}, "pkg/util/README.md", false, true},
+		{[]string{"!vendor/lib.go", "vendor/"}, "vendor/lib.go", false, true}, // an earlier negation does not
+	}
+	for _, tc := range cases {
+		m := ParseIgnoreFile(strings.Join(tc.lines, "\n"))
+		if got := m.Excludes(tc.rel, tc.isDir); got != tc.want {
+			t.Errorf("%q: Excludes(%q, dir=%t) = %t; want %t", tc.lines, tc.rel, tc.isDir, got, tc.want)
+		}
+	}
+}
+
 // Any "!" line used to stop every excluded directory from being skipped, so a
 // common "!.vscode/settings.json" made walkers enter dist/, coverage/ and the
 // rest. Only a negation that can match something below a directory keeps the
@@ -155,6 +199,13 @@ func TestExcludesTreeEntersOnlyDirectoriesANegationCanReach(t *testing.T) {
 		{[]string{"deploy/*", "!deploy/prod/"}, "deploy", false}, // "deploy/*" does not match deploy itself
 		{[]string{"deploy/*", "!deploy/prod/"}, "deploy/dev", true},
 		{[]string{"docs/", "!docs/[ab]/keep.md"}, "docs", false}, // brackets: assume the worst
+		{[]string{"*", "!*/", "!*.go"}, "src", false},            // re-included: entered, its files decided one by one
+		{[]string{"/*", "!/src/"}, "docs", true},
+		{[]string{"/*", "!/src/"}, "src", false},
+		{[]string{"*", "!*.go"}, "pkg", false},               // "!*.go" may name a file at any depth
+		{[]string{"*/", "!/src/"}, "src/sub", true},          // the anchored negation names src only
+		{[]string{"*/", "!src/"}, "src/sub", false},          // a directory named src below may be re-included
+		{[]string{"build/", "!build/", "*/"}, "build", true}, // the last pattern excludes it again
 	}
 	for _, tc := range cases {
 		m := ParseIgnoreFile(strings.Join(tc.lines, "\n"))

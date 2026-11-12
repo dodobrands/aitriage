@@ -57,6 +57,12 @@ var gitTree = []string{
 	"src/vendors/api.py",
 	"#hash.txt",
 	"!bang.txt",
+	"main.go",
+	"pkg/util/util.go",
+	"pkg/util/README.md",
+	"cmd/tool/main.go",
+	"cmd/tool/notes.txt",
+	"src/app.py",
 }
 
 // gitPatternCases cover anchoring, trailing slashes, "**", "*" against "/",
@@ -104,6 +110,32 @@ var gitPatternCases = []struct {
 		name:       "negation by name below an excluded directory",
 		lines:      []string{"logs/", "!keep.log"},
 		reincluded: []string{"logs/keep.log"},
+	},
+	// A negated directory pattern re-includes the directory, not the files in
+	// it that a pattern still names. The matcher used to apply such a negation
+	// to every file below the directory, so these whitelists scanned
+	// everything they were written to leave out.
+	{name: "whitelist of one extension", lines: []string{"*", "!*/", "!*.go"}},
+	{name: "whitelist of one extension with an excluded directory", lines: []string{"*", "!*/", "!*.go", "vendor/"}},
+	{name: "whitelist at the root", lines: []string{"/*", "!/src/", "!/main.go"}},
+	{name: "negated directory below a directory wildcard", lines: []string{"*/", "!src/"}},
+	{name: "negated directory keeps files a pattern names", lines: []string{"*.py", "!generated/"}},
+	{name: "negated directory after a name glob", lines: []string{"*.log", "!logs/"}},
+	{name: "negated directory pattern and a file of that name", lines: []string{"*.go", "!main.go/"}},
+	{
+		// The negation re-includes infra/prod itself (the deliberate
+		// difference), but not the Dockerfile in it, which a pattern names.
+		name:       "re-included directory keeps files a pattern names",
+		lines:      []string{"Dockerfile", "infra/", "!infra/prod/"},
+		reincluded: []string{"infra/prod"},
+	},
+	{
+		// Without "!*/" git never enters a directory, so only main.go at the
+		// root is in scope there; the negation by name reaches every depth
+		// here, as for "logs/" and "!keep.log".
+		name:       "whitelist of one extension without re-included directories",
+		lines:      []string{"*", "!*.go"},
+		reincluded: []string{"pkg/util/util.go", "cmd/tool/main.go", "vendor/lib.go"},
 	},
 }
 
