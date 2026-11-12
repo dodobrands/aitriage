@@ -162,7 +162,7 @@ rules:
   - id: NEXT-HEADERS
     name: "No Security Headers Configured"
     stack: nextjs
-    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json"]
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json", "package.json"]
     target: all
     regions: code_and_strings
     condition: "required_pattern"
@@ -292,7 +292,7 @@ rules:
   - id: NEXT-CSP-MISSING
     name: "No Content Security Policy Configured"
     stack: nextjs
-    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json"]
+    extensions: ["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts", "middleware.ts", "middleware.js", "proxy.ts", "proxy.js", "vercel.json", "package.json"]
     target: all
     regions: code_and_strings
     condition: "required_pattern"

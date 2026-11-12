@@ -66,7 +66,7 @@ rules:
     target: all
     regions: code
     exclude_tests: true
-    pattern: '(?m)(?:^|[^.\w$\n])eval\s*\('
+    pattern: '(?m)(?:^|[^.\w$\n])eval\s*\(|\.(?:eval|evaluate)\s*\(\s*(?:req|request)\.(?:body|query|params)\b'
     severity: HIGH
     metadata:
       cwe: "CWE-95"
