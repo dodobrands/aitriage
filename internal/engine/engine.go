@@ -813,7 +813,7 @@ func (e *Engine) regionMatch(rule Rule, f *core.FileInfo, honourIgnore bool) (in
 			line += bytes.Count(content[pos:from], []byte{'\n'})
 			pos = from
 			allowed := from >= len(kinds) || regionAllows(rule.Regions, kinds[from])
-			if allowed && !(honourIgnore && e.isLineIgnored(f, line, rule.ID)) {
+			if allowed && (!honourIgnore || !e.isLineIgnored(f, line, rule.ID)) {
 				return line, true
 			}
 			// A rejected match that runs over several lines may cover a real
