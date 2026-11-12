@@ -52,7 +52,12 @@ func TestRuleFixtures(t *testing.T) {
 				covered[id][kind] = true
 				path := filepath.Join(ruleFixturesRoot, id, kind, c.Name())
 				t.Run(id+"/"+kind+"/"+c.Name(), func(t *testing.T) {
-					checkFixtureCase(t, rule, path, kind == "bad")
+					checkFixtureCase(t, rule, path, kind == "bad", false)
+				})
+				// Files written on Windows end lines with CRLF; a rule must give
+				// the same answer for them.
+				t.Run(id+"/"+kind+"/"+c.Name()+"/crlf", func(t *testing.T) {
+					checkFixtureCase(t, rule, path, kind == "bad", true)
 				})
 			}
 		}
@@ -94,10 +99,10 @@ type fixtureLocation struct {
 	line int
 }
 
-func checkFixtureCase(t *testing.T, rule models.Rule, src string, wantFinding bool) {
+func checkFixtureCase(t *testing.T, rule models.Rule, src string, wantFinding, crlf bool) {
 	t.Helper()
 	root := t.TempDir()
-	expected := copyFixtureCase(t, src, root, rule.ID)
+	expected := copyFixtureCase(t, src, root, rule.ID, crlf)
 
 	ws, err := core.NewWorkspace(root)
 	if err != nil {
@@ -148,8 +153,9 @@ func checkFixtureCase(t *testing.T, rule models.Rule, src string, wantFinding bo
 }
 
 // copyFixtureCase copies a case (file or directory) into root, removing join
-// markers, and returns the locations marked with "ruleid: <id>".
-func copyFixtureCase(t *testing.T, src, root, id string) []fixtureLocation {
+// markers and optionally converting line endings to CRLF, and returns the
+// locations marked with "ruleid: <id>".
+func copyFixtureCase(t *testing.T, src, root, id string, crlf bool) []fixtureLocation {
 	t.Helper()
 	info, err := os.Stat(src)
 	if err != nil {
@@ -173,6 +179,9 @@ func copyFixtureCase(t *testing.T, src, root, id string) []fixtureLocation {
 			return err
 		}
 		text := strings.ReplaceAll(string(data), joinMarker, "")
+		if crlf {
+			text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+		}
 		dst := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err

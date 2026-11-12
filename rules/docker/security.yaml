@@ -81,7 +81,7 @@ rules:
     extensions: ["Dockerfile", "Dockerfile.*", "*.dockerfile", "Containerfile", "Containerfile.*"]
     target: all
     regions: code
-    pattern: '(?mi)^[^#\n]*\b(?:curl|wget)\b(?:[^\n|]|\\\n)*\|[ \t]*(?:sudo[ \t]+(?:-\S+[ \t]+)*)?(?:/(?:usr/)?bin/)?(?:env[ \t]+)?(?:ba|z|da|k|a)?sh\b'
+    pattern: '(?mi)^[^#\n]*\b(?:curl|wget)\b(?:[^\n|]|\\\r?\n)*\|[ \t]*(?:sudo[ \t]+(?:-\S+[ \t]+)*)?(?:/(?:usr/)?bin/)?(?:env[ \t]+)?(?:ba|z|da|k|a)?sh\b'
     severity: MEDIUM
     metadata:
       cwe: "CWE-494"

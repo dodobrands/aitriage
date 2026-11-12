@@ -33,7 +33,7 @@ rules:
     exclude_tests: true
     # A bare or broad except whose only statement is pass/... . Bandit rates
     # the same pattern LOW (B110): a reliability defect, not an exploitable flaw.
-    pattern: '(?m)^[ \t]*except(?:\s+(?:Exception|BaseException)(?:\s+as\s+\w+)?)?\s*:[ \t]*(?:#[^\n]*)?\n[ \t]*(?:pass|\.\.\.)[ \t]*(?:#[^\n]*)?$'
+    pattern: '(?m)^[ \t]*except(?:\s+(?:Exception|BaseException)(?:\s+as\s+\w+)?)?\s*:[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?:pass|\.\.\.)[ \t]*(?:#[^\r\n]*)?\r?$'
     severity: LOW
     metadata:
       cwe: "CWE-703"
