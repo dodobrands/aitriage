@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io/fs"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -94,7 +95,11 @@ func checkRule(t *testing.T, file string, r models.Rule) {
 	if reason, ok := retiredRuleIDs[r.ID]; ok {
 		t.Errorf("%s: id is retired (%s) and must not be reused", where, reason)
 	}
-	if r.IsTaint() || r.Target == "entropy-analysis" {
+	if r.Target == "entropy-analysis" {
+		return
+	}
+	checkMetadata(t, where, r)
+	if r.IsTaint() {
 		return
 	}
 	if !knownTargets[r.Target] {
@@ -147,4 +152,49 @@ func checkRule(t *testing.T, file string, r models.Rule) {
 			t.Errorf("%s: regions must be code, code_and_strings, comments or all (got %q)", where, r.Regions)
 		}
 	}
+}
+
+var (
+	cweID      = regexp.MustCompile(`^CWE-[1-9][0-9]*$`)
+	owaspID    = regexp.MustCompile(`^(?:A(?:0[1-9]|10)|LLM(?:0[1-9]|10)):2025$`)
+	metaValues = map[string]map[string]bool{
+		"confidence":  {"high": true, "medium": true, "low": true},
+		"subcategory": {"vuln": true, "audit": true, "policy": true},
+	}
+	metaKeys = map[string]bool{"cwe": true, "owasp": true, "confidence": true, "subcategory": true, "category": true}
+)
+
+// checkMetadata requires the fields reports and SARIF rely on: how much to
+// trust a finding (confidence), what kind of finding it is (subcategory),
+// and for vulnerabilities their CWE and OWASP Top 10 2025 category.
+func checkMetadata(t *testing.T, where string, r models.Rule) {
+	t.Helper()
+	for k := range r.Metadata {
+		if !metaKeys[k] {
+			t.Errorf("%s: unknown metadata key %q", where, k)
+		}
+	}
+	for k, allowed := range metaValues {
+		if !allowed[r.Metadata[k]] {
+			t.Errorf("%s: metadata.%s = %q is not one of %v", where, k, r.Metadata[k], keysOf(allowed))
+		}
+	}
+	if r.Metadata["subcategory"] != "vuln" {
+		return
+	}
+	if !cweID.MatchString(r.Metadata["cwe"]) {
+		t.Errorf("%s: a vulnerability rule needs metadata.cwe such as CWE-89 (got %q)", where, r.Metadata["cwe"])
+	}
+	if !owaspID.MatchString(r.Metadata["owasp"]) {
+		t.Errorf("%s: a vulnerability rule needs metadata.owasp such as A05:2025 or LLM01:2025 (got %q)", where, r.Metadata["owasp"])
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
