@@ -1,125 +1,267 @@
 # ============================================================
-# AITRIAGE RULES: Python (Universal) — Security
+# AITRIAGE RULES: Python (universal) - Security
 # ============================================================
-# These rules apply to ALL Python stacks (FastAPI, Flask, Django).
-# They detect dangerous stdlib usage, insecure deserialization,
-# unsafe subprocess calls, and common Python anti-patterns.
+# These rules apply to every Python project, whatever the framework
+# (Flask, FastAPI, Django or none). They own the Python language-level
+# sinks: shell commands, deserialization, eval/exec, SQL built from
+# strings, archive extraction, TLS and JWT verification.
 # ============================================================
 
 rules:
   - id: PY-SUBPROCESS
-    name: "Unsafe Subprocess (shell=True)"
+    name: "subprocess call with shell=True and a non-literal command"
     stack: universal
     extensions: [".py"]
     target: all
-    exclude_tests: true
-    pattern: 'subprocess\.\w+\(.*shell\s*=\s*True'
-    severity: CRITICAL
-    suggestion: "subprocess with shell=True enables command injection. Use shell=False and pass arguments as a list."
+    regions: code
+    pattern: '(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\b(?:Popen|check_output|check_call))\s*\(\s*(?:shell\s*=\s*True\b|(?:(?:[^\s"\x27)bBrRuU]|[bBrRuU][^\s"\x27bBrRuU]|[bBrRuU]{2}[^\s"\x27])|[bBrRuU]{0,2}"(?:[^"\\\n]|\\.)*"\s*(?:\+|%|\.format|\.join)|[bBrRuU]{0,2}\x27(?:[^\x27\\\n]|\\.)*\x27\s*(?:\+|%|\.format|\.join))(?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bshell\s*=\s*True\b)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "Pass the command as an argument list with shell=False. If a shell is unavoidable, quote every untrusted part with shlex.quote()."
+
+  - id: PY-OS-SHELL
+    name: "Shell command built at runtime (os.system, os.popen, getoutput, create_subprocess_shell)"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\b(?:os\.(?:system|popen[234]?)|subprocess\.(?:getoutput|getstatusoutput)|commands\.(?:getoutput|getstatusoutput)|(?:asyncio\.)?create_subprocess_shell|\w+\.subprocess_shell)\s*\(\s*(?:(?:[^\s"\x27)bBrRuU]|[bBrRuU][^\s"\x27bBrRuU]|[bBrRuU]{2}[^\s"\x27])|[bBrRuU]{0,2}"(?:[^"\\\n]|\\.)*"\s*(?:\+|%|\.format|\.join)|[bBrRuU]{0,2}\x27(?:[^\x27\\\n]|\\.)*\x27\s*(?:\+|%|\.format|\.join))'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "Run the program with subprocess.run([...], shell=False) and pass arguments as a list. If a shell is unavoidable, quote every untrusted part with shlex.quote()."
 
   - id: PY-YAML-LOAD
-    name: "Unsafe YAML Load"
+    name: "Unsafe YAML load"
     stack: universal
     extensions: [".py"]
     target: all
-    exclude_tests: true
-    pattern: 'yaml\.load\s*\([^)]*\)'
-    condition: "not_contains:SafeLoader"
-    severity: CRITICAL
-    suggestion: "yaml.load() without SafeLoader can execute arbitrary Python objects. Use yaml.safe_load() instead."
+    regions: code
+    pattern: '\byaml\.unsafe_load(?:_all)?\s*\(|\byaml\.load(?:_all)?\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?(?:\bLoader\s*=\s*|,\s*)(?:yaml\.)?(?:C|Unsafe|CUnsafe)?Loader\b\s*[,)]|\byaml\.load\s*\(\s*(?:[^(),]|\([^()]*\))+\)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Use yaml.safe_load() or Loader=yaml.SafeLoader. Do not use yaml.Loader, UnsafeLoader, CLoader or unsafe_load on data you do not fully control."
 
   - id: PY-PICKLE
-    name: "Insecure Deserialization (pickle/marshal)"
+    name: "Insecure deserialization (pickle, marshal, shelve, joblib, torch.load)"
     stack: universal
     extensions: [".py"]
     target: all
-    exclude_tests: true
-    pattern: '(?i)(pickle\.loads?\(|marshal\.loads?\(|shelve\.open\(|dill\.loads?\(|joblib\.load\()'
-    severity: CRITICAL
-    suggestion: "Deserializing untrusted data via pickle/marshal enables Remote Code Execution. Use JSON for data exchange."
+    regions: code
+    pattern: '\b(?:c?[Pp]ickle|_pickle|dill|cloudpickle)\.(?:loads?|Unpickler)\s*\(|\bmarshal\.loads?\s*\(|\bjsonpickle\.decode\s*\(|\b(?:pandas|pd)\.read_pickle\s*\(|\bshelve\.open\s*\(|\bjoblib\.load\s*\(|\btorch\.load\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bweights_only\s*=\s*False\b|\b(?:numpy|np)\.load\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\ballow_pickle\s*=\s*True\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "Do not unpickle data that crosses a trust boundary. Use JSON, or sign the bytes and verify the HMAC before loading. For models, use safetensors or torch.load(weights_only=True)."
 
   - id: PY-ASSERT-GUARD
-    name: "Assert Used as Security Guard"
+    name: "assert used as an authorization check"
     stack: universal
     extensions: [".py"]
     target: all
-    exclude_tests: true
-    pattern: '(?i)assert\s+.*(is_admin|is_authenticated|has_perm|is_staff|is_superuser|authorized|role)'
-    severity: HIGH
-    suggestion: "assert statements are stripped in optimized mode (-O). Use if/raise for security checks."
+    regions: code
+    pattern: '(?m)^[ \t]*assert\s[^\n#]*\b(?:is_admin|is_authenticated|is_staff|is_superuser|has_perms?|has_permission|has_role|is_authorized|authorized|is_owner|role|roles|permissions?)\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-617"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Python removes assert statements when run with -O, so the check disappears. Use an explicit if-statement and raise PermissionError or abort(403)."
 
   - id: PY-TEMPFILE
-    name: "Insecure Temp File Creation"
+    name: "Insecure temporary file name (tempfile.mktemp)"
     stack: universal
     extensions: [".py"]
     target: all
-    pattern: 'tempfile\.mktemp\s*\('
+    regions: code
+    pattern: '(?m)\btempfile\.mktemp\s*\(|^[ \t]*from[ \t]+tempfile[ \t]+import[ \t]+(?:\([^)]*|[^\n]*)\bmktemp\b'
     severity: MEDIUM
-    suggestion: "tempfile.mktemp() is vulnerable to race conditions. Use tempfile.mkstemp() or NamedTemporaryFile()."
+    metadata:
+      cwe: "CWE-377"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "tempfile.mktemp() returns a name another process can create first. Use tempfile.mkstemp(), NamedTemporaryFile() or TemporaryDirectory()."
 
   - id: PY-EXEC
-    name: "Dynamic Code Execution (exec/eval)"
+    name: "eval() or exec() on a runtime value"
     stack: universal
     extensions: [".py"]
-    target: all
-    exclude_tests: true
-    pattern: '(?m)^\s*(?:exec|eval)\s*\('
-    severity: CRITICAL
-    suggestion: "exec()/eval() with dynamic input enables arbitrary code execution. Avoid entirely or sandbox strictly."
-
-  - id: PY-LOGGING-SENSITIVE
-    name: "Sensitive Data in Log Statements"
-    stack: universal
-    extensions: [".py"]
-    target: all
-    pattern: '(?i)(?:logging\.\w+|logger\.\w+|log\.\w+)\s*\(.*(?:password|passwd|secret|token|api_key|private_key|credit_card)'
+    target: ast
+    pattern: |
+      (call
+        function: (identifier) @func
+        arguments: (argument_list
+          .
+          [(identifier) (attribute) (call) (subscript) (binary_operator)
+           (string (interpolation)) (concatenated_string (string (interpolation)))] @arg)
+        (#match? @func "^(eval|exec)$"))
     severity: HIGH
-    suggestion: "Sensitive data (password, token, secret) detected in log statement. Mask or redact before logging."
-
-  - id: PY-TARFILE
-    name: "Zip Slip / Path Traversal in Archive"
-    stack: universal
-    extensions: [".py"]
-    target: all
-    pattern: '(?:tarfile\.open|zipfile\.ZipFile)\s*\(.*\)[\s\S]*?\.extractall\s*\('
-    severity: HIGH
-    suggestion: "Extracting archives without path validation enables Zip Slip attacks. Validate each member path before extraction."
-
-  - id: PY-REQUESTS-NOVERIFY
-    name: "Disabled SSL Verification"
-    stack: universal
-    extensions: [".py"]
-    target: all
-    exclude_tests: true
-    pattern: 'verify\s*=\s*False'
-    severity: HIGH
-    suggestion: "SSL verification disabled. This makes the connection vulnerable to MITM attacks."
-
-  - id: PY-HASHLIB-WEAK
-    name: "Weak Hash Algorithm"
-    stack: universal
-    extensions: [".py"]
-    target: all
-    pattern: 'hashlib\.(md5|sha1)\s*\('
-    severity: HIGH
-    suggestion: "MD5/SHA1 are cryptographically broken. Use hashlib.sha256() or hashlib.sha3_256() for security-sensitive hashing."
-
-  - id: PY-BINDING-ALL
-    name: "Binding to All Interfaces"
-    stack: universal
-    extensions: [".py"]
-    target: all
-    exclude_tests: true
-    pattern: '\.run\s*\([^)]*host\s*=\s*["\x27]0\.0\.0\.0["\x27]'
-    severity: MEDIUM
-    suggestion: "Server bound to 0.0.0.0 (all interfaces). Restrict to localhost or a specific IP in production."
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "Avoid eval() and exec() on runtime data. Use ast.literal_eval() for literals, or a dispatch table or a parser for expressions."
 
   - id: PY-COMPILE-EXEC
-    name: "Dynamic Code Compilation"
+    name: "compile() of a runtime value in exec or eval mode"
     stack: universal
     extensions: [".py"]
     target: all
-    exclude_tests: true
-    pattern: 'compile\s*\([^)]+,\s*["\x27]\w+["\x27]\s*,\s*["\x27]exec["\x27]\s*\)'
-    severity: CRITICAL
-    suggestion: "compile() with 'exec' mode enables arbitrary code execution. Avoid on untrusted input."
+    regions: code
+    pattern: '(?m)(?:^[ \t]*|[=(,\[:]\s*|\breturn\s+)compile\s*\(\s*(?:[^\s"\x27)bBrRuU]|[bBrRuU][^\s"\x27bBrRuU]|[bBrRuU]{2}[^\s"\x27])(?:[^()]|\((?:[^()]|\([^()]*\))*\))*?(?:,\s*|\bmode\s*=\s*)["\x27](?:exec|eval|single)["\x27]'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Compiling runtime source into a code object prepares it for execution. Do not compile untrusted text; use ast.literal_eval() or a parser for data."
+
+  - id: PY-LOGGING-SENSITIVE
+    name: "Password, token or key passed to a log call"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?i)\b(?:logging|logger|log|_logger|_log|app\.logger|current_app\.logger)\.(?:debug|info|warning|warn|error|exception|critical|fatal|log)\s*\((?:"[^"\n]*"|\x27[^\x27\n]*\x27|[^()"\x27]|\((?:[^()]|\([^()]*\))*\))*?(?:(?:[,%+=]|\.format\s*\()\s*(?:[\w\]"\x27]+(?:\.|\[["\x27]?))*(?:(?:[a-gj-z0-9][a-z0-9]*|h|h[b-z0-9][a-z0-9]*|ha|ha[a-rt-z0-9][a-z0-9]*|has[a-z0-9]+|i|i[a-rt-z0-9][a-z0-9]*|is[a-z0-9]+)_(?:[a-z0-9]+_)*)?(?:password|passwd|pwd|secret(?:_?key)?|api_?key|private_?key|credit_?card|card_?number|cvv|(?:access|refresh|auth|bearer|session|id)?token)(?:_?(?:json|str|value|data|dict|raw|plain))?["\x27]?\s*[,)\]]|(?:[fF][rR]?|[rR][fF])(?:"[^"\n]*?|\x27[^\x27\n]*?)\{\s*(?:[\w\]"\x27]+(?:\.|\[["\x27]?))*(?:(?:[a-gj-z0-9][a-z0-9]*|h|h[b-z0-9][a-z0-9]*|ha|ha[a-rt-z0-9][a-z0-9]*|has[a-z0-9]+|i|i[a-rt-z0-9][a-z0-9]*|is[a-z0-9]+)_(?:[a-z0-9]+_)*)?(?:password|passwd|pwd|secret(?:_?key)?|api_?key|private_?key|credit_?card|card_?number|cvv|(?:access|refresh|auth|bearer|session|id)?token)(?:_?(?:json|str|value|data|dict|raw|plain))?["\x27]?\]?\s*=?\s*(?:![rsa])?(?::[^}\n]*)?\})'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-532"
+      owasp: "A09:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Do not log secrets. Log an identifier or a masked form (for example the last four characters), or register the value with a redacting log filter."
+
+  - id: PY-TARFILE
+    name: "Archive extracted without an extraction filter"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\btarfile\.(?:open|TarFile)\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)[\s\S]*?\.extractall\s*\(\s*(?:[^()=]|\([^()]*\)|\b(?:path|numeric_owner)\s*=)*\)|\.extractall\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bfilter\s*=\s*["\x27]fully_trusted["\x27]|\bshutil\.unpack_archive\s*\((?:[^()=]|\([^()]*\)|\b(?:extract_dir|format)\s*=)*\)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Pass filter='data' to TarFile.extractall() or shutil.unpack_archive() (Python 3.12+, or a patched 3.8-3.11), or validate every member's resolved path and reject links."
+
+  - id: PY-REQUESTS-NOVERIFY
+    name: "TLS certificate verification disabled"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\bverify\s*=\s*False\b|\bverify_(?:ssl|certs)\s*=\s*False\b|\bssl\._create_unverified_context\s*\(|\b_create_default_https_context\s*=|\b(?:cert_reqs|verify_mode)\s*=\s*(?:ssl\.)?CERT_NONE\b|\bcheck_hostname\s*=\s*False\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A07:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Keep certificate verification on. For a private CA, point verify= (or the SSL context) at its CA bundle instead of disabling verification."
+
+  - id: PY-HASHLIB-WEAK
+    name: "MD5 or SHA-1 used on a password, token or signature"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?i)\bhashlib\.(?:md5|sha1)\s*\((?:(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*|(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?\((?:[^()=#]|\([^()=#]*\))*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)(?:[^()=#]|\([^()=#]*\))*\)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*|(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?\((?:[^()=#]|\([^()=#]*\))*?\([^()=#]*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)[^()=#]*\)(?:[^()=#]|\([^()=#]*\))*\)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*)\)|\bhashlib\.new\s*\(\s*["\x27](?:md4|md5|sha1)["\x27]\s*,(?:(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*|(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?\((?:[^()=#]|\([^()=#]*\))*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)(?:[^()=#]|\([^()=#]*\))*\)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*|(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*?\((?:[^()=#]|\([^()=#]*\))*?\([^()=#]*?(?:passw|pwd|secret|token\b|salt|signature|credential|api_?key|\botp\b)[^()=#]*\)(?:[^()=#]|\([^()=#]*\))*\)(?:[^()=#]|\((?:[^()=#]|\([^()=#]*\))*\))*)\)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-328"
+      owasp: "A04:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "For passwords use a password hash (argon2, bcrypt, scrypt or PBKDF2). For tokens and signatures use HMAC-SHA256. MD5 and SHA-1 are fine for non-security checksums; mark them with usedforsecurity=False."
+
+  - id: PY-BINDING-ALL
+    name: "Server bound to all network interfaces"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\.run\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bhost\s*=\s*["\x27](?:0\.0\.0\.0|::)["\x27]|\.bind\s*\(\s*\(\s*["\x27](?:0\.0\.0\.0|::)?["\x27]\s*,'
+    severity: LOW
+    metadata:
+      cwe: "CWE-1327"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Binding to 0.0.0.0 is expected inside a container behind a proxy. Elsewhere, bind to 127.0.0.1 or a specific interface and control exposure at the network layer."
+
+  - id: PY-SQL-STRING-BUILD
+    name: "SQL text built with string formatting"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?m)(?:(?:\b\w+(?:\.\w+|\[[^\]\n]*\])*(?:[ \t]*:[ \t]*[\w.]+(?:\[[^\]\n]*\])?)?[ \t]*\+?=|\breturn\b|\byield\b)[ \t]*(?:\(\s*)?(?:[bBrRuU]{0,2}"\s*(?:SELECT\s[^"\n]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|insert\s+into\s+[\w.]+\s*(?:\(|values\b|select\b)|UPDATE\s+[^\s"]+\s+SET\s|update\s+[\w.]+\s+set\s+\w+\s*=|DELETE\s+FROM\s|delete\s+from\s+[\w.]+\s+where\s)[^"\n]*"\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\()|(?:[fF][rR]?|[rR][fF])"\s*(?:(?:SELECT\s[^"\n]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|insert\s+into\s+[\w.]+\s*(?:\(|values\b|select\b)|UPDATE\s+[^\s"]+\s+SET\s|update\s+[\w.]+\s+set\s+\w+\s*=|DELETE\s+FROM\s|delete\s+from\s+[\w.]+\s+where\s)[^"\n]*\{|SELECT\s[^"\n]*?\{[^"\n]*?\sFROM\s)|[bBrRuU]{0,2}\x27\s*(?:SELECT\s[^\x27\n]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|insert\s+into\s+[\w.]+\s*(?:\(|values\b|select\b)|UPDATE\s+[^\s\x27]+\s+SET\s|update\s+[\w.]+\s+set\s+\w+\s*=|DELETE\s+FROM\s|delete\s+from\s+[\w.]+\s+where\s)[^\x27\n]*\x27\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\()|(?:[fF][rR]?|[rR][fF])\x27\s*(?:(?:SELECT\s[^\x27\n]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|insert\s+into\s+[\w.]+\s*(?:\(|values\b|select\b)|UPDATE\s+[^\s\x27]+\s+SET\s|update\s+[\w.]+\s+set\s+\w+\s*=|DELETE\s+FROM\s|delete\s+from\s+[\w.]+\s+where\s)[^\x27\n]*\{|SELECT\s[^\x27\n]*?\{[^\x27\n]*?\sFROM\s)|[bBrRuU]{0,2}"""\s*(?:SELECT\s[^"]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|UPDATE\s+[^\s"]+\s+SET\s|DELETE\s+FROM\s)[^"]*"""\s*(?:%\s*[\w(\[]|\.format\s*\()|(?:[fF][rR]?|[rR][fF])"""\s*(?:(?:SELECT\s[^"]*?\sFROM\s|select\s+(?:\*|[\w.()*]+(?:\s*,\s*[\w.()*]+)*)\s+from\s|INSERT\s+INTO\s|UPDATE\s+[^\s"]+\s+SET\s|DELETE\s+FROM\s)[^"]*?\{|SELECT\s[^"]*?\{[^"]*?\sFROM\s))|\+=\s*(?:[fF][rR]?|[rR][fF])?["\x27]\s*(?:WHERE|AND|OR|ORDER\s+BY|GROUP\s+BY|LIMIT|OFFSET|HAVING)\s(?:[^"\x27\n]*\{|[^"\x27\n]*["\x27]\s*(?:%\s*[\w(\[]|\+\s*[\w(\[]|\.format\s*\()))'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Keep the SQL text constant and pass values as bound parameters: cursor.execute(sql, params) or text(... :name) with a params dict. For dynamic table or column names, pick them from an allowlist."
+
+  - id: PY-JWT-NOVERIFY
+    name: "JWT decoded without signature verification"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\bjwt\.decode\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?\bverify\s*=\s*False\b|\{[^{}]*?["\x27]verify_signature["\x27]\s*:\s*False\b|\bverify_signature\s*=\s*False\b|\bjwt\.get_unverified_claims\s*\('
+    severity: HIGH
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A04:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Verify the signature: call jwt.decode(token, key, algorithms=[...]) without disabling verify_signature. Read unverified claims only to pick a key, then verify before trusting them."
+
+  - id: PY-JINJA2-AUTOESCAPE-OFF
+    name: "Jinja2 Environment without autoescaping"
+    stack: universal
+    extensions: [".py"]
+    target: ast
+    pattern: |
+      (call
+        function: [(identifier) @func (attribute attribute: (identifier) @func)]
+        arguments: (argument_list) @args
+        (#eq? @func "Environment")
+        (#not-match? @args "autoescape|[*][*]"))
+
+      (call
+        function: [(identifier) @func (attribute attribute: (identifier) @func)]
+        arguments: (argument_list
+          (keyword_argument name: (identifier) @kw value: (false)))
+        (#eq? @func "Environment")
+        (#eq? @kw "autoescape"))
+    condition: "contains:jinja2"
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "Create HTML environments with autoescape=select_autoescape(['html', 'xml']) or autoescape=True. Plain-text templates (SQL, prompts, config) can keep autoescape off."

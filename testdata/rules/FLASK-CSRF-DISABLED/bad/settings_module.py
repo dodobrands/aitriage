@@ -1,0 +1,3 @@
+SQLALCHEMY_DATABASE_URI = "postgresql://db/shop"
+# ruleid: FLASK-CSRF-DISABLED
+WTF_CSRF_ENABLED = False

@@ -18,6 +18,8 @@ import (
 // suppressions and inline directives may still name them, so an id must never
 // be given to a different rule.
 var retiredRuleIDs = map[string]string{
+	"FLASK-ORM":              "absence of an ORM is not SQL injection; the rule never ran",
+	"FLASK-SECRETS":          "duplicate of FLASK-SECRET-HARDCODED; the rule never ran",
 	"NEXT-AUTH":              "absence of a middleware file is not a vulnerability; Next.js advises auth checks in each route",
 	"NEXT-CSRF":              "Server Actions check the Origin header and cookies default to SameSite=Lax",
 	"NEXT-AUTHZ":             "absence of the word role is not a vulnerability",
