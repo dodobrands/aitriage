@@ -1,0 +1,1 @@
+{ "name": "web", "dependencies": { "next": "15.0.0", "@arcjet/next": "1.0.0" } }

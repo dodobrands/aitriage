@@ -1,145 +1,232 @@
 # ============================================================
 # AITRIAGE RULES: Express.js / Node.js — Security
 # ============================================================
-# Express is detected by the engine but previously had ZERO rules.
-# These rules cover: helmet, NoSQL injection, session security,
-# child_process, SSRF, XSS, rate limiting, authentication,
-# and body parser configuration.
+# Covers: NoSQL and SQL injection, command injection, SSRF,
+# reflected XSS, open redirect, credentialed CORS, session
+# cookie settings and secrets, body size limits, and the
+# helmet / rate-limit / authentication policy checks.
+#
+# eval() is a generic JavaScript rule and runs on every stack
+# (`stack: universal`).
 #
 # Reference: OWASP, Semgrep p/expressjs, Node.js security guide.
 # ============================================================
 
 rules:
   - id: EXPRESS-HELMET
-    name: "Missing Helmet Middleware"
+    name: "No Security Headers Middleware"
     stack: express
-    extensions: [".json"]
-    target: raw
+    extensions: ["package.json"]
+    target: all
+    regions: all
     condition: "required_pattern"
-    pattern: '"helmet"'
-    severity: HIGH
-    suggestion: "Helmet middleware not found. It sets critical HTTP security headers (HSTS, CSP, X-Frame-Options, etc.)."
+    pattern: '"(?:helmet|lusca)"\s*:'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "Neither helmet nor lusca is declared in package.json, so the app likely sends no security headers (Strict-Transport-Security, X-Content-Type-Options, X-Frame-Options, Content-Security-Policy). Add app.use(helmet()). Headers set by a gateway or reverse proxy also satisfy this control; if so, suppress this finding with a note."
 
   - id: EXPRESS-NOSQL
-    name: "NoSQL Injection Risk"
+    name: "MongoDB Query Built From Request Input"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)\.(find|findOne|findOneAndUpdate|updateOne|deleteOne)\s*\(\s*req\.(body|query|params)'
-    severity: CRITICAL
-    suggestion: "Raw user input passed directly to MongoDB query. An attacker can inject operators ($ne, $gt) to bypass authentication. Validate and sanitize input with a schema (Zod/Joi) first."
+    regions: code
+    pattern: '\.(?:find|findOne|findOneAndUpdate|findOneAndDelete|findOneAndReplace|updateOne|updateMany|deleteOne|deleteMany|countDocuments|aggregate)\s*\(\s*(?:(?:req|request)\.(?:body|query|params)\b|\{[^{}]*?:\s*(?:req|request)\.(?:body|query|params)\.\w+\s*[,}])'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-943"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A MongoDB filter is built from req.body, req.query or req.params. Express parses ?email[$ne]= and JSON bodies into objects, so a value can become a query operator and bypass a login check. Validate input with a schema that only accepts strings or numbers, cast values (String(x)), or use $eq. Mongoose sanitizeFilter also strips operators."
 
   - id: EXPRESS-SESSION-INSECURE
-    name: "Insecure Session Configuration"
+    name: "Session Cookie Without Secure or HttpOnly"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)session\s*\(\s*\{[^}]*(?:secure\s*:\s*false|httpOnly\s*:\s*false)'
-    severity: HIGH
-    suggestion: "Session cookie missing secure or httpOnly flags. Cookies can be stolen via XSS or intercepted over HTTP."
+    regions: code
+    pattern: '(?is)\b(?:session|cookieSession|expressSession)\s*\(\s*\{(?:.{0,600}?[{,\n])?\s*(?:secure|httpOnly)\s*:\s*false\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The session cookie sets secure: false or httpOnly: false. Without secure the cookie is sent over plain HTTP; without httpOnly page scripts (and any XSS) can read it. Set httpOnly: true and secure: true (behind a proxy also call app.set('trust proxy', 1)), and set sameSite to 'lax' or 'strict'."
 
   - id: EXPRESS-EVAL
-    name: "Server-Side eval()"
-    stack: express
-    extensions: [".ts", ".js"]
+    name: "eval() Call"
+    stack: universal
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: '(?m)^\s*eval\s*\('
-    severity: CRITICAL
-    suggestion: "eval() on server-side enables arbitrary code execution. Remove entirely."
+    pattern: '(?m)(?:^|[^.\w$\n])eval\s*\('
+    severity: HIGH
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "eval() runs its argument as JavaScript with the full rights of the process. Remove it: parse data with JSON.parse, look up behaviour in a map of allowed functions, or use a dedicated expression evaluator (for example mathjs.evaluate)."
 
   - id: EXPRESS-CHILD-PROC
-    name: "Unsafe child_process Usage"
+    name: "Shell Command Built From Request Input"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: '(?i)(?:exec|execSync)\s*\(\s*(?:`[^`]*\$\{|.*\+\s*(?:req\.|params|query|body))'
+    pattern: '(?m)(?:^|[^.\w$\n]|\b(?:child_process|childProcess|cp)\.)(?:exec|execSync)\s*\(\s*(?:\x60[^\x60]*\$\{\s*(?:req|request)\.(?:query|body|params|headers)|[^;\n]*?\+\s*(?:req|request)\.(?:query|body|params|headers))|\bspawn(?:Sync)?\s*\([^;]*\$\{\s*(?:req|request)\.(?:query|body|params)[^;]*shell\s*:\s*true'
     severity: CRITICAL
-    suggestion: "Shell command built with user input. Use execFile() with argument arrays to prevent command injection."
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "A shell command is built from req.query, req.body, req.params or headers, so a caller can append their own commands (for example '; rm -rf /'). Use execFile() or spawn() without shell: true, pass the value as a separate argument, and validate it against an allowlist."
 
   - id: EXPRESS-SSRF
-    name: "SSRF Risk"
+    name: "Outgoing Request to a URL From Request Input"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:axios|fetch|http\.get|https\.get|got|node-fetch)\s*\(\s*(?:req\.|params|query|body)'
+    regions: code
+    pattern: '\b(?:axios(?:\.(?:get|post|put|patch|delete|head|request))?|fetch|got(?:\.(?:get|post|stream))?|needle(?:\.get)?|superagent\.(?:get|post)|request(?:\.get)?|https?\.(?:get|request))\s*\(\s*(?:(?:req|request)\.(?:query|body|params|headers)\b|\x60\$\{\s*(?:req|request)\.(?:query|body|params)\b)'
     severity: HIGH
-    suggestion: "User-controlled URL passed to HTTP client. Validate against an allowlist to prevent SSRF."
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The server sends a request to a URL taken from the incoming request, so a caller can reach internal services or cloud metadata endpoints. Parse the URL, require https, and compare the host with a fixed allowlist before sending the request."
 
   - id: EXPRESS-SQLI
-    name: "SQL Injection Risk"
+    name: "SQL Query Built With Interpolation"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:\.query|\.execute)\s*\(\s*(?:`[^`]*\$\{|.*\+\s*req\.)'
-    severity: CRITICAL
-    suggestion: "SQL query built with template literal interpolation. Use parameterized queries."
+    regions: code
+    pattern: '(?:\.(?:query|execute|raw|unsafe)|\$(?:queryRawUnsafe|executeRawUnsafe))\s*\(\s*(?:\x60(?:[^\x60]*\b(?i:select|insert|update|delete|where|from)\b[^\x60]*\$\{|[^\x60]*\$\{[^\x60]*\b(?i:select|insert|update|delete|where|from)\b)|["\x27][^"\x27\n]*\b(?i:select|insert|update|delete|where)\b[^"\x27\n]*["\x27]\s*\+)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "The SQL text is built with a template literal or string concatenation inside the query call. Pass values as parameters (? or $1) with the driver's values array, or use the query builder. Never put request values into the SQL string itself."
 
   - id: EXPRESS-XSS
-    name: "Reflected XSS via res.send"
+    name: "Request Input Reflected in HTML Response"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: 'res\.(send|write)\s*\(.*req\.(query|params|body)'
+    regions: code
+    pattern: '\bres\.(?:send|write|end)\s*\(\s*(?:\x60[^\x60]*\$\{\s*(?:req|request)\.(?:query|params|body)\b|["\x27][^"\x27\n]*<[^"\x27\n]*["\x27]\s*\+\s*(?:req|request)\.(?:query|params|body)\b|(?:req|request)\.(?:query|params|body)\.\w+\s*\))'
     severity: HIGH
-    suggestion: "User input reflected directly in HTTP response. Escape output or use a template engine."
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Request input is written into the response, and res.send() with a string defaults to text/html, so a script in the value runs in the user's browser. Escape the value (for example with escape-html), render it with an auto-escaping template engine, or return JSON with res.json()."
 
   - id: EXPRESS-CORS
-    name: "Missing CORS Middleware"
+    name: "Credentialed CORS With Reflected Origin"
     stack: express
-    extensions: [".json"]
-    target: raw
-    condition: "required_pattern"
-    pattern: '"cors"'
-    severity: MEDIUM
-    suggestion: "No CORS middleware found. Configure cors() with explicit origin allowlist."
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code_and_strings
+    condition: "contains:credentials"
+    pattern: '\bcors\s*\(\s*\{[^}]*\borigin\s*:\s*(?:true|\(\s*\w+\s*,\s*\w+\s*\)\s*=>\s*\w+\s*\(\s*null\s*,\s*true\s*\))[^}]*\bcredentials\s*:\s*true|\bcors\s*\(\s*\{[^}]*\bcredentials\s*:\s*true[^}]*\borigin\s*:\s*(?:true|\(\s*\w+\s*,\s*\w+\s*\)\s*=>\s*\w+\s*\(\s*null\s*,\s*true\s*\))|Access-Control-Allow-Origin["\x27]\s*[,:]\s*(?:req|request)\.(?:headers\.origin|headers\[\s*["\x27]origin["\x27]\s*\]|header\s*\(\s*["\x27]origin["\x27]\s*\)|get\s*\(\s*["\x27]origin["\x27]\s*\))'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "CORS reflects any request origin while allowing credentials, so any website can send authenticated requests and read the responses with the user's cookies. Set origin to a fixed list of trusted origins (cors({ origin: ['https://app.example.com'], credentials: true }))."
 
   - id: EXPRESS-RATELIMIT
-    name: "Missing Rate Limiting"
+    name: "No Rate Limiting Middleware"
     stack: express
-    extensions: [".json"]
-    target: raw
+    extensions: ["package.json"]
+    target: all
+    regions: all
     condition: "required_pattern"
-    pattern: '"(?i)(express-rate-limit|rate-limiter-flexible|express-slow-down)"'
-    severity: HIGH
-    suggestion: "No rate limiting middleware detected. Install express-rate-limit to prevent brute-force and DoS."
+    pattern: '"(?:express-rate-limit|rate-limiter-flexible|express-slow-down|express-brute|@upstash/ratelimit|@arcjet/node)"\s*:'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-770"
+      owasp: "A06:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No rate limiting library is declared in package.json. Rate-limit login, signup, password reset and other costly endpoints, for example with express-rate-limit. Limits enforced at a gateway, load balancer or WAF also satisfy this control; if so, suppress this finding with a note."
 
   - id: EXPRESS-AUTH
-    name: "Missing Authentication"
+    name: "No Authentication Library"
     stack: express
-    extensions: [".json"]
-    target: raw
+    extensions: ["package.json"]
+    target: all
+    regions: all
     condition: "required_pattern"
-    pattern: '"(?i)(passport|express-jwt|jsonwebtoken|@clerk/express|express-session)"'
-    severity: HIGH
-    suggestion: "No authentication library found. Use passport.js or express-jwt for route protection."
+    pattern: '"(?:passport(?:-[\w-]+)?|express-jwt|jsonwebtoken|jose|@clerk/express|express-session|cookie-session|express-openid-connect|openid-client|@auth/express|firebase-admin|better-auth|@okta/[\w-]+|@supabase/supabase-js|keycloak-connect)"\s*:'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-306"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "No authentication or session library is declared in package.json, so routes may have no authentication. Protect non-public routes with an established library (passport, express-jwt, jose, express-openid-connect). Authentication done by an API gateway also satisfies this control; if so, suppress this finding with a note."
 
   - id: EXPRESS-BODYPARSER-LIMIT
-    name: "Missing Body Parser Size Limit"
+    name: "Request Body Size Limit Raised to 10 MB or More"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?:bodyParser\.json|express\.json)\s*\(\s*\)'
-    condition: "not_contains:limit"
-    severity: MEDIUM
-    suggestion: "JSON body parser has no size limit. Large payloads can cause memory exhaustion (DoS). Set {limit: '1mb'}."
+    regions: code
+    pattern: '(?i)\b(?:express|bodyParser)\.(?:json|urlencoded|raw|text)\s*\(\s*\{[^}]*\blimit\s*:\s*["\x27]?\s*(?:[1-9]\d+\s*mb|\d+\s*gb)\b'
+    severity: LOW
+    metadata:
+      cwe: "CWE-770"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "The body parser limit is raised to 10 MB or more for every route, which lets a client make the server buffer and parse very large bodies. Keep the default (100kb) globally and raise the limit only on the routes that need it; stream file uploads with a multipart parser instead of JSON."
 
-  - id: EXPRESS-MONGO-SANITIZE
-    name: "Missing MongoDB Sanitization"
-    stack: express
-    extensions: [".json"]
-    target: raw
-    condition: "required_pattern"
-    pattern: '"(?i)(express-mongo-sanitize|mongo-sanitize|sanitize)"'
-    severity: HIGH
-    suggestion: "No MongoDB input sanitization library found. Install express-mongo-sanitize to strip $-operators from input."
+  # Retired: EXPRESS-MONGO-SANITIZE — fired on apps without MongoDB and recommends an Express 4-only package; EXPRESS-NOSQL checks the queries.
 
   - id: EXPRESS-OPEN-REDIRECT
-    name: "Open Redirect"
+    name: "Redirect to a URL From Request Input"
     stack: express
-    extensions: [".ts", ".js"]
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: 'res\.redirect\s*\(\s*req\.(query|params|body)'
+    regions: code
+    pattern: '\bres\.redirect\s*\(\s*(?:\d{3}\s*,\s*)?(?:\x60\$\{\s*)?(?:req|request)\.(?:query|params|body)\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The redirect target comes from the request, so a link to your site can send users to any other site (useful for phishing). Accept only a relative path that starts with '/' and not '//', or compare the host with an allowlist, and fall back to '/'."
+
+  - id: EXPRESS-SESSION-HARDCODED-SECRET
+    name: "Hardcoded Session or Cookie Secret"
+    stack: express
+    extensions: [".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '(?s)\b(?:session|cookieSession|expressSession)\s*\(\s*\{(?:.{0,400}?[{,\n])?\s*(?:secret|keys)\s*:\s*(?:[\w.]+\s*(?:\|\||\?\?)\s*)?(?:["\x27][^"\x27\n]+["\x27]|\x60[^\x60$\n]+\x60|\[\s*["\x27\x60])|\bcookieParser\s*\(\s*(?:["\x27][^"\x27\n]+["\x27]|\x60[^\x60$\n]+\x60)'
     severity: HIGH
-    suggestion: "User-controlled URL in redirect. Validate against an allowlist to prevent phishing."
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The session or cookie signing secret is a string in the source, either directly or as a fallback (process.env.X || \"...\"). Anyone with the source can forge session cookies. Load the secret from the environment or a secret store, fail at startup when it is missing, and rotate the exposed value."

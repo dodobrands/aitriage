@@ -1,6 +1,6 @@
 # AITriage Rules Library
 
-**178 security rules** across **11 categories** — covering OWASP Top 10:2025, OWASP LLM Top 10:2025, and framework-specific patterns.
+**175 security rules** across **11 categories** — covering OWASP Top 10:2025, OWASP LLM Top 10:2025, and framework-specific patterns.
 
 > The engine loads every `*.yaml` file in this directory tree (embedded at compile
 > time) as its single source of truth. Regex and AST rules run in the AITriage
@@ -19,9 +19,9 @@
 
 | Category | Rules | Stacks / Languages |
 |---|---|---|
-| [Universal](./universal/) | 29 | All (JS, TS, Python, Go, C#) |
+| [Universal](./universal/) | 33 | All (JS, TS, Python, Go, C#) |
 | [Python](./python/) | 12 | All Python frameworks |
-| [Next.js / React](./nextjs/) | 28 | TypeScript, JavaScript, JSX/TSX |
+| [Next.js / React](./nextjs/) | 21 | TypeScript, JavaScript, JSX/TSX |
 | [FastAPI](./fastapi/) | 20 | Python |
 | [Django](./django/) | 16 | Python |
 | [Flask](./flask/) | 14 | Python |

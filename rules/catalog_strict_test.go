@@ -17,7 +17,19 @@ import (
 // retiredRuleIDs are ids of rules removed from the catalog. Baselines,
 // suppressions and inline directives may still name them, so an id must never
 // be given to a different rule.
-var retiredRuleIDs = map[string]string{}
+var retiredRuleIDs = map[string]string{
+	"NEXT-AUTH":              "absence of a middleware file is not a vulnerability; Next.js advises auth checks in each route",
+	"NEXT-CSRF":              "Server Actions check the Origin header and cookies default to SameSite=Lax",
+	"NEXT-AUTHZ":             "absence of the word role is not a vulnerability",
+	"NEXT-VAL":               "absence of a validation library is not a vulnerability",
+	"NEXT-ORM":               "absence of an ORM is not SQL injection",
+	"NEXT-LOGGING":           "absence of a logging library is not a vulnerability",
+	"NEXT-ERROR":             "a missing error.tsx is not a vulnerability",
+	"NEXT-SECRETS":           "a missing .env.example is documentation hygiene",
+	"NEXT-MATH-RANDOM":       "duplicate of ENTR-INSECURE-RANDOM",
+	"REACT-HAPPY-PATH":       "reliability, not security; the query never compiled",
+	"EXPRESS-MONGO-SANITIZE": "fired on projects without MongoDB; NoSQL injection rules cover the defect",
+}
 
 var (
 	knownTargets = map[string]bool{"all": true, "ast": true, "docs": true, "filename": true, "condition": true, "entropy-analysis": true}
