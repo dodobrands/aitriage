@@ -437,31 +437,37 @@ func TestRunCancelledContextAborts(t *testing.T) {
 	}
 }
 
-// A3: a model that keeps dropping findings leaves them visibly unclassified in
-// the summary header, the report, the gate breakdown and the artifact.
+// A3: a model whose verdict for a finding keeps failing validation leaves it
+// visibly unclassified in the summary header, the report, the gate breakdown
+// and the artifact. (A model that leaves the finding out of every reply makes
+// it triage-failed instead: see TestUnclassifiedOutcomeDoesNotDependOnTheVerdictCache.)
 func TestRunMakesUnclassifiedFindingsVisible(t *testing.T) {
 	hermeticRun(t)
 	stub := newStageLLM(t)
 	stub.classify = func(_ int, batch []classificationPromptFinding) (string, error) {
-		// Answers only for PY-EVAL, never for PY-SECRET.
-		var kept []classificationPromptFinding
+		// A True Positive for PY-EVAL; a False Positive without evidence,
+		// which validation rejects, for PY-SECRET.
+		var entries []string
 		for _, item := range batch {
-			if item.Finding.ID == "PY-EVAL" {
-				kept = append(kept, item)
+			disposition := "True Positive"
+			if item.Finding.ID == "PY-SECRET" {
+				disposition = "False Positive"
 			}
+			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
+				item.FindingIndex, item.FindingID, item.Fingerprint, disposition))
 		}
-		return classifyAll(kept, "True Positive"), nil
+		return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`, nil
 	}
 	state := degradedRunState(t, healthcheck.FailOnAny)
 
 	if err := Run(context.Background(), state, stub); err != nil {
-		t.Fatalf("Run() error = %v, want nil: omissions are not a provider failure", err)
+		t.Fatalf("Run() error = %v, want nil: a rejected verdict is not a provider failure", err)
 	}
 	bd := state.HealthCheck.Breakdown
 	if bd.UnclassifiedFindings != 1 || bd.NeedsReviewFindings != 1 || bd.TriageFailedFindings != 0 {
 		t.Fatalf("breakdown = %+v, want 1 unclassified needs-review finding", bd)
 	}
-	if !strings.Contains(state.SummaryMarkdown, "**Needs Review**: 1 (1 unclassified: no model verdict — retries=2, batch=40;") {
+	if !strings.Contains(state.SummaryMarkdown, "**Needs Review**: 1 (1 unclassified: the model's verdict did not pass validation") {
 		t.Fatalf("summary header does not report the unclassified finding:\n%s", state.SummaryMarkdown)
 	}
 	if !strings.Contains(state.ReportMarkdown, "Needs Manual Review (unclassified) | nr-fallback") {

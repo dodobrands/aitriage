@@ -47,6 +47,18 @@ type StageFailure struct {
 // ErrTriageIncomplete matches every *TriageIncompleteError via errors.Is.
 var ErrTriageIncomplete = errors.New("AI triage did not complete")
 
+// Why AI triage did not complete. The remedy differs: waiting for the
+// provider, or retrying with more attempts and smaller requests.
+const (
+	// TriageFailureCauseProvider: the provider failed (authentication, rate
+	// limit, timeout, transport).
+	TriageFailureCauseProvider = "provider_failure"
+	// TriageFailureCauseNoVerdict: the provider answered, but after every
+	// retry no reply carried a verdict for some findings (left out,
+	// malformed or empty replies, verdicts naming another finding).
+	TriageFailureCauseNoVerdict = "no_verdict"
+)
+
 // TriageIncompleteError reports that the LLM provider failed before every
 // finding received a verdict. The dispositions, health check, gate, report and
 // summary were still produced: findings the model never classified are Needs
@@ -60,6 +72,8 @@ type TriageIncompleteError struct {
 	Reason string
 	// Unclassified counts the findings left without a verdict.
 	Unclassified int
+	// Cause is TriageFailureCauseProvider or TriageFailureCauseNoVerdict.
+	Cause string
 	// Err is the underlying provider error.
 	Err error
 }
@@ -74,7 +88,7 @@ func (e *TriageIncompleteError) Unwrap() error { return e.Err }
 func (e *TriageIncompleteError) Is(target error) bool { return target == ErrTriageIncomplete }
 
 func newTriageIncomplete(stage string, err error) *TriageIncompleteError {
-	return &TriageIncompleteError{Stage: stage, Reason: failureReason(err), Err: err}
+	return &TriageIncompleteError{Stage: stage, Reason: failureReason(err), Cause: TriageFailureCauseProvider, Err: err}
 }
 
 // RunSuspender is implemented by errors that pause a run rather than fail it.

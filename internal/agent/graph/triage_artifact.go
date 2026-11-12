@@ -31,9 +31,11 @@ type TriageFindingsArtifact struct {
 	SchemaVersion int `json:"schema_version"`
 	// TriageStatus is "complete" or "failed".
 	TriageStatus string `json:"triage_status"`
-	// TriageFailureReason and TriageFailureStage explain a failed triage.
+	// TriageFailureReason, TriageFailureStage and TriageFailureCause
+	// ("provider_failure" or "no_verdict") explain a failed triage.
 	TriageFailureReason string             `json:"triage_failure_reason,omitempty"`
 	TriageFailureStage  string             `json:"triage_failure_stage,omitempty"`
+	TriageFailureCause  string             `json:"triage_failure_cause,omitempty"`
 	TotalFindings       int                `json:"total_findings"`
 	HealthCheck         healthcheck.Result `json:"health_check"`
 	LLMUsage            LLMUsageArtifact   `json:"llm_usage"`
@@ -108,6 +110,7 @@ func BuildTriageFindingsArtifact(state *AgentState) (TriageFindingsArtifact, err
 		TriageStatus:        status,
 		TriageFailureReason: state.TriageFailureReason,
 		TriageFailureStage:  state.TriageFailureStage,
+		TriageFailureCause:  state.TriageFailureCause,
 		TotalFindings:       len(findings),
 		HealthCheck:         state.HealthCheck,
 		LLMUsage:            buildLLMUsageArtifact(state),

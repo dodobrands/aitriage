@@ -61,6 +61,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.TriageStatus = TriageStatusFailed
 		state.TriageFailureReason = incomplete.Reason
 		state.TriageFailureStage = incomplete.Stage
+		state.TriageFailureCause = incomplete.Cause
 		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
 			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
 	} else {
@@ -644,10 +645,11 @@ func GetBatchSize(state *AgentState) int {
 // how many repair requests a malformed threat model gets.
 const threatModelMaxRetries = 2
 
-// nrFallbackRationale is recorded for findings the LLM never classified, even
-// after bounded retries. They default to Needs Manual Review (never False
-// Positive) so they keep penalising the Health Check score.
-const nrFallbackRationale = "LLM did not classify this finding after retries; defaulting to Needs Manual Review for safety."
+// nrFallbackRationale is recorded for findings whose own model verdict was
+// rejected by validation in every attempt. They default to Needs Manual
+// Review (never False Positive) so they keep penalising the Health Check
+// score. A finding no reply carried a verdict for is triage-failed instead.
+const nrFallbackRationale = "The model's verdict for this finding did not pass validation after retries (see the classification audit); defaulting to Needs Manual Review for safety."
 
 // errThreatModelParse marks a malformed (unparseable) model response, for the
 // threat model and for classification alike. Transport errors are never

@@ -37,8 +37,9 @@ func TestClassifyFindingsRejectsWrongIdentityToNeedsReview(t *testing.T) {
 	}
 }
 
-// A False Positive without evidence is rejected; a model that answers
-// nothing else leaves the finding triage-failed.
+// A False Positive without evidence is rejected. The model did give the
+// finding a verdict of its own, so it ends as an ordinary fallback: Needs
+// Manual Review, never False Positive.
 func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 	pinConcurrency(t)
 	findings := []EnrichedFinding{{ID: "B101", VulnID: "CS-MISC-001", Severity: "LOW", File: "tests/a_test.py", Line: 7, Message: "assert"}}
@@ -50,11 +51,11 @@ func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 	}
 	var usage llm.Usage
 	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
-	if !errors.Is(err, ErrTriageIncomplete) {
-		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want ErrTriageIncomplete", err)
+	if err != nil {
+		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want a complete triage", err)
 	}
-	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceTriageFailed {
-		t.Fatalf("disposition = %+v, want triage-failed Needs Manual Review", got)
+	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceNRFallback {
+		t.Fatalf("disposition = %+v, want nr-fallback Needs Manual Review", got)
 	}
 	if !auditMentions(audit, "false positive has no evidence") {
 		t.Fatalf("audit = %+v, want recorded rejection", audit)

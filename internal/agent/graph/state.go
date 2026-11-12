@@ -87,6 +87,10 @@ type AgentState struct {
 	TriageStatus        string
 	TriageFailureReason string // redacted, single-line provider error
 	TriageFailureStage  string // "threat_model" | "classification"
+	// TriageFailureCause is TriageFailureCauseProvider (the provider failed)
+	// or TriageFailureCauseNoVerdict (no reply carried a verdict for some
+	// findings after every retry).
+	TriageFailureCause string
 	// StageFailures lists LLM stages that degraded or fell back to a
 	// deterministic rendering instead of failing the run.
 	StageFailures []StageFailure
@@ -277,12 +281,14 @@ type FindingDisposition struct {
 	// Confidence is the model's self-reported certainty: "high" | "medium" | "low".
 	Confidence string `json:"confidence,omitempty"`
 	// DispositionSource records how the disposition was produced for the audit
-	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model
-	// answered the request but gave this finding no accepted verdict after
-	// retries) | "triage-failed" (the provider failed, or every reply about
-	// the finding was malformed, empty or rejected) | "suppressed" (a
-	// recorded project decision) | "network-probe" (describes the scanning
-	// host, never scored).
+	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model gave
+	// this finding verdicts of its own and validation rejected each of them,
+	// or the finding was over the LLM budget) | "triage-failed" (the provider
+	// failed, or no reply carried a verdict for the finding after retries:
+	// left out, malformed or empty) | "suppressed" (a recorded project
+	// decision) | "network-probe" (describes the scanning host, never scored).
+	// It is decided per finding, never by what other findings of the same
+	// request got.
 	DispositionSource string `json:"disposition_source,omitempty"`
 	// Fingerprint is the stable content hash used for dedup/caching.
 	Fingerprint string `json:"fingerprint,omitempty"`

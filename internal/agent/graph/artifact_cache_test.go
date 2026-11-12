@@ -387,11 +387,10 @@ func TestRunArtifactCacheWarmThenExactHitSkipsSecondaryLLMStages(t *testing.T) {
 
 func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 	dir := t.TempDir()
-	// No verdict cache: with R1's verdict cached, the second run would ask
-	// about R2 alone, and a model that answers a request with nothing at all
-	// leaves the triage incomplete rather than producing a fallback.
+	// The verdict cache is on: the second run serves R1 from it and asks
+	// about R2 alone, which gets the same outcome as in the warm run.
 	t.Setenv("AITRIAGE_CACHE_DIR", "")
-	t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", "")
+	t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", t.TempDir())
 	t.Setenv("AITRIAGE_ARTIFACT_CACHE_DIR", dir)
 	pinConcurrency(t)
 
@@ -400,8 +399,9 @@ func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 		t.Fatalf("write project file: %v", err)
 	}
 
-	// A classifier that keeps leaving one finding out forces an NR fallback,
-	// which is not cacheable — so the bundle must not be stored (strict mode).
+	// A classifier whose verdict for one finding is rejected every time forces
+	// an NR fallback, which is not cacheable — so the bundle must not be
+	// stored (strict mode).
 	warmState := fallbackRunState(project)
 	if err := Run(context.Background(), warmState, newFallbackRunLLM(t)); err != nil {
 		t.Fatalf("warm Run() error = %v", err)
@@ -418,6 +418,9 @@ func TestRunArtifactCacheStrictFallbackNotEligible(t *testing.T) {
 	hitState := fallbackRunState(project)
 	if err := Run(context.Background(), hitState, hitLLM); err != nil {
 		t.Fatalf("second Run() error = %v", err)
+	}
+	if hitState.VerdictCacheStats.Hits == 0 {
+		t.Fatalf("second run verdict cache = %+v, want R1 served from it", hitState.VerdictCacheStats)
 	}
 	if hitState.ArtifactCacheStats.ExactHit {
 		t.Fatalf("second run must not exact-hit an ineligible bundle, stats=%+v", hitState.ArtifactCacheStats)
@@ -495,7 +498,7 @@ func (m *artifactRunLLM) Chat(ctx context.Context, messages []llm.Message) (stri
 }
 
 // fallbackRunState has two findings for fallbackRunLLM: R1, which it
-// classifies, and R2, which it always leaves out.
+// classifies, and R2, which it never gives an accepted verdict.
 func fallbackRunState(project string) *AgentState {
 	state := artifactRunState(project)
 	state.CoreFindings = append(state.CoreFindings, core.CheckResult{
@@ -504,26 +507,37 @@ func fallbackRunState(project string) *AgentState {
 	return state
 }
 
-// fallbackRunLLM behaves like artifactRunLLM but classifies only R1. R2 is
-// left out of every answer, a genuine omission that ends as an uncacheable
-// NR fallback. (A model that classifies nothing at all leaves the triage
-// incomplete instead.)
-type fallbackRunLLM struct{ inner *artifactRunLLM }
+// fallbackRunLLM behaves like artifactRunLLM but answers R1 with
+// r1Disposition and R2 with r2Disposition. By default R2 gets a False
+// Positive without evidence: its own verdict, rejected every time, which ends
+// as an uncacheable NR fallback whether R2 is asked about with R1 or alone.
+// An empty r2Disposition leaves R2 out of every reply, which leaves the triage
+// incomplete.
+type fallbackRunLLM struct {
+	inner                        *artifactRunLLM
+	r1Disposition, r2Disposition string
+}
 
 func newFallbackRunLLM(t *testing.T) *fallbackRunLLM {
-	return &fallbackRunLLM{inner: newArtifactRunLLM(t)}
+	return &fallbackRunLLM{inner: newArtifactRunLLM(t), r1Disposition: "True Positive", r2Disposition: "False Positive"}
 }
 
 func (m *fallbackRunLLM) Chat(ctx context.Context, messages []llm.Message) (string, llm.Usage, error) {
 	if len(messages) > 0 && strings.Contains(messages[0].Content, "Current Task: Finding Classification") {
 		m.inner.calls["classification"]++
-		var kept []classificationPromptFinding
+		var entries []string
 		for _, item := range parsePromptBatchFromUser(messages[1].Content) {
-			if item.Finding.ID == "R1" {
-				kept = append(kept, item)
+			disposition := m.r1Disposition
+			if item.Finding.ID == "R2" {
+				disposition = m.r2Disposition
 			}
+			if disposition == "" {
+				continue
+			}
+			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
+				item.FindingIndex, item.FindingID, item.Fingerprint, disposition))
 		}
-		return classifyAll(kept, "True Positive"), llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
+		return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`, llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
 	}
 	return m.inner.Chat(ctx, messages)
 }

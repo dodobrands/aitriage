@@ -6,21 +6,26 @@ import (
 	"strings"
 )
 
-// unclassifiedNotes explains the Needs Review findings without a model verdict,
-// with the remedy that fits each cause. Retries and smaller batches help when
-// the model answered but left findings out (nr-fallback); they do nothing
-// when the provider itself failed (triage-failed), and the only remedy then
-// is to run again once it is available.
+// unclassifiedNotes explains the Needs Review findings without an accepted
+// model verdict, with the remedy that fits each cause. A verdict that failed
+// validation (nr-fallback) needs a person. Retries and smaller batches help
+// when the model left findings out of every reply (triage-failed, no
+// verdict); they do nothing when the provider itself failed, and the only
+// remedy then is to run again once it is available.
 func unclassifiedNotes(state *AgentState) []string {
 	tally := tallyDispositions(state)
-	skipped := tally.Unclassified - tally.TriageFailed
+	rejected := tally.Unclassified - tally.TriageFailed
 	var notes []string
-	if skipped > 0 {
-		notes = append(notes, fmt.Sprintf("%d unclassified: no model verdict — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
-			skipped, classifyMaxRetries(), GetBatchSize(state)))
+	if rejected > 0 {
+		notes = append(notes, fmt.Sprintf("%d unclassified: the model's verdict did not pass validation, or the finding was over the LLM budget (see `classification_audit`) — review by hand", rejected))
 	}
 	if tally.TriageFailed > 0 {
-		notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
+		if state.TriageFailureCause == TriageFailureCauseNoVerdict {
+			notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
+				tally.TriageFailed, classifyMaxRetries(), GetBatchSize(state)))
+		} else {
+			notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
+		}
 	}
 	return notes
 }
