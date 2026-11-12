@@ -1,0 +1,8 @@
+{"schema_version": 1, "findings": [
+  {"finding": {"id": "RULE-A", "source": "aitriage", "type": "core", "file": "/abs/path/a.py", "origins": [{"rule_id": "RULE-A", "source": "aitriage", "type": "core"}]},
+   "disposition": {"disposition": "False Positive", "disposition_source": "llm"}},
+  {"finding": {"id": "RULE-A", "source": "aitriage", "type": "core"},
+   "disposition": {"disposition": "True Positive", "disposition_source": "llm"}},
+  {"finding": {"id": "RULE-B", "source": "semgrep", "type": "external"},
+   "disposition": {"disposition": "Needs Manual Review", "disposition_source": "nr-fallback"}}
+]}

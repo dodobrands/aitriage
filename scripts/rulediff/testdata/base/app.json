@@ -1,0 +1,5 @@
+{"project_path": "/old/corpus/app", "results": [
+ {"id": "R-KEEP", "severity": "HIGH", "file": "/old/corpus/app/main.py", "line": 3},
+ {"id": "R-LOST", "severity": "CRITICAL", "file": "/old/corpus/app/main.py", "line": 9},
+ {"id": "R-SEV", "severity": "CRITICAL", "file": "/old/corpus/app/x.py", "line": 1}
+]}
