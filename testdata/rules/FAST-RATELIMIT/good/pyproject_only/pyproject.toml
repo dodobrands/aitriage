@@ -1,0 +1,6 @@
+[project]
+name = "shop-api"
+dependencies = [
+    "fastapi>=0.115",
+    "fastapi-limiter>=0.1.6",
+]

@@ -1,161 +1,285 @@
 # ============================================================
 # AITRIAGE RULES: Django — Security
 # ============================================================
-# Django is detected by the engine but previously had ZERO rules.
-# These rules cover the Django security checklist:
-# DEBUG mode, SECRET_KEY, CSRF, XSS, raw SQL, mass assignment,
-# middleware configuration, and session security.
+# Covers the Django deployment checklist and common code-level
+# flaws: DEBUG, SECRET_KEY, ALLOWED_HOSTS, security, CSRF and
+# clickjacking middleware, cookie flags, CSRF exemptions, XSS
+# (mark_safe, |safe, autoescape off), raw SQL, mass assignment and
+# missing authentication.
 #
-# Reference: Django deployment checklist, OWASP, Bandit, Semgrep.
+# Settings rules skip development and test settings files
+# (settings/dev.py, local_settings.py, test_settings.py,
+# configuration_testing.py, smoketest configs, ...).
+#
+# Reference: Django deployment checklist and system checks
+# (security.W001-W020), Bandit, Semgrep and CodeQL Django rules.
 # ============================================================
 
 rules:
+  # Retired: DJANGO-HOSTS — an empty ALLOWED_HOSTS makes Django reject every request (fail-closed); it is not a vulnerability.
+  # Retired: DJANGO-LOGGING — Django logs errors by default and a missing LOGGING setting is not a vulnerability.
+
   - id: DJANGO-DEBUG
     name: "Debug Mode Enabled"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: '^\s*DEBUG\s*=\s*True'
-    exclude_tests: true
-    severity: CRITICAL
-    suggestion: "DEBUG=True exposes stack traces, environment variables, and an interactive debugger. Set DEBUG=False in production and load from environment."
-
-  - id: DJANGO-HOSTS
-    name: "Empty ALLOWED_HOSTS"
-    stack: django
-    extensions: [".py"]
-    target: all
-    pattern: 'ALLOWED_HOSTS\s*=\s*\[\s*\]'
-    severity: CRITICAL
-    suggestion: "Empty ALLOWED_HOSTS enables HTTP Host header attacks in production. Add your domain names explicitly."
+    regions: code
+    exclude_paths: ["settings/dev", "settings/local", "settings/test", "local_settings", "dev_settings", "test_settings", "settings_dev", "settings_local", "settings_test", "_testing.py", "smoketest"]
+    pattern: '(?m)^[ \t]*DEBUG\s*=\s*True\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-489"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "DEBUG=True shows tracebacks, settings and request data to any visitor who triggers an error. Read DEBUG from the environment with a False default, and keep DEBUG=True only in development settings."
 
   - id: DJANGO-SECRET
     name: "Hardcoded SECRET_KEY"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: "SECRET_KEY\\s*=\\s*['\"][^'\"]{10,}['\"]"
-    condition: "not_contains:os.environ"
-    severity: CRITICAL
-    suggestion: "SECRET_KEY is hardcoded in source. If leaked, attackers can forge sessions and CSRF tokens. Load from environment variable."
+    regions: code
+    exclude_paths: ["settings/dev", "settings/local", "settings/test", "local_settings", "dev_settings", "test_settings", "settings_dev", "settings_local", "settings_test", "_testing.py", "smoketest"]
+    # A literal key, or a literal fallback in os.environ.get()/os.getenv()/
+    # env()/config(), which is used whenever the variable is unset.
+    pattern: '(?m)^[ \t]*SECRET_KEY\s*(?::\s*str\s*)?=\s*(?:(?:os\.environ\.get|os\.getenv|env(?:\.str)?|config)\(\s*["''][^"'']*["'']\s*,\s*(?:default\s*=\s*)?)?[rbuRBU]?["''][^"''\n]{10,}["'']'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "SECRET_KEY is written in the source; anyone who has it can forge sessions, password-reset links and signed values. Read it from the environment or a secret store without a literal fallback, and rotate the committed key (keep the old one in SECRET_KEY_FALLBACKS only while sessions migrate)."
 
   - id: DJANGO-CSRF-EXEMPT
-    name: "CSRF Exemption on View"
+    name: "CSRF Protection Disabled for a View"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: '@csrf_exempt'
-    severity: HIGH
-    suggestion: "@csrf_exempt disables CSRF protection on this view. Remove unless this is a webhook/API-only endpoint with token auth."
+    regions: code
+    # The decorator, a wrapped view in urls.py, or method_decorator(csrf_exempt).
+    pattern: '(?m)^[ \t]*@csrf_exempt\b|\bcsrf_exempt\s*\(\s*[\w.]|\bmethod_decorator\s*\(\s*csrf_exempt\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "csrf_exempt turns off CSRF protection for this view. Keep it only for endpoints that never rely on the session cookie, such as a webhook that verifies a signature or an API that requires token authentication."
 
   - id: DJANGO-MARK-SAFE
-    name: "XSS Risk via mark_safe"
+    name: "mark_safe() on Dynamic Content"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: 'mark_safe\s*\('
-    severity: HIGH
-    suggestion: "mark_safe() bypasses Django's auto-escaping. If applied to user-controlled data, this enables XSS. Use format_html() instead."
+    regions: code
+    # Only a dynamic argument: an f-string, a variable or call, or a literal
+    # combined with %, .format(), .join() or +. mark_safe("&mdash;") is fine.
+    pattern: '\bmark_safe\s*\(\s*(?:[rRbBuU]?[fF][rR]?["'']|[A-Za-z_]|(?:"[^"\n]*"|''[^''\n]*'')\s*(?:%|\.format\s*\(|\.join\s*\(|\+))'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "mark_safe() turns off Django's escaping for this value; if any part of it comes from a user, this is XSS. Build the HTML with format_html(), or escape each value with conditional_escape() before marking the result safe."
 
   - id: DJANGO-RAW-SQL
-    name: "Raw SQL Query"
+    name: "SQL Built From Strings in a Raw Query"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: '(?i)(\.raw\s*\(|\.extra\s*\(|cursor\.execute\s*\().*(%s|%d|\{|\+|f")'
-    severity: CRITICAL
-    suggestion: "Raw SQL with string interpolation detected. Use Django ORM or parameterized queries (cursor.execute(sql, [params]))."
+    regions: code
+    exclude_paths: ["migrations/", "migration.py"]
+    # The SQL argument of raw()/execute()/executemany()/RawSQL()/extra() is
+    # built in the call with an f-string, %, .format() or + (also across
+    # lines). Placeholders passed separately (execute(sql, [value])) are fine.
+    pattern: '(?:\.raw|\.execute|\.executemany|\bRawSQL)\s*\(\s*(?:[rRbBuU]?[fF][rR]?(?:"""[^"]*?\{[a-z_]|''''''[^'']*?\{[a-z_]|"[^"\n]*\{[a-z_]|''[^''\n]*\{[a-z_])|(?:"""[^"]*"""|''''''[^'']*''''''|"[^"\n]*"|''[^''\n]*'')(?:\s*\+\s*(?:"[^"\n]*"|''[^''\n]*''))*\s*(?:%\s*[\w(\[]|\.format\s*\(|\+\s*[\w(])|[A-Za-z_]\w*\.format\s*\(|[A-Za-z_][\w.]*\s*(?:%|\+)\s*[\w(\["''])|\.extra\s*\((?:[^()]|\([^()]*\))*?(?:[fF][rR]?(?:"[^"\n]*\{[a-z_]|''[^''\n]*\{[a-z_])|(?:"[^"\n]*"|''[^''\n]*'')\s*(?:%\s*[\w(]|\.format\s*\(|\+\s*[\w(]))'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "The SQL text is built from strings, so a value that reaches it can change the query. Pass values as parameters instead: cursor.execute(sql, [value]), Model.objects.raw(sql, [value]) or RawSQL(sql, [value]). Table and column names must come from a fixed allowlist."
 
   - id: DJANGO-MASS-ASSIGN
-    name: "Mass Assignment (fields=__all__)"
+    name: "Form or Serializer Exposes All Model Fields"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: "fields\\s*=\\s*['\"]__all__['\"]"
-    severity: HIGH
-    suggestion: "fields='__all__' exposes all model fields to user input. Attackers can set is_staff, is_superuser, etc. Use explicit field allowlist."
+    regions: code
+    # The Meta attribute statement only, not a fields="__all__" keyword
+    # argument (for example a read-only strawberry_django GraphQL type).
+    pattern: '(?m)^[ \t]+fields\s*=\s*["'']__all__["'']\s*(?:#.*)?$'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-915"
+      owasp: "A08:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "fields = \"__all__\" lets a request set every model field, including ones added later such as is_staff or owner. List the editable fields explicitly in Meta.fields."
 
   - id: DJANGO-MIDDLEWARE
-    name: "Missing Security Middleware"
+    name: "SecurityMiddleware Missing"
     stack: django
     extensions: [".py"]
     target: all
-    condition: "required_pattern"
-    pattern: '(?i)(SecurityMiddleware|django\.middleware\.security)'
-    severity: HIGH
-    suggestion: "Django SecurityMiddleware not found. It provides HSTS, SSL redirect, and XSS protection headers."
+    regions: code
+    # A literal MIDDLEWARE list in a settings file that does not name
+    # SecurityMiddleware (a commented-out entry does not count).
+    pattern: '(?m)^MIDDLEWARE(?:_CLASSES)?\s*=\s*[\[(](?:\s|#[^\n]*|["''][^"''\n]*["'']\s*,?)*[\])]'
+    condition: "not_contains:SecurityMiddleware"
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-693"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "MIDDLEWARE does not include django.middleware.security.SecurityMiddleware, so settings such as SECURE_HSTS_SECONDS, SECURE_SSL_REDIRECT, SECURE_CONTENT_TYPE_NOSNIFF, SECURE_REFERRER_POLICY and SECURE_CROSS_ORIGIN_OPENER_POLICY have no effect. Add it at the top of the list."
 
   - id: DJANGO-CLICKJACK
-    name: "Missing Clickjacking Protection"
+    name: "Clickjacking Protection Missing"
     stack: django
     extensions: [".py"]
     target: all
-    condition: "required_pattern"
-    pattern: '(?i)(XFrameOptionsMiddleware|X-Frame-Options|django\.middleware\.clickjacking)'
+    regions: code
+    pattern: '(?m)^MIDDLEWARE(?:_CLASSES)?\s*=\s*[\[(](?:\s|#[^\n]*|["''][^"''\n]*["'']\s*,?)*[\])]'
+    condition: "not_contains:XFrameOptionsMiddleware|CSP_FRAME_ANCESTORS|frame-ancestors|frame_ancestors"
     severity: MEDIUM
-    suggestion: "XFrameOptionsMiddleware not found. Your site may be vulnerable to clickjacking attacks."
+    metadata:
+      cwe: "CWE-1021"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: policy
+    suggestion: "MIDDLEWARE does not include django.middleware.clickjacking.XFrameOptionsMiddleware, so other sites can load these pages in a frame and trick users into clicking. Add the middleware, or send a Content-Security-Policy with frame-ancestors 'none' or 'self'."
+
+  - id: DJANGO-CSRF-MIDDLEWARE
+    name: "CSRF Middleware Missing"
+    stack: django
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '(?m)^MIDDLEWARE(?:_CLASSES)?\s*=\s*[\[(](?:\s|#[^\n]*|["''][^"''\n]*["'']\s*,?)*[\])]'
+    condition: "not_contains:CsrfViewMiddleware"
+    severity: HIGH
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "MIDDLEWARE does not include django.middleware.csrf.CsrfViewMiddleware, so no view is protected against cross-site request forgery. Add it back; exempt individual token-authenticated endpoints with csrf_exempt instead of disabling it globally."
 
   - id: DJANGO-SESSION-SECURE
-    name: "Insecure Session Cookie"
+    name: "Session Cookie Sent Over HTTP"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: 'SESSION_COOKIE_SECURE\s*=\s*False'
-    severity: HIGH
-    suggestion: "Session cookie is not marked Secure. It will be transmitted over unencrypted HTTP."
+    regions: code
+    exclude_paths: ["settings/dev", "settings/local", "settings/test", "local_settings", "dev_settings", "test_settings", "settings_dev", "settings_local", "settings_test", "_testing.py", "smoketest"]
+    pattern: '(?m)^[ \t]*SESSION_COOKIE_SECURE\s*=\s*False\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "SESSION_COOKIE_SECURE=False lets the browser send the session cookie over plain HTTP, where it can be intercepted. Set it to True in production settings."
 
   - id: DJANGO-CSRF-COOKIE
-    name: "Insecure CSRF Cookie"
+    name: "CSRF Cookie Sent Over HTTP"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: 'CSRF_COOKIE_SECURE\s*=\s*False'
-    severity: HIGH
-    suggestion: "CSRF cookie is not marked Secure. Vulnerable to interception over HTTP."
+    regions: code
+    exclude_paths: ["settings/dev", "settings/local", "settings/test", "local_settings", "dev_settings", "test_settings", "settings_dev", "settings_local", "settings_test", "_testing.py", "smoketest"]
+    pattern: '(?m)^[ \t]*CSRF_COOKIE_SECURE\s*=\s*False\b'
+    severity: LOW
+    metadata:
+      cwe: "CWE-614"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "CSRF_COOKIE_SECURE=False lets the browser send the CSRF cookie over plain HTTP. Set it to True in production settings."
 
   - id: DJANGO-AUTH
-    name: "Missing Authentication Decorators"
+    name: "No Authentication Check Found"
     stack: django
     extensions: [".py"]
     target: all
+    regions: code_and_strings
     condition: "required_pattern"
-    pattern: '(?i)(login_required|permission_required|IsAuthenticated|IsAdminUser|DjangoModelPermissions|has_permission|LoginRequiredMixin)'
-    severity: HIGH
-    suggestion: "No authentication decorators or permission classes found. Views may be accessible without login."
-
-  - id: DJANGO-LOGGING
-    name: "Missing Security Logging"
-    stack: django
-    extensions: [".py"]
-    target: all
-    condition: "required_pattern"
-    pattern: '(?i)(LOGGING\s*=|django\.utils\.log|logging\.getLogger)'
-    severity: MEDIUM
-    suggestion: "No logging configuration found. Security events should be logged for audit trails."
+    pattern: '(login_required|login_not_required|LoginRequiredMiddleware|permission_required|user_passes_test|staff_member_required|LoginRequiredMixin|PermissionRequiredMixin|UserPassesTestMixin|AccessMixin|IsAuthenticated|IsAdminUser|DjangoModelPermissions|has_permission|has_object_permission|permission_classes|authentication_classes|DEFAULT_PERMISSION_CLASSES|is_authenticated|\bauth\s*=)'
+    severity: LOW
+    metadata:
+      cwe: "CWE-306"
+      owasp: "A07:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "No login decorator, mixin, permission class or is_authenticated check was found in this project. If any view is not public, protect it with login_required, LoginRequiredMixin, a DRF permission class or LoginRequiredMiddleware."
 
   - id: DJANGO-SAFE-FILTER
-    name: "XSS via |safe Template Filter"
+    name: "Escaping Disabled With |safe"
     stack: django
-    extensions: [".html"]
+    extensions: [".html", ".htm"]
     target: all
-    pattern: '\{\{.*\|safe\s*\}\}'
-    severity: HIGH
-    suggestion: "|safe filter bypasses HTML escaping. If applied to user data, this enables XSS."
+    regions: code_and_strings
+    pattern: '\{\{[^{}]*\|\s*safe(?:seq)?\s*(?:\||\}\})'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "The |safe and |safeseq filters turn off escaping for this value; if it contains user input, this is XSS. Remove the filter, or sanitize the HTML with an allowlist sanitizer (for example nh3 or bleach) before it reaches the template."
+
+  - id: DJANGO-AUTOESCAPE-OFF
+    name: "Template Autoescaping Disabled"
+    stack: django
+    extensions: [".html", ".htm", ".py"]
+    target: all
+    regions: code_and_strings
+    # Plain-text email templates legitimately turn escaping off.
+    exclude_paths: ["email", "mail/"]
+    pattern: '\{%-?\s*autoescape\s+off\s*-?%\}|["'']autoescape["'']\s*:\s*False\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Autoescaping is turned off, so every variable rendered in this block (or, with the TEMPLATES option, in every template) is output as raw HTML. Keep autoescaping on and mark only trusted, pre-sanitized values as safe."
 
   - id: DJANGO-SQLI-EXTRA
-    name: "Deprecated .extra() Query"
+    name: "QuerySet.extra() With Raw SQL"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: '\.extra\s*\('
-    severity: HIGH
-    suggestion: "QuerySet.extra() is deprecated and prone to SQL injection. Use .annotate(), .filter(), or raw SQL with parameterized queries."
+    regions: code
+    pattern: '\.extra\s*\(\s*(?:\{|(?:select|where|tables|order_by|params|select_params)\s*=)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "QuerySet.extra() inserts raw SQL fragments, and Django recommends it only as a last resort. Use annotate(), filter() with F/Q expressions or RawSQL with params; if extra() stays, pass every value through params, never through string formatting."
 
   - id: DJANGO-WILDCARD-HOSTS
-    name: "Wildcard ALLOWED_HOSTS"
+    name: "ALLOWED_HOSTS Accepts Any Host"
     stack: django
     extensions: [".py"]
     target: all
-    pattern: "ALLOWED_HOSTS\\s*=\\s*\\[\\s*['\"]\\*['\"]\\s*\\]"
-    severity: HIGH
-    suggestion: "ALLOWED_HOSTS=['*'] disables host validation. Specify exact domain names for production."
+    regions: code
+    exclude_paths: ["settings/dev", "settings/local", "settings/test", "local_settings", "dev_settings", "test_settings", "settings_dev", "settings_local", "settings_test", "_testing.py", "smoketest"]
+    # "*" in the list, or as the default of an environment lookup.
+    pattern: '(?m)^[ \t]*ALLOWED_HOSTS\s*\+?=\s*(?:[\[(][^\])#]*["'']\*["'']|[^\n#]*["'']\*["''])'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-20"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: policy
+    suggestion: "ALLOWED_HOSTS contains \"*\", so Django accepts any Host header; links built with request.get_host() or build_absolute_uri(), such as password-reset emails, can then point to an attacker's domain. List your domain names explicitly."

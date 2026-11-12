@@ -106,3 +106,44 @@ func TestTaintRulesArePresent(t *testing.T) {
 		}
 	}
 }
+
+// TestTaintRuleOptions checks that every entry of taintRuleOptions names a
+// taint rule of the catalog and that its options reach the Semgrep config,
+// while rules without an entry (FAST-XSS) emit no options block.
+func TestTaintRuleOptions(t *testing.T) {
+	cfg, ids, err := TaintSemgrepConfig()
+	if err != nil {
+		t.Fatalf("TaintSemgrepConfig: %v", err)
+	}
+	emitted := map[string]bool{}
+	for _, id := range ids {
+		emitted[id] = true
+	}
+	var parsed struct {
+		Rules []struct {
+			ID      string         `yaml:"id"`
+			Options map[string]any `yaml:"options"`
+		} `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("generated config is not valid YAML: %v", err)
+	}
+	got := map[string]map[string]any{}
+	for _, r := range parsed.Rules {
+		got[r.ID] = r.Options
+	}
+	for id, want := range taintRuleOptions {
+		if !emitted[id] {
+			t.Errorf("taintRuleOptions names %q, which is not a taint rule in the catalog", id)
+			continue
+		}
+		for k, v := range want {
+			if got[id][k] != v {
+				t.Errorf("rule %s: option %s = %v, want %v", id, k, got[id][k], v)
+			}
+		}
+	}
+	if len(got["FAST-XSS"]) != 0 {
+		t.Errorf("FAST-XSS must not set Semgrep options, got %v", got["FAST-XSS"])
+	}
+}

@@ -200,7 +200,7 @@ func TestEngine_FastAPISecurityRulesFlagRelevantRuntimeEvidence(t *testing.T) {
 	for _, result := range results {
 		found[result.ID] = true
 	}
-	for _, id := range []string{"FAST-CSRF", "FAST-ORM"} {
+	for _, id := range []string{"FAST-CSRF"} { // FAST-ORM was retired: a database driver without an ORM is not a vulnerability
 		if !found[id] {
 			t.Fatalf("expected %s for relevant runtime evidence", id)
 		}

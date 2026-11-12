@@ -1,0 +1,4 @@
+<!-- Do not use {{ comment.body|safe }} here: bodies are user input. -->
+<div class="comment">{{ comment.body|linebreaks }}</div>
+<p>{{ comment.author }}</p>
+<p>{{ comment.safety_note }}</p>

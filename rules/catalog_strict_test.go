@@ -18,6 +18,15 @@ import (
 // suppressions and inline directives may still name them, so an id must never
 // be given to a different rule.
 var retiredRuleIDs = map[string]string{
+	"DJANGO-HOSTS":           "an empty ALLOWED_HOSTS rejects requests; it is not a vulnerability",
+	"DJANGO-LOGGING":         "Django logs by default; absence of a LOGGING setting is not a vulnerability",
+	"FAST-ORM":               "a database driver without an ORM is not SQL injection",
+	"FAST-TEMPFILE":          "duplicate of PY-TEMPFILE",
+	"FAST-SUBPROCESS":        "duplicate of PY-SUBPROCESS",
+	"FAST-PICKLE":            "duplicate of PY-PICKLE",
+	"FAST-YAML":              "duplicate of PY-YAML-LOAD",
+	"FAST-EVAL":              "duplicate of PY-EXEC",
+	"FAST-SSTI":              "duplicate of FLASK-SSTI, which covers every Python stack",
 	"ENTR-21":                "third copy of the weak-hash finding; ENTR-WEAK-CRYPTO and PY-HASHLIB-WEAK cover it",
 	"ENTR-HALLUCINATION":     "a fixed list of four made-up package names; registry checks belong in the dependency scanner",
 	"ENTR-FRAGILE-LOGIC":     "matched idiomatic Go error handling",

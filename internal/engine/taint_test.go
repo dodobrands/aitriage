@@ -54,9 +54,10 @@ func expectedEngineRules(t *testing.T) (wantLoaded, taint int) {
 }
 
 // TestEngineSkipsTaintRules proves that taint-mode rules are executed by the
-// bundled Semgrep, not by the regex/AST engine: FAST-XSS must never appear in
-// the engine's loaded rule set, and no loaded rule may be taint-mode. The other
-// (regex/AST) rules must continue to load unchanged.
+// bundled Semgrep, not by the regex/AST engine: no mandatory taint rule (such
+// as FAST-XSS) may appear in the engine's loaded rule set, and no loaded rule
+// may be taint-mode. The other (regex/AST) rules must continue to load
+// unchanged.
 func TestEngineSkipsTaintRules(t *testing.T) {
 	loaded, err := loadEmbeddedRules()
 	if err != nil {
@@ -75,19 +76,24 @@ func TestEngineSkipsTaintRules(t *testing.T) {
 			len(loaded), want, taint)
 	}
 
+	taintIDs := map[string]bool{}
+	for _, id := range rules.RequiredTaintRuleIDs {
+		taintIDs[id] = true
+	}
 	for _, r := range loaded {
 		if r.IsTaint() {
 			t.Errorf("taint rule %q must not be loaded by the regex/AST engine", r.ID)
 		}
-		if r.ID == "FAST-XSS" {
-			t.Error("FAST-XSS (taint) must not be in the engine rule set; it runs via Semgrep")
+		if taintIDs[r.ID] {
+			t.Errorf("%s (taint) must not be in the engine rule set; it runs via Semgrep", r.ID)
 		}
 	}
 }
 
 // TestEngineStillLoadsRegexAndASTRules is the "the other rules keep working"
-// guard: a representative set of non-taint FastAPI and cross-stack rules must
-// still be present after taint support was added.
+// guard: a representative set of non-taint rules (regex and AST, FastAPI,
+// Django and cross-stack) must still be present after taint support was added,
+// while the FastAPI taint rules (FAST-XSS, FAST-SQLI, ...) must not.
 func TestEngineStillLoadsRegexAndASTRules(t *testing.T) {
 	eng, err := NewEngine(nil)
 	if err != nil {
@@ -97,12 +103,14 @@ func TestEngineStillLoadsRegexAndASTRules(t *testing.T) {
 	for _, r := range eng.Rules {
 		present[r.ID] = true
 	}
-	for _, id := range []string{"FAST-SQLI", "FAST-EVAL", "FAST-AUTH", "DJANGO-DEBUG", "LLM-OUTPUT-EXEC"} {
+	for _, id := range []string{"FAST-CORS-WILDCARD", "FAST-SYNC-ASYNC", "FAST-AUTH", "DJANGO-DEBUG", "LLM-OUTPUT-EXEC"} {
 		if !present[id] {
 			t.Errorf("expected regex/AST rule %q to still load, but it is missing", id)
 		}
 	}
-	if present["FAST-XSS"] {
-		t.Error("FAST-XSS must not be a regex/AST engine rule")
+	for _, id := range rules.RequiredTaintRuleIDs {
+		if present[id] {
+			t.Errorf("%s must not be a regex/AST engine rule", id)
+		}
 	}
 }

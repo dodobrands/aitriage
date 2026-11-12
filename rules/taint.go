@@ -15,7 +15,29 @@ import (
 // RequiredTaintRuleIDs is the mandatory taint-rule set that a full audit must be
 // able to load and execute. A missing or malformed entry fails the audit closed:
 // a full audit must never silently run without its mandatory taint coverage.
-var RequiredTaintRuleIDs = []string{"FAST-XSS"}
+var RequiredTaintRuleIDs = []string{
+	"FAST-OPEN-REDIRECT",
+	"FAST-PATH-TRAVERSAL",
+	"FAST-SQLI",
+	"FAST-SSRF",
+	"FAST-XSS",
+}
+
+// taintRuleOptions holds the Semgrep `options:` block of a taint rule.
+// models.Rule has no options field, and the strict catalog decoder rejects
+// unknown keys, so the options live here, keyed by rule id.
+//
+// taint_assume_safe_functions makes Semgrep assume that a call does not pass
+// taint from its arguments to its result. It keeps service-built values
+// (build_url(request_param), a lookup by id) from being reported, at the cost
+// of missing taint through a helper. FAST-XSS and FAST-PATH-TRAVERSAL do not
+// set it: an identity helper named like escape() must not hide XSS, and
+// os.path.join() must carry taint into a path.
+var taintRuleOptions = map[string]map[string]any{
+	"FAST-OPEN-REDIRECT": {"taint_assume_safe_functions": true},
+	"FAST-SQLI":          {"taint_assume_safe_functions": true},
+	"FAST-SSRF":          {"taint_assume_safe_functions": true},
+}
 
 // TaintRules returns every taint-mode rule in the embedded (trusted) catalog.
 // Only the compiled-in rules/ tree is consulted — never a path inside the
@@ -66,6 +88,7 @@ type semgrepTaintRule struct {
 	Severity   string            `yaml:"severity"`
 	Message    string            `yaml:"message"`
 	Metadata   map[string]string `yaml:"metadata,omitempty"`
+	Options    map[string]any    `yaml:"options,omitempty"`
 	Sources    []yaml.Node       `yaml:"pattern-sources"`
 	Sanitizers []yaml.Node       `yaml:"pattern-sanitizers,omitempty"`
 	Sinks      []yaml.Node       `yaml:"pattern-sinks"`
@@ -132,6 +155,7 @@ func TaintSemgrepConfig() (config []byte, ids []string, err error) {
 			Severity:   semgrepSeverity(r.Severity),
 			Message:    msg,
 			Metadata:   r.Metadata,
+			Options:    taintRuleOptions[r.ID],
 			Sources:    r.PatternSources,
 			Sanitizers: r.PatternSanitizers,
 			Sinks:      r.PatternSinks,
