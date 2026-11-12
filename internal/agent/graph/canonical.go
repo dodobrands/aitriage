@@ -78,13 +78,13 @@ func buildCanonicalFindingsSection(state *AgentState) string {
 			disp = dispositionLabel(d)
 			src = d.DispositionSource
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %s | %s |\n",
-			f.VulnID, f.Severity, file, f.Line, disp, src))
+		fmt.Fprintf(&sb, "| %s | %s | %s | %d | %s | %s |\n",
+			f.VulnID, f.Severity, file, f.Line, disp, src)
 	}
 
 	tally := tallyDispositions(state)
-	sb.WriteString(fmt.Sprintf("\n**Dispositions:** %d True Positive · %d False Positive · %d Needs Manual Review · %d total\n",
-		tally.TruePositives, tally.FalsePositives, tally.NeedsReview, len(state.EnrichedFindings)))
+	fmt.Fprintf(&sb, "\n**Dispositions:** %d True Positive · %d False Positive · %d Needs Manual Review · %d total\n",
+		tally.TruePositives, tally.FalsePositives, tally.NeedsReview, len(state.EnrichedFindings))
 	var notes []string
 	if tally.Unclassified > 0 {
 		notes = append(notes, fmt.Sprintf("%d Needs Manual Review finding(s) are unclassified: the model gave no verdict (%d of them because the provider failed)", tally.Unclassified, tally.TriageFailed))
@@ -148,7 +148,7 @@ func canonicalActiveFindingsBrief(state *AgentState) string {
 		return sb.String()
 	}
 	for _, r := range rows {
-		sb.WriteString(fmt.Sprintf("- **%s** [%s] %s — `%s` — %s\n", r.vulnID, r.sev, r.disp, displayLocation(r.file, r.line), r.rationale))
+		fmt.Fprintf(&sb, "- **%s** [%s] %s — `%s` — %s\n", r.vulnID, r.sev, r.disp, displayLocation(r.file, r.line), r.rationale)
 	}
 	sb.WriteString("\nDo not introduce any vulnerability ID, CVE, or package that is not listed above.\n")
 	return sb.String()

@@ -143,7 +143,7 @@ docker-scan: docker-build ## JSON scan of PROJECT in the local image (for CI/CD)
 # Docker volume. Pin the bundle with E2E_IMAGE=ghcr.io/dodobrands/aitriage:v1.13.0.
 E2E_IMAGE ?= ghcr.io/dodobrands/aitriage:v1
 # tree-sitter needs CGO, so the linux binary is built in the Dockerfile's Go image.
-E2E_GO_IMAGE ?= golang:1.25.13-bookworm
+E2E_GO_IMAGE ?= golang:1.26.11-bookworm
 E2E_BINARY = bin/linux/$(BINARY_NAME)
 
 build-linux: ## Build bin/linux/aitriage for E2E_IMAGE's platform (in a Go container)

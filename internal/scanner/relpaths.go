@@ -29,7 +29,7 @@ func (r ScanReport) WithRelativePaths() ScanReport {
 	for i, res := range r.Results {
 		res.File = baseline.RelativePath(r.ProjectPath, res.File)
 		if root != "" {
-			res.Evidence = strings.ReplaceAll(res.Evidence, root+"/", "")
+			res.Evidence = baseline.StripRootFromText(root, res.Evidence)
 		}
 		out.Results[i] = res
 	}

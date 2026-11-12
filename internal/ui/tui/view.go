@@ -1392,16 +1392,16 @@ func (m DashboardModel) renderDashboard(w, h int) string {
 	leftContent.WriteString(m.renderSevBar("LOW ", low, total, colorGray, leftColWidth) + "\n\n")
 
 	leftContent.WriteString(labelStyle.Render("[ ATTACK.SURFACE ]") + "\n")
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Files", valSt.Render(fmt.Sprintf("%d", m.Report.TotalFiles))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Dependencies", valSt.Render(fmt.Sprintf("%d", len(m.Report.Dependencies)))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "IaC Resources", valSt.Render(fmt.Sprintf("%d", len(m.DeployFindings)))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Network", valSt.Render(fmt.Sprintf("%d", len(m.NetworkFindings)))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Vulns", valSt.Render(fmt.Sprintf("%d", total))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Rules", valSt.Render(fmt.Sprintf("%d", m.Report.RulesApplied))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Files", valSt.Render(fmt.Sprintf("%d", m.Report.TotalFiles)))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Dependencies", valSt.Render(fmt.Sprintf("%d", len(m.Report.Dependencies))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "IaC Resources", valSt.Render(fmt.Sprintf("%d", len(m.DeployFindings))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Network", valSt.Render(fmt.Sprintf("%d", len(m.NetworkFindings))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Vulns", valSt.Render(fmt.Sprintf("%d", total)))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Rules", valSt.Render(fmt.Sprintf("%d", m.Report.RulesApplied)))
 	leftContent.WriteString("\n" + labelStyle.Render("[ INFRA.SUMMARY ]") + "\n")
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Deploy Audit", valSt.Render(fmt.Sprintf("%d", len(m.DeployFindings)))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "NFR Checks", valSt.Render(fmt.Sprintf("%d", len(m.NFRFindings)))))
-	leftContent.WriteString(fmt.Sprintf("%s %-14s %s\n", bullet, "Net Surface", valSt.Render(fmt.Sprintf("%d", len(m.NetworkFindings)))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Deploy Audit", valSt.Render(fmt.Sprintf("%d", len(m.DeployFindings))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "NFR Checks", valSt.Render(fmt.Sprintf("%d", len(m.NFRFindings))))
+	fmt.Fprintf(&leftContent, "%s %-14s %s\n", bullet, "Net Surface", valSt.Render(fmt.Sprintf("%d", len(m.NetworkFindings))))
 
 	leftPanel := lipgloss.NewStyle().Background(colorBG).Width(leftColWidth).MaxWidth(leftColWidth).Height(panelHeight).MaxHeight(panelHeight).Render(leftContent.String())
 
@@ -1422,9 +1422,9 @@ func (m DashboardModel) renderDashboard(w, h int) string {
 	if len(pPath) > maxPP {
 		pPath = "..." + pPath[len(pPath)-maxPP+3:]
 	}
-	centerContent.WriteString(fmt.Sprintf("%s %-10s %s\n", bullet, "Project", valSt.Render(pPath)))
-	centerContent.WriteString(fmt.Sprintf("%s %-10s %s\n", bullet, "Duration", valSt.Render(scanDur)))
-	centerContent.WriteString(fmt.Sprintf("%s %-10s %s\n", bullet, "Time", valSt.Render(m.ScanStartTime.Format("15:04:05"))))
+	fmt.Fprintf(&centerContent, "%s %-10s %s\n", bullet, "Project", valSt.Render(pPath))
+	fmt.Fprintf(&centerContent, "%s %-10s %s\n", bullet, "Duration", valSt.Render(scanDur))
+	fmt.Fprintf(&centerContent, "%s %-10s %s\n", bullet, "Time", valSt.Render(m.ScanStartTime.Format("15:04:05")))
 
 	centerContent.WriteString("\n" + labelStyle.Render("[ TECH.STACK ]") + "\n")
 	if len(m.Report.Stacks) > 0 {

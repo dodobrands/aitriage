@@ -3,8 +3,9 @@ package graph
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/engine/baseline"
 )
 
 // ── Project-relative paths ───────────────────────────────────────────────────
@@ -31,8 +32,6 @@ type pathResolver struct {
 	// symlinks resolved (macOS reports /var as /private/var).
 	root  string
 	roots []string
-	// bareRoots match a root mentioned in text without a path below it.
-	bareRoots []*regexp.Regexp
 }
 
 func newPathResolver(projectPath string) pathResolver {
@@ -52,7 +51,6 @@ func newPathResolver(projectPath string) pathResolver {
 			continue
 		}
 		r.roots = append(r.roots, root)
-		r.bareRoots = append(r.bareRoots, regexp.MustCompile(regexp.QuoteMeta(root)+`($|[\s"'),;:\]])`))
 	}
 	return r
 }
@@ -100,14 +98,10 @@ func (r pathResolver) underRoot(clean string) (string, bool) {
 // stripRoot removes the project root from free text such as a scanner
 // message ("Rule X found issue in /github/workspace/main.py"), so messages
 // carry the same project-relative paths as the findings.
+// Both the slash and the native (Windows) spelling of the root are handled.
 func (r pathResolver) stripRoot(text string) string {
-	for i, root := range r.roots {
-		if !strings.Contains(text, root) {
-			continue
-		}
-		text = strings.ReplaceAll(text, root+"/", "")
-		// The root itself, not followed by more of a path, is the project.
-		text = r.bareRoots[i].ReplaceAllString(text, ".$1")
+	for _, root := range r.roots {
+		text = baseline.StripRootFromText(root, text)
 	}
 	return text
 }

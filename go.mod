@@ -1,6 +1,6 @@
 module github.com/dodobrands/aitriage
 
-go 1.25.13
+go 1.26.11
 
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1

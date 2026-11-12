@@ -609,13 +609,13 @@ func threatModelSummary(tm *ThreatModel) string {
 		sb.WriteString("Overview: " + tm.ComponentOverview + "\n")
 	}
 	if tm.TrustBoundaries.Authentication != "" || tm.TrustBoundaries.Authorization != "" {
-		sb.WriteString(fmt.Sprintf("Trust boundaries: auth=%s; authz=%s; implicit=%s\n",
-			tm.TrustBoundaries.Authentication, tm.TrustBoundaries.Authorization, tm.TrustBoundaries.ImplicitTrust))
+		fmt.Fprintf(&sb, "Trust boundaries: auth=%s; authz=%s; implicit=%s\n",
+			tm.TrustBoundaries.Authentication, tm.TrustBoundaries.Authorization, tm.TrustBoundaries.ImplicitTrust)
 	}
 	if len(tm.EntryPoints) > 0 {
 		sb.WriteString("Entry points:\n")
 		for _, e := range tm.EntryPoints {
-			sb.WriteString(fmt.Sprintf("  - %s (%s), trusted=%v, validation=%s\n", e.Endpoint, e.Type, e.Trusted, e.Validation))
+			fmt.Fprintf(&sb, "  - %s (%s), trusted=%v, validation=%s\n", e.Endpoint, e.Type, e.Trusted, e.Validation)
 		}
 	}
 	if len(tm.PriorityAreas) > 0 {

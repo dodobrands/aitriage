@@ -67,7 +67,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          # Pinned: a new linter release must not break CI without a code change.
+          # Keep in step with .golangci.yml and update deliberately.
+          version: v2.15.0
           args: --timeout=5m
           install-mode: goinstall
 
@@ -77,7 +79,8 @@ jobs:
       - name: Validate GoReleaser config
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Stay on GoReleaser v2 (the .goreleaser.yaml schema); never jump majors silently.
+          version: "~> v2"
           args: check
 
   windows-build-test:

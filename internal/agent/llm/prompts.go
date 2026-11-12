@@ -58,66 +58,66 @@ func (r RichScanResult) MissingRequiredScanners() []string {
 // BuildAnalysisPrompt constructs the analysis prompt from scan results.
 func BuildAnalysisPrompt(rich RichScanResult) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("I've scanned the project at: %s\n\n", rich.ProjectPath))
+	fmt.Fprintf(&sb, "I've scanned the project at: %s\n\n", rich.ProjectPath)
 
 	if len(rich.Report.Results) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### Core Check Findings (%d):\n", len(rich.Report.Results)))
+		fmt.Fprintf(&sb, "\n### Core Check Findings (%d):\n", len(rich.Report.Results))
 		for i, r := range rich.Report.Results {
-			sb.WriteString(fmt.Sprintf("%d. [%s] %s (Rule ID: %s)\n", i+1, r.Severity, r.Name, r.ID))
-			sb.WriteString(fmt.Sprintf("   File: %s:%d\n", r.File, r.Line))
-			sb.WriteString(fmt.Sprintf("   Evidence: %s\n", r.Evidence))
+			fmt.Fprintf(&sb, "%d. [%s] %s (Rule ID: %s)\n", i+1, r.Severity, r.Name, r.ID)
+			fmt.Fprintf(&sb, "   File: %s:%d\n", r.File, r.Line)
+			fmt.Fprintf(&sb, "   Evidence: %s\n", r.Evidence)
 		}
 	}
 
 	if len(rich.External) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### External Scanner Findings (%d):\n", len(rich.External)))
+		fmt.Fprintf(&sb, "\n### External Scanner Findings (%d):\n", len(rich.External))
 		for i, e := range rich.External {
-			sb.WriteString(fmt.Sprintf("%d. [%s] %s (Tool: %s, Rule: %s)\n", i+1, e.Severity, e.Message, e.Source, e.RuleID))
-			sb.WriteString(fmt.Sprintf("   File: %s:%d\n", e.File, e.Line))
+			fmt.Fprintf(&sb, "%d. [%s] %s (Tool: %s, Rule: %s)\n", i+1, e.Severity, e.Message, e.Source, e.RuleID)
+			fmt.Fprintf(&sb, "   File: %s:%d\n", e.File, e.Line)
 		}
 	}
 
 	if len(rich.NFR) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### NFR Issues (%d):\n", len(rich.NFR)))
+		fmt.Fprintf(&sb, "\n### NFR Issues (%d):\n", len(rich.NFR))
 		for i, n := range rich.NFR {
-			sb.WriteString(fmt.Sprintf("%d. [%s] %s (Rule: %s)\n", i+1, n.Severity, n.Name, n.RuleID))
-			sb.WriteString(fmt.Sprintf("   Message: %s\n", n.Message))
+			fmt.Fprintf(&sb, "%d. [%s] %s (Rule: %s)\n", i+1, n.Severity, n.Name, n.RuleID)
+			fmt.Fprintf(&sb, "   Message: %s\n", n.Message)
 		}
 	}
 
 	if len(rich.Deploy) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### Deploy Config Issues (%d):\n", len(rich.Deploy)))
+		fmt.Fprintf(&sb, "\n### Deploy Config Issues (%d):\n", len(rich.Deploy))
 		for i, d := range rich.Deploy {
-			sb.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, d.Severity, d.Issue))
-			sb.WriteString(fmt.Sprintf("   File: %s:%d\n", d.File, d.Line))
-			sb.WriteString(fmt.Sprintf("   Advice: %s\n", d.Advice))
+			fmt.Fprintf(&sb, "%d. [%s] %s\n", i+1, d.Severity, d.Issue)
+			fmt.Fprintf(&sb, "   File: %s:%d\n", d.File, d.Line)
+			fmt.Fprintf(&sb, "   Advice: %s\n", d.Advice)
 		}
 	}
 
 	if len(rich.Network) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### Live Network Probe (%d open ports):\n", len(rich.Network)))
+		fmt.Fprintf(&sb, "\n### Live Network Probe (%d open ports):\n", len(rich.Network))
 		for i, n := range rich.Network {
-			sb.WriteString(fmt.Sprintf("%d. [%s] Port %d (%s)\n", i+1, n.Severity, n.Port, n.Service))
-			sb.WriteString(fmt.Sprintf("   Message: %s\n", n.Message))
+			fmt.Fprintf(&sb, "%d. [%s] Port %d (%s)\n", i+1, n.Severity, n.Port, n.Service)
+			fmt.Fprintf(&sb, "   Message: %s\n", n.Message)
 		}
 	}
 
 	if len(rich.CriticalFiles) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### Critical Files (%d):\n", len(rich.CriticalFiles)))
+		fmt.Fprintf(&sb, "\n### Critical Files (%d):\n", len(rich.CriticalFiles))
 		for i, cf := range rich.CriticalFiles {
-			sb.WriteString(fmt.Sprintf("%d. %s [%s] - %s (Commits: %d, Authors: %d)\n", i+1, cf.Path, cf.Risk, cf.Reason, cf.CommitCount, cf.AuthorCount))
+			fmt.Fprintf(&sb, "%d. %s [%s] - %s (Commits: %d, Authors: %d)\n", i+1, cf.Path, cf.Risk, cf.Reason, cf.CommitCount, cf.AuthorCount)
 		}
 	}
 
 	if len(rich.HistoryLeaks) > 0 {
-		sb.WriteString(fmt.Sprintf("\n### Git History Leaks (%d):\n", len(rich.HistoryLeaks)))
+		fmt.Fprintf(&sb, "\n### Git History Leaks (%d):\n", len(rich.HistoryLeaks))
 		for i, hl := range rich.HistoryLeaks {
-			sb.WriteString(fmt.Sprintf("%d. %s in %s (Commit %s by %s): %s\n", i+1, hl.Pattern, hl.FilePath, hl.CommitHash, hl.Author, hl.LinePreview))
+			fmt.Fprintf(&sb, "%d. %s in %s (Commit %s by %s): %s\n", i+1, hl.Pattern, hl.FilePath, hl.CommitHash, hl.Author, hl.LinePreview)
 		}
 	}
 
 	if rich.Diagram != "" {
-		sb.WriteString(fmt.Sprintf("\n### Architecture Schema:\n```mermaid\n%s\n```\n", rich.Diagram))
+		fmt.Fprintf(&sb, "\n### Architecture Schema:\n```mermaid\n%s\n```\n", rich.Diagram)
 	}
 
 	if sb.Len() < 100 {

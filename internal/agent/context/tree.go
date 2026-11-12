@@ -135,7 +135,7 @@ func BuildProjectTree(projectPath string, maxDepth, maxFiles int) string {
 	renderTree(&sb, root, "", true)
 
 	if count > maxFiles {
-		sb.WriteString(fmt.Sprintf("\n... truncated (%d+ files, showing first %d)\n", count, maxFiles))
+		fmt.Fprintf(&sb, "\n... truncated (%d+ files, showing first %d)\n", count, maxFiles)
 	}
 
 	return sb.String()

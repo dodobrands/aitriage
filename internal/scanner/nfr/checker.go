@@ -256,7 +256,7 @@ func GetAllRulesAsText() string {
 
 	var builder strings.Builder
 	for _, r := range allRules {
-		builder.WriteString(fmt.Sprintf("- [%s] %s (%s)\n  Advice: %s\n", r.ID, r.Name, r.Severity, r.Advice))
+		fmt.Fprintf(&builder, "- [%s] %s (%s)\n  Advice: %s\n", r.ID, r.Name, r.Severity, r.Advice)
 	}
 	return builder.String()
 }

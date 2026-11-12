@@ -1,0 +1,16 @@
+# golangci-lint configuration (v2). CI pins the linter version in
+# .github/workflows/ci.yml; update both together.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  exclusions:
+    paths:
+      # npm packages can ship Go sources (e.g. flatted/golang); they are third
+      # party and outside this module's ownership.
+      - web/node_modules
+      # Intentionally vulnerable sample applications used as scan fixtures.
+      - testdata/thirdparty

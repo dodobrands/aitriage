@@ -328,9 +328,9 @@ func codexServerBlock(name, command string, args []string) string {
 		quoted[i] = tomlQuote(a)
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[mcp_servers.%s]\n", name))
-	sb.WriteString(fmt.Sprintf("command = %s\n", tomlQuote(command)))
-	sb.WriteString(fmt.Sprintf("args = [%s]\n", strings.Join(quoted, ", ")))
+	fmt.Fprintf(&sb, "[mcp_servers.%s]\n", name)
+	fmt.Fprintf(&sb, "command = %s\n", tomlQuote(command))
+	fmt.Fprintf(&sb, "args = [%s]\n", strings.Join(quoted, ", "))
 	// Project config must explicitly re-enable the server. Otherwise an older
 	// user-level entry with `enabled = false` wins through config merging and the
 	// freshly installed project-local server remains disabled.

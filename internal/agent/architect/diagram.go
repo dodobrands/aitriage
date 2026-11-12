@@ -25,7 +25,7 @@ func GenerateMermaidDiagram(projectPath string) (string, error) {
 
 	// Main application is always present
 	mainApp := findMainApp(components)
-	sb.WriteString(fmt.Sprintf("    %s[\"%s\"]\n", sanitize(mainApp.Name), mainApp.Name))
+	fmt.Fprintf(&sb, "    %s[\"%s\"]\n", sanitize(mainApp.Name), mainApp.Name)
 
 	for _, c := range components {
 		if c.Name == mainApp.Name {
@@ -47,8 +47,8 @@ func GenerateMermaidDiagram(projectPath string) (string, error) {
 		default:
 			icon = "🔧"
 		}
-		sb.WriteString(fmt.Sprintf("    %s[\"%s %s\"]\n", nodeID, icon, c.Name))
-		sb.WriteString(fmt.Sprintf("    %s --> %s\n", sanitize(mainApp.Name), nodeID))
+		fmt.Fprintf(&sb, "    %s[\"%s %s\"]\n", nodeID, icon, c.Name)
+		fmt.Fprintf(&sb, "    %s --> %s\n", sanitize(mainApp.Name), nodeID)
 	}
 
 	return sb.String(), nil

@@ -1510,7 +1510,7 @@ func (m *DashboardModel) autofixCmd(res core.CheckResult, apply bool) tea.Cmd {
 			for _, fr := range results {
 				if fr.Err != nil {
 					hasError = true
-					b.WriteString(fmt.Sprintf("ERROR: %v\n", fr.Err))
+					fmt.Fprintf(&b, "ERROR: %v\n", fr.Err)
 				} else if fr.Applied {
 					hasApplied = true
 					b.WriteString(lipgloss.NewStyle().Foreground(colorSuccess).Render("✔ FIX APPLIED SUCCESSFULLY") + "\n\n")
@@ -1681,30 +1681,26 @@ func (m DashboardModel) chatCmd(prompt string) tea.Cmd {
 				sevCounts[r.Severity]++
 				catCounts[r.Framework]++
 			}
-			reportCtx.WriteString(fmt.Sprintf(
-				"SCAN METRICS: SecurityScore=%d/100, Total=%d, CRITICAL=%d, HIGH=%d, MEDIUM=%d, LOW=%d\n",
+			fmt.Fprintf(&reportCtx, "SCAN METRICS: SecurityScore=%d/100, Total=%d, CRITICAL=%d, HIGH=%d, MEDIUM=%d, LOW=%d\n",
 				m.Report.SecurityScore, len(m.Report.Results),
-				sevCounts["CRITICAL"], sevCounts["HIGH"], sevCounts["MEDIUM"], sevCounts["LOW"],
-			))
-			reportCtx.WriteString(fmt.Sprintf(
-				"EXTERNAL: SAST=%d, NFR=%d, Deploy=%d, Network=%d\n",
-				len(m.ExternalFindings), len(m.NFRFindings), len(m.DeployFindings), len(m.NetworkFindings),
-			))
+				sevCounts["CRITICAL"], sevCounts["HIGH"], sevCounts["MEDIUM"], sevCounts["LOW"])
+			fmt.Fprintf(&reportCtx, "EXTERNAL: SAST=%d, NFR=%d, Deploy=%d, Network=%d\n",
+				len(m.ExternalFindings), len(m.NFRFindings), len(m.DeployFindings), len(m.NetworkFindings))
 			// Category breakdown
 			reportCtx.WriteString("CATEGORIES: ")
 			for cat, cnt := range catCounts {
-				reportCtx.WriteString(fmt.Sprintf("%s=%d ", cat, cnt))
+				fmt.Fprintf(&reportCtx, "%s=%d ", cat, cnt)
 			}
 			reportCtx.WriteString("\n\n")
 			// All findings (up to 30 for context window)
 			reportCtx.WriteString("ALL FINDINGS:\n")
 			for i, r := range m.Report.Results {
 				if i >= 30 {
-					reportCtx.WriteString(fmt.Sprintf("... and %d more findings\n", len(m.Report.Results)-30))
+					fmt.Fprintf(&reportCtx, "... and %d more findings\n", len(m.Report.Results)-30)
 					break
 				}
-				reportCtx.WriteString(fmt.Sprintf("  [%s] %s | %s | %s:%d | Evidence: %s\n",
-					r.Severity, r.ID, r.Name, r.File, r.Line, r.Evidence))
+				fmt.Fprintf(&reportCtx, "  [%s] %s | %s | %s:%d | Evidence: %s\n",
+					r.Severity, r.ID, r.Name, r.File, r.Line, r.Evidence)
 			}
 			// NFR findings
 			if len(m.NFRFindings) > 0 {
@@ -1713,7 +1709,7 @@ func (m DashboardModel) chatCmd(prompt string) tea.Cmd {
 					if i >= 10 {
 						break
 					}
-					reportCtx.WriteString(fmt.Sprintf("  [%s] %s: %s\n", f.Severity, f.Name, f.Message))
+					fmt.Fprintf(&reportCtx, "  [%s] %s: %s\n", f.Severity, f.Name, f.Message)
 				}
 			}
 			// Deploy findings
@@ -1723,7 +1719,7 @@ func (m DashboardModel) chatCmd(prompt string) tea.Cmd {
 					if i >= 10 {
 						break
 					}
-					reportCtx.WriteString(fmt.Sprintf("  [%s] %s: %s (%s)\n", f.Severity, f.Issue, f.Evidence, f.File))
+					fmt.Fprintf(&reportCtx, "  [%s] %s: %s (%s)\n", f.Severity, f.Issue, f.Evidence, f.File)
 				}
 			}
 			// Network findings
@@ -1733,7 +1729,7 @@ func (m DashboardModel) chatCmd(prompt string) tea.Cmd {
 					if i >= 10 {
 						break
 					}
-					reportCtx.WriteString(fmt.Sprintf("  [%s] %s:%d %s\n", f.Severity, f.Service, f.Port, f.Message))
+					fmt.Fprintf(&reportCtx, "  [%s] %s:%d %s\n", f.Severity, f.Service, f.Port, f.Message)
 				}
 			}
 		}
@@ -2147,12 +2143,12 @@ func (m *DashboardModel) dashboardSummaryCmd() tea.Cmd {
 		}
 
 		var findingsCtx strings.Builder
-		findingsCtx.WriteString(fmt.Sprintf("SecurityScore: %d/100\n", m.Report.SecurityScore))
-		findingsCtx.WriteString(fmt.Sprintf("Total: %d findings (%d CRITICAL, %d HIGH, %d MEDIUM, %d LOW)\n",
-			len(m.Report.Results), sevCounts["CRITICAL"], sevCounts["HIGH"], sevCounts["MEDIUM"], sevCounts["LOW"]))
-		findingsCtx.WriteString(fmt.Sprintf("Files scanned: %d | Rules applied: %d\n", m.Report.TotalFiles, m.Report.RulesApplied))
-		findingsCtx.WriteString(fmt.Sprintf("External SAST: %d | NFR: %d | Deploy: %d\n",
-			len(m.ExternalFindings), len(m.NFRFindings), len(m.DeployFindings)))
+		fmt.Fprintf(&findingsCtx, "SecurityScore: %d/100\n", m.Report.SecurityScore)
+		fmt.Fprintf(&findingsCtx, "Total: %d findings (%d CRITICAL, %d HIGH, %d MEDIUM, %d LOW)\n",
+			len(m.Report.Results), sevCounts["CRITICAL"], sevCounts["HIGH"], sevCounts["MEDIUM"], sevCounts["LOW"])
+		fmt.Fprintf(&findingsCtx, "Files scanned: %d | Rules applied: %d\n", m.Report.TotalFiles, m.Report.RulesApplied)
+		fmt.Fprintf(&findingsCtx, "External SAST: %d | NFR: %d | Deploy: %d\n",
+			len(m.ExternalFindings), len(m.NFRFindings), len(m.DeployFindings))
 
 		// Top 5 critical findings
 		count := 0
@@ -2161,7 +2157,7 @@ func (m *DashboardModel) dashboardSummaryCmd() tea.Cmd {
 				break
 			}
 			if r.Severity == "CRITICAL" || r.Severity == "HIGH" {
-				findingsCtx.WriteString(fmt.Sprintf("- [%s] %s: %s (%s:%d)\n", r.Severity, r.Name, r.Evidence, r.File, r.Line))
+				fmt.Fprintf(&findingsCtx, "- [%s] %s: %s (%s:%d)\n", r.Severity, r.Name, r.Evidence, r.File, r.Line)
 				count++
 			}
 		}
@@ -2233,14 +2229,14 @@ func (m *DashboardModel) contextExportCmd() tea.Cmd {
 		// 3. summary.md
 		var summary strings.Builder
 		summary.WriteString("# AITriage Security Summary\n\n")
-		summary.WriteString(fmt.Sprintf("**Project:** %s\n", m.Report.ProjectPath))
-		summary.WriteString(fmt.Sprintf("**Score:** %d/100\n", m.Report.SecurityScore))
-		summary.WriteString(fmt.Sprintf("**Scan Time:** %s\n\n", m.ScanStartTime.Format(time.RFC3339)))
+		fmt.Fprintf(&summary, "**Project:** %s\n", m.Report.ProjectPath)
+		fmt.Fprintf(&summary, "**Score:** %d/100\n", m.Report.SecurityScore)
+		fmt.Fprintf(&summary, "**Scan Time:** %s\n\n", m.ScanStartTime.Format(time.RFC3339))
 		summary.WriteString("## Critical & High Findings\n\n")
 		for _, r := range m.Report.Results {
 			if r.Severity == "CRITICAL" || r.Severity == "HIGH" {
-				summary.WriteString(fmt.Sprintf("### [%s] %s\n- **File:** %s:%d\n- **Evidence:** %s\n- **Fix:** %s\n\n",
-					r.Severity, r.Name, r.File, r.Line, r.Evidence, r.Suggestion))
+				fmt.Fprintf(&summary, "### [%s] %s\n- **File:** %s:%d\n- **Evidence:** %s\n- **Fix:** %s\n\n",
+					r.Severity, r.Name, r.File, r.Line, r.Evidence, r.Suggestion)
 			}
 		}
 		if m.DashboardSummary != "" {
@@ -2255,7 +2251,7 @@ func (m *DashboardModel) contextExportCmd() tea.Cmd {
 		prompt.WriteString("Context: " + string(sevData) + "\n\n")
 		prompt.WriteString("Findings:\n")
 		for _, r := range m.Report.Results {
-			prompt.WriteString(fmt.Sprintf("- [%s] %s in %s:%d — %s\n", r.Severity, r.Name, r.File, r.Line, r.Evidence))
+			fmt.Fprintf(&prompt, "- [%s] %s in %s:%d — %s\n", r.Severity, r.Name, r.File, r.Line, r.Evidence)
 		}
 		prompt.WriteString("\nProvide prioritized remediation with code fixes.\n")
 		_ = os.WriteFile(filepath.Join(baseDir, "prompt.txt"), []byte(prompt.String()), 0644)

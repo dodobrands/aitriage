@@ -98,7 +98,7 @@ func classifyAll(batch []classificationPromptFinding, disposition string) string
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		sb.WriteString(fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`, i, finding.FindingID, finding.Fingerprint, disposition))
+		fmt.Fprintf(&sb, `{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`, i, finding.FindingID, finding.Fingerprint, disposition)
 	}
 	sb.WriteString(`]}`)
 	return sb.String()
@@ -111,7 +111,7 @@ func classifyAllByCount(count int, disposition string) string {
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		sb.WriteString(fmt.Sprintf(`{"finding_index":%d,"disposition":%q,"confidence":"high","rationale":"r"}`, i, disposition))
+		fmt.Fprintf(&sb, `{"finding_index":%d,"disposition":%q,"confidence":"high","rationale":"r"}`, i, disposition)
 	}
 	sb.WriteString(`]}`)
 	return sb.String()
@@ -164,7 +164,7 @@ func classifyIndices(pairs map[int]string) string {
 			sb.WriteString(",")
 		}
 		first = false
-		sb.WriteString(fmt.Sprintf(`{"finding_index":%d,"disposition":%q,"confidence":"medium","rationale":"r"}`, idx, disp))
+		fmt.Fprintf(&sb, `{"finding_index":%d,"disposition":%q,"confidence":"medium","rationale":"r"}`, idx, disp)
 	}
 	sb.WriteString(`]}`)
 	return sb.String()

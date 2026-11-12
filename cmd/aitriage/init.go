@@ -382,7 +382,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
           cache: true
 
       - name: Install AITriage

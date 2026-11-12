@@ -222,14 +222,14 @@ func buildFileDiff(file, original, fixed string) string {
 	origLines := strings.Split(original, "\n")
 	fixedLines := strings.Split(fixed, "\n")
 	var diff strings.Builder
-	diff.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", file, file))
+	fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n", file, file)
 	for i, ol := range origLines {
 		if i >= len(fixedLines) {
-			diff.WriteString(fmt.Sprintf("- %s\n", ol))
+			fmt.Fprintf(&diff, "- %s\n", ol)
 			continue
 		}
 		if ol != fixedLines[i] {
-			diff.WriteString(fmt.Sprintf("- %s\n+ %s\n", ol, fixedLines[i]))
+			fmt.Fprintf(&diff, "- %s\n+ %s\n", ol, fixedLines[i])
 		}
 	}
 	return diff.String()

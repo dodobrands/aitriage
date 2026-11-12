@@ -93,7 +93,7 @@ administrator approval, the installer falls back to `$HOME/.local/bin` and
 prints the exact executable path. Add that directory to `PATH` for future
 shells if it is not already present.
 
-Go 1.25.13 or newer with a C compiler (tree-sitter needs CGO) remains a developer fallback:
+Go 1.26.11 or newer with a C compiler (tree-sitter needs CGO) remains a developer fallback:
 
 ```bash
 go install github.com/dodobrands/aitriage/cmd/aitriage@latest
