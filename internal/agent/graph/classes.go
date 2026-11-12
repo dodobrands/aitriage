@@ -58,12 +58,17 @@ func isHardcodedSecret(f EnrichedFinding) bool {
 // semanticFindingKey is the identity under which findings merge: one defect,
 // whichever detectors reported it.
 //   - Classified findings merge with the other findings of their class at the
-//     same file and line; at the same file for a file-scoped class; at the
-//     project level when they have no location. Advisories (dependency CVEs)
-//     merge only with the same advisory for the same package.
-//   - A finding no class covers merges only with byte-identical reports, or,
-//     when it has no location at all, with the same rule: a project-level
-//     check reported once per detected stack is one finding.
+//     same file and line, or at the same file for a file-scoped class.
+//     Advisories (dependency CVEs) merge only with the same advisory for the
+//     same package.
+//   - A finding without a location is one rule's verdict about the project,
+//     classified or not, and merges only with reports of the same rule: a
+//     check reported once per detected stack is one finding. Two rules of one
+//     class are two defects of two components (FAST-AUTH about a FastAPI
+//     service, NEXT-AUTH about a Next.js frontend): they never merge, so a
+//     decision about one never covers the other and each one counts.
+//   - A located finding no class covers merges only with byte-identical
+//     reports.
 //   - Network probe results describe the scanning host, one per probed
 //     service, and only merge when identical.
 func semanticFindingKey(f EnrichedFinding) string {
@@ -73,18 +78,23 @@ func semanticFindingKey(f EnrichedFinding) string {
 	switch {
 	case isEnvironmentFinding(f) || (!ok && located):
 		return "exact|" + Fingerprint(f)
-	case !ok:
-		return "rule|" + strings.ToLower(strings.TrimSpace(f.Type)) + "|" + strings.ToLower(strings.TrimSpace(f.ID)) + "|project"
-	case class.Scope == healthcheck.ScopeRule:
+	case ok && class.Scope == healthcheck.ScopeRule:
 		return "advisory|" + strings.ToLower(strings.TrimSpace(f.ID)) + "|" + strings.ToLower(strings.TrimSpace(f.Package)) +
 			"|" + strings.TrimSpace(f.InstalledVersion) + "|" + file
 	case !located:
-		return class.Key + "|project"
+		return projectRuleKey(f)
 	case class.Scope == healthcheck.ScopeFile && file != "":
 		return class.Key + "|" + file
 	default:
 		return class.Key + "|" + file + "|" + strconv.Itoa(f.Line)
 	}
+}
+
+// projectRuleKey identifies a project-level finding by the rule that reported
+// it: its type, scanner and rule id.
+func projectRuleKey(f EnrichedFinding) string {
+	return "rule|" + strings.ToLower(strings.TrimSpace(f.Type)) + "|" + strings.ToLower(strings.TrimSpace(f.Source)) +
+		"|" + strings.ToLower(strings.TrimSpace(f.ID)) + "|project"
 }
 
 // classCode is the class part of a finding's display id.

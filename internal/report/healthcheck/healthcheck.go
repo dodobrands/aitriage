@@ -181,11 +181,14 @@ func effectiveWeight(f Finding) float64 {
 // dedupKey builds the deduplication key for a finding; findings with the same
 // key are one defect. An explicit Identity wins. Otherwise a finding of a
 // canonical class dedups with the other findings of that class at the same
-// location (the same file for a file-scoped class, the project for findings
-// without a location, whichever scanner reported them), and a finding no class
-// covers dedups by rule and location, or by source and rule when it has no
-// location, so the same project-level rule firing twice (e.g. across two
-// stacks) counts once. An empty key means the finding is never collapsed.
+// location (the same file for a file-scoped class), whichever scanner
+// reported them, and a finding no class covers dedups by rule and location.
+// A finding without a location is one rule's verdict about the project: it
+// dedups by source and rule only, classified or not. The same project-level
+// rule firing twice (once per detected stack) counts once, but two rules of
+// one class (FAST-AUTH for a FastAPI service, NEXT-AUTH for a Next.js
+// frontend) are two defects, each counted by the score and by the max_*
+// thresholds. An empty key means the finding is never collapsed.
 func dedupKey(f Finding) string {
 	if id := strings.TrimSpace(f.Identity); id != "" {
 		return "identity|" + id
@@ -194,11 +197,7 @@ func dedupKey(f Finding) string {
 	rule := strings.ToLower(strings.TrimSpace(f.Class))
 	class, ok := findingClassOf(f)
 	switch {
-	case !ok && file == "" && f.Line == 0:
-		return fmt.Sprintf("%s|%s", strings.ToLower(f.Source), rule)
-	case !ok:
-		return fmt.Sprintf("%s|%s|%d", rule, file, f.Line)
-	case class.Scope == ScopeRule:
+	case ok && class.Scope == ScopeRule:
 		// Advisories never merge with each other. Without the rule ids behind
 		// a finding there is nothing to tell two of them apart by.
 		if len(f.Rules) > 0 {
@@ -208,7 +207,15 @@ func dedupKey(f Finding) string {
 		}
 		return fmt.Sprintf("rule|%s|%s|%d", rule, file, f.Line)
 	case file == "" && f.Line == 0:
-		return class.Key + "|project"
+		rules := rulesOf(f)
+		if len(rules) == 0 {
+			// A class without the rules behind it: nothing tells two such
+			// project-level findings apart, so neither absorbs the other.
+			return ""
+		}
+		return fmt.Sprintf("%s|%s", strings.ToLower(strings.TrimSpace(f.Source)), strings.Join(rules, ","))
+	case !ok:
+		return fmt.Sprintf("%s|%s|%d", rule, file, f.Line)
 	case class.Scope == ScopeFile && file != "":
 		return class.Key + "|" + file
 	default:

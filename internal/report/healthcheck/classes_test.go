@@ -25,6 +25,9 @@ func TestClassifyRuleMapsEveryDetectorOfADefectToOneClass(t *testing.T) {
 		{RuleRef{Type: "external", Source: "trivy", RuleID: "AVD-DS-0002"}, ClassContainerRunsAsRoot},
 		{RuleRef{Type: "external", Source: "trivy", RuleID: "DS002"}, ClassContainerRunsAsRoot},
 		{RuleRef{Type: "deploy", Source: "aitriage", RuleID: "dockerfile_root_user"}, ClassContainerRunsAsRoot},
+		{RuleRef{Type: "deploy", Source: "aitriage", RuleID: "k8s_run_as_root"}, ClassK8sContainerRunsAsRoot},
+		{RuleRef{Type: "external", Source: "trivy", RuleID: "KSV012"}, ClassK8sContainerRunsAsRoot},
+		{RuleRef{Type: "external", Source: "trivy", RuleID: "AVD-KSV-0012"}, ClassK8sContainerRunsAsRoot},
 		{RuleRef{Type: "core", Source: "aitriage", RuleID: "FAST-LAZY-EXC"}, ClassExceptionSwallow},
 		{RuleRef{Type: "external", Source: "bandit", RuleID: "B110"}, ClassExceptionSwallow},
 		{RuleRef{Type: "external", Source: "trivy", RuleID: "CVE-2023-50447", Package: "pillow"}, ClassVulnerableDependency},
@@ -72,6 +75,54 @@ func TestCoreOnlyHealthCheckCountsOneDefectOnce(t *testing.T) {
 		if v := EvaluatePolicy(res, Policy{FailOn: FailOnConfirmed, BlockClasses: []string{rule}}); v.Passed {
 			t.Fatalf("block_classes [%s] stopped blocking once its report was collapsed", rule)
 		}
+	}
+}
+
+// Only Dockerfile checks are file-scoped: a Kubernetes manifest declares many
+// containers, so its run-as-root checks are one finding per line.
+func TestOnlyDockerfileRunAsRootIsFileScoped(t *testing.T) {
+	for _, rule := range []string{"DOCKER-NO-USER", "dockerfile_root_user", "DS-0002"} {
+		if class, ok := ClassifyRule(RuleRef{Source: "trivy", RuleID: rule}); !ok || class.Scope != ScopeFile {
+			t.Errorf("%s: class %+v, want a file-scoped class", rule, class)
+		}
+	}
+	for _, rule := range []string{"k8s_run_as_root", "KSV-0012"} {
+		if class, ok := ClassifyRule(RuleRef{Source: "trivy", RuleID: rule}); !ok || class.Scope != ScopeLine {
+			t.Errorf("%s: class %+v, want a line-scoped class", rule, class)
+		}
+	}
+	in := Input{Findings: []Finding{
+		{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, Ignored: true},
+		{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 40},
+	}}
+	if bd := Evaluate(in).Breakdown; bd.ActiveFindings != 1 || bd.IgnoredFindings != 1 || bd.DedupedFindings != 0 {
+		t.Fatalf("breakdown = %+v, want the two containers counted apart", bd)
+	}
+}
+
+// The core-only scan path counts project-level findings the way the triage
+// graph does: one finding per rule. The same rule reported for two stacks is
+// one finding; two rules of one class are two, a dismissal of one never hides
+// the other, and the max_* thresholds see every one of them.
+func TestCoreOnlyHealthCheckCountsProjectLevelFindingsPerRule(t *testing.T) {
+	results := []core.CheckResult{
+		{ID: "FAST-AUTH", Status: core.Absent, Severity: "HIGH"},
+		{ID: "EXPRESS-AUTH", Status: core.Absent, Severity: "HIGH"},
+		{ID: "NEXT-AUTH", Status: core.Absent, Severity: "HIGH", AuditStatus: core.AuditStatusIgnored},
+		{ID: "ENTR-02", Status: core.Absent, Severity: "HIGH", Evidence: "No lockfile for npm in web"},
+		{ID: "ENTR-02", Status: core.Absent, Severity: "HIGH", Evidence: "No lockfile for pip in api"},
+	}
+	res := Evaluate(FromCoreResults(results))
+	bd := res.Breakdown
+	if bd.ActiveFindings != 3 || bd.IgnoredFindings != 1 || bd.DedupedFindings != 1 {
+		t.Fatalf("breakdown = %+v, want FAST-AUTH, EXPRESS-AUTH and ENTR-02 active and NEXT-AUTH ignored", bd)
+	}
+	if bd.CountByRule["fast-auth"] != 1 || bd.CountByRule["express-auth"] != 1 || bd.CountByClass["missing_authentication"] != 2 {
+		t.Fatalf("counts by rule = %v, by class = %v", bd.CountByRule, bd.CountByClass)
+	}
+	verdict := EvaluatePolicy(res, Policy{FailOn: FailOnConfirmed, MaxCritical: -1, MaxHigh: 2, MaxMedium: -1})
+	if verdict.Passed {
+		t.Fatal("max_high=2 passed with three active HIGH project-level findings")
 	}
 }
 

@@ -46,26 +46,29 @@ func TestEnrichFindingsMergesSemanticAliasesAndKeepsOrigins(t *testing.T) {
 	}
 
 	enrichFindings(state)
-	if len(state.EnrichedFindings) != 3 {
-		t.Fatalf("semantic findings = %d, want 3 instead of six aliases: %+v", len(state.EnrichedFindings), state.EnrichedFindings)
+	// The two reports of the swallowed exception on app.py:10 are one finding;
+	// the four project-level checks are four rules, each its own finding: a
+	// class never merges reports that carry no location.
+	if len(state.EnrichedFindings) != 5 {
+		t.Fatalf("semantic findings = %d, want 5 (one located merge, four project-level rules): %+v", len(state.EnrichedFindings), state.EnrichedFindings)
 	}
-	classes := map[string]EnrichedFinding{}
+	byRule := map[string]EnrichedFinding{}
 	for _, finding := range state.EnrichedFindings {
-		classes[semanticFindingClass(finding)] = finding
+		byRule[finding.ID] = finding
 	}
-	for _, class := range []string{"exception_swallow", "missing_authentication", "missing_rate_limiting"} {
-		finding, ok := classes[class]
-		if !ok {
-			t.Fatalf("missing semantic class %q: %+v", class, state.EnrichedFindings)
-		}
-		if len(finding.Origins) != 2 {
-			t.Fatalf("%s origins = %+v, want both scanners", class, finding.Origins)
+	if swallow := byRule["FAST-LAZY-EXC"]; swallow.Class != "exception_swallow" || len(swallow.Origins) != 2 {
+		t.Fatalf("exception_swallow = %+v, want both scanners merged", swallow)
+	}
+	for _, rule := range []string{"FAST-AUTH", "NFR-API-003", "FAST-RATELIMIT", "NFR-API-001"} {
+		finding, ok := byRule[rule]
+		if !ok || len(finding.Origins) != 1 || finding.Origins[0].RuleID != rule {
+			t.Fatalf("%s = %+v, want a finding of its own", rule, finding)
 		}
 	}
 
 	computeHealthCheck(state)
-	if state.HealthCheck.Breakdown.ActiveFindings != 3 {
-		t.Fatalf("health active findings = %d, want semantic count 3", state.HealthCheck.Breakdown.ActiveFindings)
+	if state.HealthCheck.Breakdown.ActiveFindings != 5 {
+		t.Fatalf("health active findings = %d, want 5", state.HealthCheck.Breakdown.ActiveFindings)
 	}
 }
 

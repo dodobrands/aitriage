@@ -25,7 +25,8 @@ import (
 //
 //   - Dependency advisories are identified by advisory, package and manifest.
 //   - File-scoped classes (a Dockerfile without USER) by class and file.
-//   - Project-level findings by class, or by rule when no class covers it.
+//   - Project-level findings by rule: two rules of one class are two
+//     findings (see semanticFindingKey).
 //
 // Findings that still share an identity (two reports on one line that no
 // class merges) are told apart by their position in the canonical order.
@@ -55,8 +56,9 @@ func assignStableIDs(projectPath string, findings []EnrichedFinding) {
 }
 
 func stableIdentity(f EnrichedFinding, lines *lineIndex) string {
-	identity := "rule:" + strings.ToLower(strings.TrimSpace(f.Type)) + ":" +
+	rule := "rule:" + strings.ToLower(strings.TrimSpace(f.Type)) + ":" +
 		strings.ToLower(strings.TrimSpace(f.Source)) + ":" + strings.ToLower(strings.TrimSpace(f.ID))
+	identity := rule
 	class, classified := findingClass(f)
 	if classified {
 		identity = "class:" + class.Key
@@ -70,7 +72,9 @@ func stableIdentity(f EnrichedFinding, lines *lineIndex) string {
 		// and service.
 		return strings.Join([]string{"environment", identity, strings.TrimSpace(f.Message)}, "\x00")
 	case file == "":
-		return strings.Join([]string{"project", identity}, "\x00")
+		// A project-level finding is one rule's verdict (see
+		// semanticFindingKey): two rules of one class are two findings.
+		return strings.Join([]string{"project", rule}, "\x00")
 	case classified && class.Scope == healthcheck.ScopeFile:
 		return strings.Join([]string{"file", identity, file}, "\x00")
 	default:
