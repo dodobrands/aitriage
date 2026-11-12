@@ -18,6 +18,11 @@ import (
 // suppressions and inline directives may still name them, so an id must never
 // be given to a different rule.
 var retiredRuleIDs = map[string]string{
+	"ENTR-21":                "third copy of the weak-hash finding; ENTR-WEAK-CRYPTO and PY-HASHLIB-WEAK cover it",
+	"ENTR-HALLUCINATION":     "a fixed list of four made-up package names; registry checks belong in the dependency scanner",
+	"ENTR-FRAGILE-LOGIC":     "matched idiomatic Go error handling",
+	"ENTROPY-SECRET":         "documented an id the engine never emitted; the detector reports SECRET-* ids",
+	"ENTROPY-SECRET-LEAK":    "documented an id the engine never emitted; the detector reports SECRET-LEAK-LOG",
 	"FLASK-ORM":              "absence of an ORM is not SQL injection; the rule never ran",
 	"FLASK-SECRETS":          "duplicate of FLASK-SECRET-HARDCODED; the rule never ran",
 	"NEXT-AUTH":              "absence of a middleware file is not a vulnerability; Next.js advises auth checks in each route",

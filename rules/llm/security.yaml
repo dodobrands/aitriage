@@ -1,107 +1,184 @@
 # ============================================================
 # AITRIAGE RULES: LLM / AI Security
 # ============================================================
-# Based on OWASP Top 10 for LLM Applications 2025.
-# These rules detect code-level patterns that indicate
-# unsafe LLM integration: prompt injection vectors,
-# insecure output handling, excessive agency, and
-# sensitive data in prompts.
+# Mapped to the OWASP Top 10 for LLM Applications 2025.
+# These rules detect code-level patterns of unsafe LLM
+# integration: model output reaching code, SQL or file sinks,
+# request input in the instruction context, sensitive data in
+# prompts, provider keys exposed to browsers, and missing
+# timeouts or token caps on provider calls.
 #
-# These are unique to AITriage — no other SAST tool ships
-# with LLM-specific security rules.
+# Output-handling rules look for model output *inside the
+# arguments* of the sink call (exec(resp.choices[0]...)), not
+# for an LLM-sounding word anywhere on the line. Agent and tool
+# rules live in agents.yaml.
 # ============================================================
 
 rules:
   - id: LLM-OUTPUT-EXEC
-    name: "LLM Output Passed to exec/eval (Insecure Output Handling)"
+    name: "LLM Output Executed as Code or Command"
     stack: universal
-    extensions: [".py", ".ts", ".js"]
+    extensions: [".py", ".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:completion|response|output|result|answer|reply|generated|llm_output|ai_response).*(?:eval|exec|subprocess|os\.system|child_process)\s*\('
-    severity: LOW
-    suggestion: "LLM output appears to be passed to code execution functions. Never exec/eval AI-generated content without sandboxing and validation."
+    regions: code
+    pattern: '(?im)(?:^|[^\w.\n])(?:eval|exec|execSync|os\.system|os\.popen|subprocess\.(?:run|call|check_output|check_call|Popen)|child_process\.exec(?:Sync)?|vm\.run\w*|new\s+Function)\s*\(\s*[^)\n]*?\b(?:completions?\b|llm_?(?:output|response|result|code|sql|query)\b|ai_?(?:output|response|code|sql)\b|generated_?(?:code|command|cmd|script|sql|query)\b|model_?(?:output|response)\b|response\.(?:text|content|output_text|choices)\b|choices\s*\[\s*0\s*\]|message\.content\b|output_text\b|tool_?call\.(?:function\.)?arguments\b|function_?call\.arguments\b)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-94"
+      owasp: "LLM05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Model output reaches a code or command execution sink, so a prompt injection becomes remote code execution. Do not execute generated code; if it is unavoidable, run it in an isolated sandbox with no credentials, no network and an allowlist of operations."
 
   - id: LLM-OUTPUT-SQL
-    name: "LLM Output in SQL Query"
+    name: "LLM Output Executed as SQL"
     stack: universal
-    extensions: [".py", ".ts", ".js", ".go"]
+    extensions: [".py", ".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs", ".go"]
     target: all
-    pattern: '(?i)(?:completion|response|output|generated|llm_output|ai_response).*(?:\.query|\.execute|db\.|cursor\.|sql)'
-    severity: LOW
-    suggestion: "LLM output used in database query. AI can be manipulated via prompt injection to generate malicious SQL. Always use parameterized queries."
+    regions: code
+    pattern: '(?i)\b(?:cursor|conn(?:ection)?|db|session|engine|client|pool|database|tx)\.(?:execute|executemany|executescript|query|raw|exec|QueryRow)(?:Context)?\s*\(\s*[^)\n]*?\b(?:completions?\b|llm_?(?:output|response|result|code|sql|query)\b|ai_?(?:output|response|code|sql)\b|generated_?(?:code|command|cmd|script|sql|query)\b|model_?(?:output|response)\b|response\.(?:text|content|output_text|choices)\b|choices\s*\[\s*0\s*\]|message\.content\b|output_text\b|tool_?call\.(?:function\.)?arguments\b|function_?call\.arguments\b)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "LLM05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Model-generated SQL is executed, so an injected prompt can run any query the connection allows. Generated SQL cannot be parameterized: run it on a read-only, least-privilege connection, parse it and allow only SELECT on an allowlist of tables, and cap rows and execution time."
 
   - id: LLM-SYSTEM-PROMPT-CLIENT
-    name: "System Prompt Exposed in Client Code"
+    name: "System Prompt in Client-Side Code"
     stack: universal
-    extensions: [".tsx", ".jsx", ".ts", ".js"]
+    extensions: [".tsx", ".jsx", ".ts", ".js", ".vue", ".svelte"]
     target: all
-    pattern: '(?i)(system\s*:\s*["\x27`]You are|systemPrompt\s*=\s*["\x27`]|system_prompt\s*=\s*["\x27`]|role\s*:\s*["\x27]system["\x27])'
-    condition: "not_contains:server"
-    severity: LOW
-    suggestion: "System prompt found in client-side code. Attackers can read and reverse-engineer your instructions. Move system prompts to the backend."
+    regions: code_and_strings
+    pattern: '(?i)\bsystem(?:_?prompt|_?message|_?instructions?)?["\x27]?\s*[:=]\s*["\x27\x60]\s*(?:You are|You\x27re|Act as|Your (?:role|task|job) is)|\brole["\x27]?\s*:\s*["\x27]system["\x27]\s*,\s*["\x27]?content["\x27]?\s*:\s*["\x27\x60]\s*\w'
+    # Only files with browser markers count; a server route handler that
+    # holds its system prompt is the correct design.
+    condition: "contains:use client|useState(|useEffect(|useRef(|useReducer(|window.|document.|localStorage.|sessionStorage.|<script"
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-200"
+      owasp: "LLM07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A system prompt is defined in code that runs in the browser, so any user can read it and a client-built system message can be replaced. Keep the prompt on the server, and do not rely on it to hold secrets or enforce access rules."
 
   - id: LLM-EXCESSIVE-AGENCY
-    name: "LLM Output Used for File/DB Operations (Excessive Agency)"
+    name: "LLM Output Controls a File Operation"
     stack: universal
-    extensions: [".py", ".ts", ".js", ".go"]
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs", ".go"]
     target: all
-    pattern: '(?i)(?:completion|response|output|generated|llm_output|ai_response).*(?:fs\.|open\(|writeFile|unlink|rmdir|os\.remove|shutil)'
-    severity: LOW
-    suggestion: "LLM output directly controls file system operations. Implement human-in-the-loop confirmation or strict allowlists for destructive actions."
+    regions: code
+    pattern: '(?im)(?:^|[^\w.\n])(?:open|os\.remove|os\.unlink|os\.rmdir|shutil\.(?:rmtree|move|copy\w*)|fs\.(?:writeFile|writeFileSync|appendFile\w*|unlink|unlinkSync|rm|rmSync|rmdir\w*|rename\w*)|os\.(?:WriteFile|Remove|RemoveAll|Rename))\s*\(\s*[^)\n]*?\b(?:completions?\b|llm_?(?:output|response|path|file(?:name)?)\b|ai_?(?:output|response|path)\b|generated_?(?:path|file(?:name|path)?)\b|model_?output\b|choices\s*\[\s*0\s*\]|message\.content\b|output_text\b|tool_?(?:input|args|arguments)\b|tool_?call\.(?:function\.)?arguments\b|function_?call\.arguments\b)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-73"
+      owasp: "LLM06:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A file path or file content chosen by the model is used to write, move or delete files. Resolve the path against a fixed base directory and reject anything outside it, allow only the operations the feature needs, and ask a human to confirm destructive actions."
 
   - id: LLM-SENSITIVE-IN-PROMPT
-    name: "Sensitive Data in Prompt Template"
+    name: "Sensitive Data Interpolated into a Prompt"
     stack: universal
-    extensions: [".py", ".ts", ".js", ".go"]
+    extensions: [".py", ".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs", ".go"]
     target: all
-    pattern: '(?i)(?:prompt|system_message|instruction).*(?:password|api_key|secret_key|private_key|access_token|credit_card|ssn)'
-    severity: LOW
-    suggestion: "Sensitive data (passwords, API keys, PII) detected in prompt template. The LLM may leak this in its output. Remove sensitive data from prompts."
+    regions: code_and_strings
+    pattern: '(?i)\b(?:\w*prompt\w*|system_?(?:message|instructions?)|instructions|messages?|content)["\x27]?\s*(?:=|:|\+=)\s*f?["\x27\x60][^\n]*?(?:\{|\$\{)\s*(?:\w+\.)*\w*?(?:password|passwd|api_?key|secret_?key|client_?secret|secret|private_?key|access_?token|refresh_?token|credit_?card(?:_?number)?|card_?number|cvv|ssn|social_?security(?:_?number)?)\b'
+    # Only files that call a model count: `content` and `messages` are
+    # generic keys in e-mail and chat code.
+    condition: "contains:openai|anthropic|langchain|llama_index|ollama|litellm|mistral|cohere.|groq|bedrock|vertexai|genai|generativeai|@ai-sdk|chat.completions|completions.create|generate_content|generatecontent|streamtext(|generatetext(|llm.|llm(|llm_|_llm|llm ="
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-201"
+      owasp: "LLM02:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A password, key or card number is interpolated into a prompt sent to a model. Prompts are logged by providers and can be echoed back by the model; keep secrets in code that calls tools on the model's behalf, and redact personal data before it reaches the prompt."
 
   - id: LLM-NO-OUTPUT-VALIDATION
-    name: "Missing LLM Output Schema Validation"
+    name: "LLM Output Parsed as JSON Without Validation"
     stack: universal
-    extensions: [".py", ".ts", ".js"]
+    extensions: [".py", ".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:completion|response|choices\[0\]|message\.content|generated_text).*(?:JSON\.parse|json\.loads)\s*\('
-    condition: "not_contains:schema"
+    regions: code
+    pattern: '(?i)(?:JSON\.parse|json\.loads)\s*\(\s*(?:\w+\.)*?(?:completions?\b|llm_?(?:output|response|result)\b|ai_?(?:output|response)\b|choices\s*\[\s*0\s*\]|message\.content\b|output_text\b|generated_text\b|content\s*\[\s*0\s*\]\.text\b)'
+    condition: "not_contains:schema|zod|pydantic|safeParse|model_validate|BaseModel|ajv|TypeAdapter|parse_obj|response_format"
     severity: LOW
-    suggestion: "LLM output parsed as JSON without schema validation. AI outputs are non-deterministic — validate against a strict schema (Zod, Pydantic) before use."
+    metadata:
+      cwe: "CWE-1426"
+      owasp: "LLM05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Model output is parsed as JSON and used without validation. Validate it against a schema (Zod, Pydantic) before use, or request structured output from the provider (response_format or text.format with a json_schema, chat.completions.parse, zodResponseFormat)."
 
   - id: LLM-PROMPT-CONCAT
-    name: "User Input Concatenated into Prompt"
+    name: "Request Input in the Instruction Prompt"
     stack: universal
-    extensions: [".py", ".ts", ".js"]
+    extensions: [".py", ".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:prompt|system_message|messages)\s*(?:\+|\.format|f"|`\$\{).*(?:req\.|request\.|user_input|input|query|params)'
-    severity: LOW
-    suggestion: "User input directly concatenated into LLM prompt. This enables prompt injection attacks. Use structured input formatting with clear delimiters and input validation."
+    regions: code_and_strings
+    # A user-role message that carries the request input is the correct
+    # pattern and is not reported (user_prompt, {"role": "user", ...}).
+    pattern: '(?i)\b(?:(?:(?:system|sys|base|main|full|final|instruction|agent|task|template|meta|llm|ai|chat|rag|combined|formatted)_?)?prompt(?:_?(?:template|text|str|string))?|system_?(?:message|instructions?)|systemMessage|systemInstructions?|role["\x27]?\s*:\s*["\x27]system["\x27]\s*,\s*["\x27]?content)["\x27]?\s*(?:=|:|\+=)\s*(?:[^\n{}]|\{[^\n{}]*\})*?(?:\{\s*|\$\{\s*|\+\s*|%\s*\(?\s*|\.format\(\s*(?:\w+\s*=\s*)?)(?:req\.(?:body|query|params)|request\.(?:args|form|json|body|query|GET|POST|query_params|get_json\(\))|user_?(?:input|message|query|prompt)\b|body\.|params\.)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-1427"
+      owasp: "LLM01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Request input is concatenated into the system or instruction prompt, so a user can rewrite the model's instructions. Keep instructions fixed, pass user input as a separate user-role message (delimited, for example in XML tags), and limit what tools and data the model can reach."
 
   - id: LLM-API-KEY-EXPOSED
-    name: "LLM API Key in Frontend"
+    name: "LLM Provider Key Exposed to the Browser"
     stack: universal
-    extensions: [".tsx", ".jsx", ".ts", ".js"]
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro", ".env", ".env.*"]
     target: all
-    pattern: '(?i)(openai|anthropic|gemini|cohere|replicate).*(?:api[_-]?key|token|secret)\s*[:=]\s*["\x27](?:sk-|key-|ant-)'
-    severity: LOW
-    suggestion: "LLM provider API key found in client-side code. Move to backend environment variables. Exposed keys can rack up unlimited charges."
+    regions: code_and_strings
+    # Detects the exposure mechanism (a public build-time variable or the
+    # SDK's browser opt-in). Literal keys are reported by SECRET-OPENAI and
+    # SECRET-ANTHROPIC.
+    pattern: '(?i)\b(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC|NUXT_PUBLIC|PUBLIC|GATSBY)_(?:\w*_)?(?:OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_?AI|GOOGLE_?GENAI|GENAI|COHERE|MISTRAL|GROQ|REPLICATE|HUGGING_?FACE|HF|DEEPSEEK|XAI|PERPLEXITY|OPENROUTER|TOGETHER|FIREWORKS|LLM)_(?:\w*_)?(?:KEY|TOKEN|SECRET)\b|\bdangerouslyAllowBrowser\s*:\s*true\b|anthropic-dangerous-direct-browser-access'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "LLM10:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "An LLM provider key is shipped to the browser (a public build-time variable or dangerouslyAllowBrowser), so anyone can copy it and run up charges. Call the provider from a server endpoint that holds the key and enforces authentication and rate limits."
 
   - id: LLM-NO-TIMEOUT
-    name: "Missing LLM Request Timeout"
+    name: "LLM Request Without a Timeout"
     stack: universal
-    extensions: [".py", ".ts", ".js"]
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:openai|anthropic|client)\.\w+\.create\s*\('
-    condition: "not_contains:timeout"
+    regions: code
+    pattern: '(?i)\b(?:chat\.completions|completions|messages|responses|ChatCompletion|Completion)\.(?:create|stream)\s*\(|\bgenerate_?content(?:_?stream)?\s*\('
+    # The file must import a provider SDK (a Twilio client also has
+    # messages.create) and set no timeout anywhere.
+    condition: "contains:openai|anthropic|google.genai|google.generativeai|@google/genai|@google/generative-ai|mistralai|groq"
+    pattern-not: '(?i)timeout'
     severity: LOW
-    suggestion: "LLM API call without timeout. Unbounded requests can hang indefinitely and exhaust resources."
+    metadata:
+      cwe: "CWE-1088"
+      owasp: "LLM10:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "A provider call has no explicit timeout. SDK defaults are long (OpenAI: 10 minutes with retries), so a slow model can hold workers and connections. Set a timeout on the client or the request that fits your latency budget."
 
   - id: LLM-NO-TOKEN-LIMIT
-    name: "Missing Max Token Limit"
+    name: "LLM Request Without an Output Token Cap"
     stack: universal
-    extensions: [".py", ".ts", ".js"]
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
     target: all
-    pattern: '(?i)(?:openai|anthropic|client)\.\w+\.create\s*\('
-    condition: "not_contains:max_tokens"
+    regions: code
+    pattern: '(?i)\b(?:chat\.completions|completions|messages|responses|ChatCompletion|Completion)\.(?:create|stream)\s*\(|\bgenerate_?content(?:_?stream)?\s*\('
+    condition: "contains:openai|anthropic|google.genai|google.generativeai|@google/genai|@google/generative-ai|mistralai|groq"
+    pattern-not: '(?i)max_?(?:completion_?|output_?|new_?)?tokens|max_tokens_to_sample'
     severity: LOW
-    suggestion: "LLM API call without max_tokens limit. Without a cap, a single request can consume excessive tokens and inflate costs."
+    metadata:
+      cwe: "CWE-770"
+      owasp: "LLM10:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "A provider call sets no output token cap, so one request can produce a long, expensive response. Set max_tokens, max_completion_tokens or max_output_tokens to what the feature needs."

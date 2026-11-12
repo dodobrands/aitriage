@@ -1,0 +1,5 @@
+services:
+  worker:
+    environment:
+      # ruleid: ENTR-19
+      AMQP_URL: amqp://guest:guest@rabbit:5672/

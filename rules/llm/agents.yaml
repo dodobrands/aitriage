@@ -1,0 +1,152 @@
+# ============================================================
+# AITRIAGE RULES: LLM Agents, Tools and Models
+# ============================================================
+# Mapped to the OWASP Top 10 for LLM Applications 2025.
+# These rules cover what an agent is allowed to do (shell and
+# code execution tools), how model output is rendered, how
+# models and datasets are loaded, and retrieval patterns.
+# ============================================================
+
+rules:
+  - id: LLM-TOOL-SHELL-EXEC
+    name: "Agent or MCP Tool Runs a Shell Command or eval"
+    stack: universal
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    # A tool definition (Python @tool/@mcp.tool decorator, server.tool(...),
+    # tool({...})) followed within 25 lines by a shell or eval call. The
+    # finding is reported on the tool definition.
+    pattern: '@(?:\w+\.)*(?:function_|call_)?tool\b[^\n]*\n(?:[ \t]*@[^\n]*\n)*[ \t]*(?:async[ \t]+)?def[ \t]+\w+\s*\([^)]*\)[^:\n]*:(?:[^\n]*\n){0,25}?[^\n]*?(?:\bsubprocess\.(?:run|call|check_output|check_call|Popen)\s*\([^\n]*\bshell\s*=\s*True|(?:^|[^\w.])(?:os\.system|os\.popen|eval|exec)\s*\()|\b(?:\w+\.)?(?:tool|registerTool)\s*\(\s*(?:["\x27][^"\x27\n]+["\x27]|async\b|\(|\{)(?:[^\n]*\n){0,25}?[^\n]*?(?:(?:^|[^\w.])(?:execSync|exec|eval)\s*\(|\bchild_process\.exec(?:Sync)?\s*\(|\bspawn(?:Sync)?\s*\([^\n]*\bshell\s*:\s*true)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "LLM06:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A tool exposed to a model runs a shell command or eval. Any prompt injection that reaches the model can then run commands on the host. Replace it with narrow tools for specific operations, pass arguments as a list without a shell, and validate them against an allowlist."
+
+  - id: LLM-DANGEROUS-AGENT-TOOL
+    name: "Agent Given a Code-Execution Tool or Dangerous Flag"
+    stack: universal
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\b(?:allow_dangerous_code|allow_dangerous_requests|allow_dangerous_deserialization|allowDangerousRequests|dangerously_allow_dangerous_code)\s*[=:]\s*(?:True|true)\b|\b(?:PythonREPLTool|PythonAstREPLTool|PythonREPL|ShellTool|BashProcess|PALChain|LLMMathChain|create_python_agent|create_pandas_dataframe_agent|create_csv_agent|create_spark_dataframe_agent)\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-94"
+      owasp: "LLM06:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The agent can execute Python or shell code (a REPL, shell or dataframe agent, or an allow_dangerous_* flag). A prompt injection then runs code with the application's rights. Run such tools only in an isolated sandbox without credentials, or replace them with narrow tools."
+
+  - id: LLM-OUTPUT-HTML
+    name: "LLM Output Rendered as HTML"
+    stack: universal
+    extensions: [".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"]
+    target: all
+    regions: code
+    pattern: '(?i)(?:\.innerHTML\s*\+?=|\.outerHTML\s*=|\bdangerouslySetInnerHTML\s*=\s*\{\s*\{\s*__html\s*:|\.insertAdjacentHTML\s*\([^,\n]+,|\bdocument\.write(?:ln)?\s*\(|\bv-html\s*=\s*["\x27]|\{@html\s)\s*[^;\n]*?\b(?:completions?\b|llm_?(?:output|response|result|reply|answer|text)\b|ai_?(?:output|response|message|reply|answer|text)\b|model_?(?:output|response)\b|choices\s*\[\s*0\s*\]|message\.content\b|output_text\b|assistant_?(?:message|reply|response|text)\b|bot_?(?:reply|response|message)\b)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-79"
+      owasp: "LLM05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "Model output is inserted into the page as HTML. A prompt injection can make the model emit script or a data-exfiltration image link. Render it as text, or convert Markdown to HTML and pass the result through a sanitizer such as DOMPurify with remote images disabled."
+
+  - id: LLM-TRUST-REMOTE-CODE
+    name: "Model Loaded With trust_remote_code"
+    stack: universal
+    extensions: [".py", ".yaml", ".yml", ".sh", "Dockerfile", "Dockerfile.*", "*.dockerfile"]
+    target: all
+    regions: code_and_strings
+    pattern: '(?i)\btrust_remote_code["\x27]?\s*[=:]\s*["\x27]?true\b|--trust-remote-code\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-494"
+      owasp: "LLM03:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "trust_remote_code runs Python code shipped in the model repository when the model loads. Use a model supported natively by the library, or review the repository code and pin the revision to a commit hash you reviewed."
+
+  - id: LLM-UNSAFE-MODEL-LOAD
+    name: "Model Deserialized With Pickle Enabled"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    # pickle, dill and joblib loads are reported by PY-PICKLE.
+    pattern: '\btorch\.load\s*\((?:[^()]|\([^()]*\))*?\bweights_only\s*=\s*False\b|\bcloudpickle\.loads?\s*\(|\bload_model\s*\([^)]*\bsafe_mode\s*=\s*False\b|\bnp\.load\s*\([^)]*\ballow_pickle\s*=\s*True\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "LLM03:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A model or array file is loaded with pickle deserialization enabled, so a crafted file runs code when it is loaded. Use safetensors, torch.load(weights_only=True), Keras safe_mode, or np.load without allow_pickle, and load only files from a trusted, pinned source."
+
+  - id: LLM-RAG-UNDELIMITED
+    name: "Retrieved Content Interpolated Into a Prompt Without Delimiters"
+    stack: universal
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    # Content wrapped in a tag (<context>{docs}</context>) or quotes is
+    # considered delimited and not reported.
+    pattern: '(?i)\b(?:(?:(?:system|sys|base|main|full|final|user|rag|qa|chat|combined|formatted)_?)?prompt(?:_?(?:template|text|str|string))?|system_?(?:message|instructions?)|instructions)\s*(?:=|\+=)\s*f?["\x27\x60](?:[^\n]*?[^>"\x27\x60\s])?\s*(?:\{|\$\{)\s*(?:\w+\.)*(?:docs?|documents?|context|retrieved\w*|search_results?|chunks?|passages?|page_content|web_?content|html|email_?body|tool_?(?:output|result))\b'
+    severity: LOW
+    metadata:
+      cwe: "CWE-1427"
+      owasp: "LLM01:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "Retrieved documents, web pages or tool output are pasted into the prompt without delimiters, so instructions hidden in that content read like your own (indirect prompt injection). Wrap retrieved content in clear tags, tell the model to treat it as data, and keep instructions outside it."
+
+  - id: LLM-VECTOR-NO-TENANT-FILTER
+    name: "Vector Search Without a Metadata Filter"
+    stack: universal
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\.(?:similarity_search(?:_with_score|_with_relevance_scores|_by_vector)?|max_marginal_relevance_search|similaritySearch(?:WithScore|VectorWithScore)?|maxMarginalRelevanceSearch)\s*\('
+    condition: "not_contains:filter=|filter =|filter:|\"filter\"|'filter'|pre_filter|where=|namespace=|namespace:|expr="
+    severity: LOW
+    metadata:
+      cwe: "CWE-863"
+      owasp: "LLM08:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "A vector store is searched without a metadata filter. In a multi-tenant index this returns other users' documents to the model. Filter every query by tenant or user (filter, namespace) taken from the authenticated session; ignore this for a single-tenant index."
+
+  - id: LLM-MODEL-UNPINNED
+    name: "Hub Model or Dataset Loaded Without a Pinned Revision"
+    stack: universal
+    extensions: [".py"]
+    target: all
+    regions: code
+    pattern: '\b(?:from_pretrained|hf_hub_download|snapshot_download|load_dataset)\s*\(\s*(?:(?:repo_id|path|pretrained_model_name_or_path)\s*=\s*)?["\x27][A-Za-z0-9][\w.-]*/[\w.-]+["\x27]'
+    condition: "not_contains:revision"
+    severity: LOW
+    metadata:
+      cwe: "CWE-494"
+      owasp: "LLM03:2025"
+      confidence: low
+      subcategory: policy
+    suggestion: "A model or dataset is downloaded from a hub by name only, so a new push to that repository changes what you load. Pin revision= to a commit hash."
+
+  - id: LLM-AGENT-UNBOUNDED
+    name: "Agent Loop Without an Iteration Cap"
+    stack: universal
+    extensions: [".py", ".ts", ".js", ".mjs", ".cjs"]
+    target: all
+    regions: code
+    pattern: '\bmax_iterations\s*=\s*None\b|\bmax_iter\s*=\s*None\b|\bmaxIterations\s*:\s*(?:Infinity|null|undefined)\b'
+    severity: LOW
+    metadata:
+      cwe: "CWE-770"
+      owasp: "LLM10:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "The agent's iteration cap is removed, so a confused or manipulated agent can loop and spend tokens without limit. Set max_iterations (and a time limit) to what the task needs."
