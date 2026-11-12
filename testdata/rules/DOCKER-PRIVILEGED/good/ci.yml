@@ -1,0 +1,10 @@
+name: compose-lint
+on: [pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "checking that no service sets privileged: true"
+          ! grep -R "privileged: true" deploy/

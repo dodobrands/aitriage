@@ -1,0 +1,6 @@
+services:
+  watchtower:
+    image: example/watchtower:1.7
+    volumes:
+      # ruleid: DOCKER-SOCKET-MOUNT
+      - /var/run/docker.sock:/var/run/docker.sock:ro

@@ -1,0 +1,5 @@
+services:
+  api:
+    image: example/api:2.0
+    # Do not set privileged: true here; add capabilities instead.
+    privileged: false

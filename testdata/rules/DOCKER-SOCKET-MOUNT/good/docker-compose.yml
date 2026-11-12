@@ -1,0 +1,8 @@
+services:
+  app:
+    image: example/app:1.0
+    # Do not mount /var/run/docker.sock here; talk to the socket proxy instead.
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+    volumes:
+      - ./data:/data

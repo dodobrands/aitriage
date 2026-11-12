@@ -1,0 +1,6 @@
+services:
+  builder:
+    image: example/buildkit:0.15
+    security_opt:
+      # ruleid: DOCKER-SECURITY-OPT-UNCONFINED
+      - seccomp:unconfined

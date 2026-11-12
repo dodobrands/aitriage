@@ -1,0 +1,8 @@
+services:
+  shm:
+    image: example/shm-worker:1.0
+    # ipc: host was replaced by a shareable namespace.
+    ipc: shareable
+  reader:
+    image: example/shm-reader:1.0
+    ipc: "service:shm"

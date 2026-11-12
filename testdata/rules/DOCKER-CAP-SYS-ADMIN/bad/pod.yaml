@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mounter
+spec:
+  containers:
+    - name: mounter
+      image: example/mounter:1.0
+      securityContext:
+        capabilities:
+          # ruleid: DOCKER-CAP-SYS-ADMIN
+          add: ["SYS_ADMIN"]

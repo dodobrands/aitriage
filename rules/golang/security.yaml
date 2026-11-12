@@ -1,16 +1,24 @@
 # ============================================================
 # AITRIAGE RULES: Go — Security
 # ============================================================
-# Covers: SQL injection (concatenation), path traversal,
-# insecure HTTP server configuration, and missing context
-# in network calls.
+# Covers: SQL and command injection, path traversal, SSRF,
+# TLS and JWT verification, HTTP server and client timeouts,
+# hardcoded and embedded secrets, unescaped templates and
+# exposed debug endpoints.
+#
+# None of these rules sees where a value comes from, so a sink
+# alone is rated HIGH at most. Taint-based variants belong in
+# Semgrep rules.
 # ============================================================
 
 rules:
+  # A string literal concatenated or formatted directly inside a database
+  # call. A query assembled earlier in a variable is GO-SQL-SPRINTF (MEDIUM).
   - id: GO-SQLI
-    name: "SQL Injection Risk (Concatenation)"
+    name: "SQL query built by concatenation or Sprintf in a database call"
     stack: go
     extensions: [".go"]
+    exclude_tests: true
     target: ast
     pattern: |
       (call_expression
@@ -18,17 +26,36 @@ rules:
           field: (field_identifier) @func)
         arguments: (argument_list
           (binary_expression
-             operator: "+"
-             left: (string)
-             right: (identifier)))
-        (#match? @func "^(Query|Exec|QueryRow)$"))
-    severity: CRITICAL
-    suggestion: "SQL query built with string concatenation. Use parameterized queries."
+            left: [(interpreted_string_literal) (raw_string_literal) (binary_expression)]
+            operator: "+") @sql)
+        (#match? @func "^(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext|Prepare|PrepareContext|Raw|Select|Get|MustExec|Queryx|QueryRowx|NamedExec)$")
+        (#match? @sql "(?s)^[\"`]\\s*(?i:SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE)\\b.*(?:=\\s*|'|\\b(?i:IN|VALUES)\\s*\\(\\s*|\\b(?i:LIKE)\\s*)[\"`]\\s*\\+"))
+      (call_expression
+        function: (selector_expression
+          field: (field_identifier) @func)
+        arguments: (argument_list
+          (call_expression
+            function: (selector_expression
+              operand: (identifier) @pkg
+              field: (field_identifier) @fmt)
+            arguments: (argument_list . [(interpreted_string_literal) (raw_string_literal)] @sql)))
+        (#match? @func "^(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext|Prepare|PrepareContext|Raw|Select|Get|MustExec|Queryx|QueryRowx|NamedExec)$")
+        (#eq? @pkg "fmt")
+        (#eq? @fmt "Sprintf")
+        (#match? @sql "^[\"`]\\s*(?i:SELECT|INSERT|UPDATE|DELETE|WITH|REPLACE|MERGE)\\b[^\"`]*?(?:'%[sv]'|=\\s*%[sv]\\b|\\b(?i:IN)\\s*\\(\\s*%[sv]|\\b(?i:LIKE)\\s*'?%[sv]|\\b(?i:VALUES)\\s*\\([^)]*%[sv])"))
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "The SQL text is built from a string and a value inside the database call. Pass values as query parameters ($1 or ?) instead of concatenating or formatting them into the query."
 
   - id: GO-PATH-TRAVERSAL
-    name: "Path Traversal Risk"
+    name: "File path built by concatenation in an os call"
     stack: go
     extensions: [".go"]
+    exclude_tests: true
     target: ast
     pattern: |
       (call_expression
@@ -36,19 +63,27 @@ rules:
           operand: (identifier) @pkg
           field: (field_identifier) @func)
         arguments: (argument_list
+          .
           (binary_expression
-             operator: "+"
-             left: (string)
-             right: (identifier)))
+            left: [(interpreted_string_literal) (raw_string_literal)]
+            operator: "+"
+            right: (_)) @path)
         (#match? @pkg "^(os|ioutil)$")
-        (#match? @func "^(Open|ReadFile)$"))
-    severity: CRITICAL
-    suggestion: "Path concatenation in file operations. Sanitize user input."
+        (#match? @func "^(Open|OpenFile|ReadFile|Create|WriteFile|Remove|RemoveAll|ReadDir)$")
+        (#not-match? @path "filepath\\.Base\\("))
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "A file path is built by appending a value to a directory string. If the value can come from a user, reduce it to a file name with filepath.Base, open it through os.Root (Go 1.24+), or check that the cleaned path stays inside the base directory."
 
   - id: GO-HTTP-DOS
-    name: "Insecure HTTP Server (DoS Risk)"
+    name: "HTTP server started without timeouts"
     stack: go
     extensions: [".go"]
+    exclude_tests: true
     target: ast
     pattern: |
       (call_expression
@@ -56,118 +91,277 @@ rules:
           operand: (identifier) @mod
           field: (field_identifier) @func)
         (#eq? @mod "http")
-        (#eq? @func "ListenAndServe"))
-    severity: HIGH
-    suggestion: "`http.ListenAndServe` lacks timeouts. Use `http.Server` struct."
+        (#match? @func "^(ListenAndServe|ListenAndServeTLS|Serve|ServeTLS)$"))
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-400"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "The http package helpers start a server with no read or write timeouts, so slow clients can hold connections open. Create an http.Server with ReadHeaderTimeout (and ReadTimeout, WriteTimeout, IdleTimeout) and call its ListenAndServe method."
 
   - id: GO-CONTEXT-LESS
-    name: "Context-less Network Call"
+    name: "HTTP request without context or timeout"
     stack: go
     extensions: [".go"]
+    exclude_tests: true
     target: ast
     pattern: |
       (call_expression
         function: (selector_expression
+          operand: (identifier) @pkg
           field: (field_identifier) @func)
-        arguments: (argument_list (_) @arg)
-        (#match? @func "^(Get|Post|Do)$")
-        (#not-type? @arg "context_identifier"))
-    severity: MEDIUM
-    suggestion: "Network call likely missing Context/Timeout. Use `WithContext`."
+        (#eq? @pkg "http")
+        (#match? @func "^(Get|Head|Post|PostForm|NewRequest)$"))
+    severity: LOW
+    metadata:
+      cwe: "CWE-1088"
+      owasp: "A02:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "http.Get, http.Post and http.NewRequest take no context, and the default client has no timeout, so a slow server can block the caller indefinitely. Use http.NewRequestWithContext and a client with Timeout set."
 
   - id: GO-CMD-INJECTION
-    name: "Command Injection (os/exec)"
+    name: "Shell command built from a variable (sh -c)"
     stack: go
     extensions: [".go"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: 'exec\.Command\s*\(\s*(?:fmt\.Sprintf|.*\+)'
-    severity: CRITICAL
-    suggestion: "Shell command built with string concatenation/formatting. Pass arguments as separate strings to exec.Command()."
+    pattern: 'exec\.Command(?:Context)?\s*\(\s*(?:[\w.]+\s*,\s*)?"(?:/(?:usr/)?bin/)?(?:ba|z|da|k)?sh"\s*,\s*"-c"\s*,\s*(?:[^"\s)]|"[^"\n]*"\s*\+)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A shell (sh -c) runs a command string built from a variable, so shell metacharacters in the value are executed. Run the program directly with exec.Command(name, arg1, arg2) and pass each value as a separate argument."
 
   - id: GO-MATH-RAND
-    name: "Insecure Randomness (math/rand)"
+    name: "math/rand imported (not cryptographically secure)"
     stack: go
     extensions: [".go"]
     target: all
-    pattern: '"math/rand"'
+    regions: code_and_strings
+    pattern: '"math/rand(?:/v2)?"'
     condition: "not_contains:crypto/rand"
-    severity: HIGH
-    suggestion: "math/rand is not cryptographically secure. Use crypto/rand for tokens, keys, and security-sensitive values."
+    severity: LOW
+    metadata:
+      cwe: "CWE-338"
+      owasp: "A04:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "math/rand is predictable. That is fine for jitter, sampling or test data, but tokens, keys, nonces and passwords must come from crypto/rand."
 
   - id: GO-TLS-SKIP
-    name: "Disabled TLS Verification"
+    name: "TLS certificate verification disabled"
     stack: go
     extensions: [".go"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: 'InsecureSkipVerify\s*:\s*true'
+    pattern: '\bInsecureSkipVerify\s*(?::|=)\s*true\b'
+    # In the websocket libraries InsecureSkipVerify disables the Origin check,
+    # not TLS verification.
+    condition: "not_contains:nhooyr.io/websocket|github.com/coder/websocket"
     severity: HIGH
-    suggestion: "TLS certificate verification disabled. This makes connections vulnerable to MITM attacks."
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A04:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "InsecureSkipVerify accepts any certificate, so anyone on the network path can intercept the connection. Remove it; to trust a private CA, add its certificate to tls.Config.RootCAs."
 
   - id: GO-UNSAFE-PTR
-    name: "Unsafe Pointer Usage"
+    name: "unsafe.Pointer usage"
     stack: go
     extensions: [".go"]
     target: all
-    pattern: 'unsafe\.Pointer'
-    severity: MEDIUM
-    suggestion: "unsafe.Pointer bypasses Go's type safety. Minimize usage and audit carefully for memory corruption risks."
-
-  - id: GO-ERR-BLANK
-    name: "Error Assigned to Blank Identifier"
-    stack: go
-    extensions: [".go"]
-    target: all
-    exclude_tests: true
-    pattern: '(?m)^\s*_\s*=\s*\w+\.\w+\('
-    # LOW, as gosec rates unchecked errors (G104) and for parity with
-    # FAST-LAZY-EXC: a discarded error is a reliability defect (CWE-703).
+    regions: code
+    pattern: '\bunsafe\.Pointer\b'
     severity: LOW
-    suggestion: "Error return value discarded. Unhandled errors can mask security-critical failures (auth, crypto, I/O)."
+    metadata:
+      cwe: "CWE-242"
+      owasp: "A06:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "unsafe.Pointer bypasses Go's type and memory safety. Keep its use small and reviewed, and prefer unsafe.String, unsafe.Slice or safe conversions where they fit."
+
+  # Narrowed to calls whose ignored result defeats a security check. Plain
+  # discards such as `_ = enc.Encode(v)` are intentional and not reported.
+  - id: GO-ERR-BLANK
+    name: "Result of a security-relevant call discarded"
+    stack: go
+    extensions: [".go"]
+    target: all
+    regions: code
+    exclude_tests: true
+    pattern: '(?m)^[ \t]*(?:_|\w+[ \t]*,[ \t]*_)[ \t]*:?=[ \t]*(?:\w*rand\.Read\b|io\.ReadFull[ \t]*\([ \t]*\w*rand\.Reader\b|(?:\w+\.)+(?:Verify\w*|CompareHashAndPassword|Chmod|Chown|Lchown|Setuid|Setgid|Setreuid|Setregid|Setresuid|Setresgid|Setgroups)[ \t]*\()'
+    severity: LOW
+    metadata:
+      cwe: "CWE-252"
+      owasp: "A10:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "The result of a call that reads random bytes, verifies a signature or password, changes file permissions or drops privileges is discarded. If the call fails, the program continues as if it succeeded. Check the returned error or boolean and stop on failure."
 
   - id: GO-WEAK-TLS
-    name: "Weak TLS Version"
+    name: "TLS version limited to TLS 1.1 or lower"
     stack: go
     extensions: [".go"]
+    exclude_tests: true
     target: all
-    pattern: 'tls\.VersionTLS1[01]\b'
-    severity: HIGH
-    suggestion: "TLS 1.0/1.1 are deprecated and have known vulnerabilities. Use tls.VersionTLS12 or tls.VersionTLS13."
+    regions: code
+    pattern: '\b(?:Min|Max)Version\s*(?::|=)\s*tls\.Version(?:TLS1[01]|SSL30)\b'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A04:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "TLS 1.0, TLS 1.1 and SSL 3.0 are deprecated and have known weaknesses. Set MinVersion to tls.VersionTLS12 or tls.VersionTLS13 and do not cap MaxVersion below TLS 1.2."
 
+  # The go:embed directive is a comment, so the rule reads comments only.
   - id: GO-EMBED-SECRET
-    name: "Embedded Secret File"
+    name: "Secret file embedded with go:embed"
     stack: go
     extensions: [".go"]
     target: all
-    pattern: '//go:embed\s+.*(?:\.env|secret|credential|private)'
-    severity: CRITICAL
-    suggestion: "Sensitive file embedded in binary via go:embed. Secrets will be permanently baked into the compiled binary."
+    regions: comments
+    pattern: '(?m)^//go:embed[ \t]+(?:\S+[ \t]+)*?(?:\S*/)?(?:\.env(?:\.(?:local|prod|production|staging|dev|development))?|\S*\.(?:key|p12|pfx|jks|keystore)|id_(?:rsa|dsa|ecdsa|ed25519)|\S*(?:secret|credential|private)\S*\.(?:json|ya?ml|env|pem|key|txt|toml))(?:[ \t\r]|$)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A file that usually holds secrets (.env, private key, keystore, credentials file) is embedded into the binary, where anyone with the binary can extract it. Load secrets at runtime from the environment or a secrets manager instead."
 
   - id: GO-SSRF
-    name: "SSRF Risk"
+    name: "HTTP request to a URL taken from request input"
     stack: go
     extensions: [".go"]
     target: all
-    pattern: '(?i)http\.(Get|Post|NewRequest)\s*\(\s*(?:r\.|req\.|params|query)'
+    regions: code
+    pattern: 'http\.(?:Get|Head|Post|PostForm|NewRequest(?:WithContext)?)\s*\((?:[^,()\n]*(?:\([^()\n]*\))?[^,()\n]*,\s*){0,2}(?:"[^"\n]*"\s*\+\s*)?(?:r\.(?:URL\.Query\(\)\.Get|FormValue|PostFormValue|PathValue)|c\.(?:Query|DefaultQuery|Param|PostForm|FormValue|QueryParam)|ctx\.(?:Query|Param|FormValue|QueryParam))\('
     severity: HIGH
-    suggestion: "User-controlled URL passed to HTTP request. Validate against an allowlist to prevent SSRF."
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "The server sends an HTTP request to a URL taken from the incoming request, so a caller can make it reach internal services or cloud metadata endpoints. Parse the URL and allow only known hosts and schemes before making the request."
 
   - id: GO-HARDCODED-CREDS
-    name: "Hardcoded Credentials"
+    name: "Hardcoded password or secret"
     stack: go
     extensions: [".go"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: '(?i)(?:password|passwd|secret)\s*[:=]\s*"[^"]{8,}"'
+    pattern: '\b\w*(?i:password|passwd|secret)\s*(?::=|=|:)\s*"[^"\s]{2,}[0-9!@#$%^&*+=~?][^"\s]{2,}"'
     severity: HIGH
-    suggestion: "Hardcoded credentials in source code. Load from environment variables or a secrets manager."
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A password or secret is written in the source code, so everyone with access to the repository or binary has it. Load it from the environment or a secrets manager and rotate the exposed value."
 
+  # A query assembled with Sprintf before it reaches the database call. When
+  # Sprintf sits directly inside the call, GO-SQLI (HIGH) reports it instead.
   - id: GO-SQL-SPRINTF
-    name: "SQL Query via fmt.Sprintf"
+    name: "SQL query assembled with fmt.Sprintf"
+    stack: go
+    extensions: [".go"]
+    exclude_tests: true
+    target: all
+    regions: code
+    pattern: '(?:[=:]|\breturn)[ \t]*fmt\.Sprintf\s*\(\s*["`]\s*(?i:SELECT|INSERT|UPDATE|DELETE|DROP|WITH|REPLACE|MERGE)\b[^"`]*?(?:''%[sv]''|=\s*%[sv]\b|\b(?i:IN)\s*\(\s*%[sv]|\b(?i:LIKE)\s*''?%[sv]|\b(?i:VALUES)\s*\([^)]*%[sv])'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "A value is formatted into SQL text with %s or %v. If it can come from a user, this is SQL injection. Use placeholders ($1 or ?) and pass the value as a query argument; quote identifiers with the driver's helper."
+
+  - id: GO-PPROF-EXPOSED
+    name: "net/http/pprof registered on the default mux"
     stack: go
     extensions: [".go"]
     target: all
-    pattern: '(?i)fmt\.Sprintf\s*\(\s*"(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b'
-    severity: CRITICAL
-    suggestion: "SQL query built with fmt.Sprintf. Use database/sql parameterized queries with ? or $1 placeholders."
+    regions: code
+    pattern: '(?m)^[ \t]*(?:import[ \t]+)?_[ \t]+"net/http/pprof"'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Importing net/http/pprof registers /debug/pprof/ on http.DefaultServeMux, which exposes heap dumps, goroutine stacks and CPU profiles on any server that uses that mux. Serve the pprof handlers on a separate listener bound to localhost or behind authentication."
+
+  - id: GO-JWT-UNVERIFIED
+    name: "JWT parsed without signature verification"
+    stack: go
+    extensions: [".go"]
+    target: all
+    regions: code
+    pattern: '\.ParseUnverified\s*\(|\bjwt\.UnsafeAllowNoneSignatureType\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "ParseUnverified and the none algorithm accept tokens whose signature was never checked, so anyone can forge claims. Use jwt.Parse with a key function and jwt.WithValidMethods; use unverified parsing only to read a key id before verifying."
+
+  - id: GO-TEMPLATE-UNESCAPED
+    name: "Non-constant value marked safe for html/template"
+    stack: go
+    extensions: [".go"]
+    target: all
+    regions: code
+    pattern: '\btemplate\.(?:HTML|HTMLAttr|JS|JSStr|URL|CSS|Srcset)\s*\(\s*(?:[^"`)\s]|"[^"\n]*"\s*\+)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "Converting a variable to template.HTML, JS, URL or CSS turns off html/template escaping for it. If the value can contain user input, this is cross-site scripting. Pass plain strings to the template, or sanitize the HTML with a library such as bluemonday first."
+
+  - id: GO-HTTP-SERVER-NO-TIMEOUT
+    name: "http.Server without ReadHeaderTimeout"
+    stack: go
+    extensions: [".go"]
+    exclude_tests: true
+    target: all
+    regions: code
+    pattern: '\bhttp\.Server\s*\{'
+    pattern-not: '\bRead(?:Header)?Timeout\s*(?::|=)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-400"
+      owasp: "A02:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "This http.Server sets neither ReadHeaderTimeout nor ReadTimeout, so a client can keep a connection open by sending headers slowly (Slowloris). Set ReadHeaderTimeout, and usually ReadTimeout, WriteTimeout and IdleTimeout as well."
+
+  - id: GO-ZIP-SLIP
+    name: "Archive entry name joined into a file path (zip slip)"
+    stack: go
+    extensions: [".go"]
+    exclude_tests: true
+    target: all
+    regions: code
+    pattern: '\b(?:file)?path\.Join\s*\(\s*(?:[^"()\n]|"(?:[^"/\n]|/[^"\n])[^"\n]*")[^()\n]*,\s*\w+(?:\.\w+)*\.Name\s*\)'
+    condition: "contains:archive/zip|archive/tar"
+    pattern-not: 'filepath\.IsLocal\s*\(|filepath\.Rel\s*\(|"\.\."|os\.OpenRoot\s*\(|(?i:securejoin|safejoin|dotdot|traversal)\w*\s*[.(]|HasPrefix\s*\([^)\n]*(?:filepath\.Clean|PathSeparator)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "An archive entry name is joined to the destination directory without a check, so an entry such as ../../etc/cron.d/x is written outside it. Reject names that are not filepath.IsLocal, or check that the cleaned target path stays under the destination directory."

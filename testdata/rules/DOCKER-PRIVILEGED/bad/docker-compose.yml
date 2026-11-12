@@ -1,0 +1,5 @@
+services:
+  agent:
+    image: example/agent:1.4
+    # ruleid: DOCKER-PRIVILEGED
+    privileged: true

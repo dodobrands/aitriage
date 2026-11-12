@@ -1,0 +1,10 @@
+services:
+  vpn:
+    image: example/vpn:1.0
+    networks: [backend]
+  app:
+    image: example/app:1.0
+    # network_mode: host was removed
+    network_mode: "service:vpn"
+networks:
+  backend: {}

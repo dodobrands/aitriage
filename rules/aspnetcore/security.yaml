@@ -1,102 +1,236 @@
 # ============================================================
 # AITRIAGE RULES: ASP.NET Core — Security
 # ============================================================
-# Covers: Insecure CORS and SQL injection via
-# Entity Framework raw queries.
+# Covers: SQL injection in EF Core, ADO.NET and Dapper calls,
+# XXE, insecure deserialization, path traversal, CORS, TLS
+# and JWT validation, weak cryptography, hardcoded secrets,
+# sensitive logging, and missing authorization or
+# anti-forgery protection.
+#
+# Defaults that are safe in modern .NET (XmlReader.Create,
+# XmlDocument, FromSqlInterpolated) are not reported; the
+# rules look for code that turns a protection off.
 # ============================================================
 
 rules:
+  # A wildcard origin alone exposes only unauthenticated data: ASP.NET Core
+  # refuses to combine AllowAnyOrigin with AllowCredentials. The credentialed
+  # case is ASP-CORS-CREDENTIALS-ANY-ORIGIN (HIGH).
   - id: ASP-INSECURE-CORS
-    name: "Insecure CORS Policy"
+    name: "CORS policy allows any origin"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: 'builder\.AllowAnyOrigin\(\)\.AllowAnyMethod\(\)\.AllowAnyHeader\(\)'
-    severity: CRITICAL
-    suggestion: "Overly permissive CORS policy allows cross-origin exploits."
+    regions: code
+    pattern: '\.AllowAnyOrigin\s*\(\s*\)|\.WithOrigins\s*\(\s*"\*"\s*\)'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: audit
+    suggestion: "The CORS policy lets every website read responses from this API. That is acceptable only for public, unauthenticated data. Otherwise list the allowed origins with WithOrigins(\"https://app.example.com\")."
 
+  # Interpolation, concatenation or string.Format directly inside a raw SQL
+  # call. FromSqlInterpolated, FromSql($"...") and {0} parameters are safe.
   - id: ASP-SQLI
-    name: "SQL Injection Risk"
+    name: "SQL built from a string inside a raw SQL call"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: '(?i)(FromSqlRaw|ExecuteSqlRaw)\s*\($"[^"]*\{.*\}'
-    severity: CRITICAL
-    suggestion: "Raw SQL interpolation detected in Entity Framework query."
+    regions: code
+    pattern: '\b(?:FromSqlRaw|ExecuteSqlRaw(?:Async)?|SqlQueryRaw)\s*(?:<[^>\n]*>)?\s*\(\s*(?:(?:\$@?|@\$)"[^"\n]*\{[A-Za-z_(]|"[^"\n]*"\s*\+|string\.Format\s*\()|\bnew\s+(?:Sql|Npgsql|MySql|Sqlite|Oracle)Command\s*\(\s*(?:(?:\$@?|@\$)"[^"\n]*\{[A-Za-z_(]|"[^"\n]*"\s*\+|string\.Format\s*\()|\.(?:Query|QueryAsync|QueryFirst\w*|QuerySingle\w*|QueryMultiple\w*|Execute|ExecuteAsync|ExecuteScalar\w*|ExecuteReader\w*)\s*(?:<[^>\n]*>)?\s*\(\s*(?:(?:\$@?|@\$)"\s*(?i:SELECT|INSERT|UPDATE|DELETE|WITH|MERGE|EXEC)\b[^"\n]*\{[A-Za-z_(]|"\s*(?i:SELECT|INSERT|UPDATE|DELETE|WITH|MERGE|EXEC)\b[^"\n]*"\s*\+)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A value is interpolated or concatenated into SQL text passed to a raw SQL API. Use FromSql/FromSqlInterpolated (which turn {value} into parameters), Dapper parameters (@name with an object), or SqlParameter for ADO.NET commands."
 
   - id: ASP-XXE
-    name: "XML External Entity Processing"
+    name: "XML parser with DTD processing or an external resolver enabled"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: '(?i)(XmlReader\.Create|XmlDocument|XmlTextReader)'
-    condition: "not_contains:DtdProcessing.Prohibit"
-    severity: CRITICAL
-    suggestion: "XML parser without DtdProcessing.Prohibit. Enables XXE attacks (file read, SSRF). Set DtdProcessing = DtdProcessing.Prohibit."
+    regions: code
+    pattern: '\bDtdProcessing\s*=\s*DtdProcessing\.Parse\b|\bXmlResolver\s*=\s*new\s+XmlUrlResolver\b|\bProhibitDtd\s*=\s*false\b|\bnew\s+XmlTextReader\s*\([^;{}]*\)\s*;'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "DTD processing or a URL resolver is enabled, so XML input can read local files or make network requests (XXE). Keep DtdProcessing.Prohibit and XmlResolver = null, which are the defaults of XmlReader.Create, and use XmlReader.Create instead of new XmlTextReader."
 
   - id: ASP-DESER
-    name: "Insecure Deserialization"
+    name: "Insecure deserializer or polymorphic type handling"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: '(?i)(BinaryFormatter|SoapFormatter|LosFormatter|ObjectStateFormatter|JavaScriptSerializer|TypeNameHandling\.All|TypeNameHandling\.Auto)'
-    severity: CRITICAL
-    suggestion: "Insecure deserialization detected. BinaryFormatter/TypeNameHandling.All enable RCE via gadget chains. Use System.Text.Json with strict typing."
+    regions: code
+    pattern: '\bnew\s+(?:BinaryFormatter|SoapFormatter|NetDataContractSerializer|LosFormatter|ObjectStateFormatter)\s*\(|\bTypeNameHandling\s*=\s*TypeNameHandling\.(?:All|Auto|Objects|Arrays)\b|\bnew\s+JavaScriptSerializer\s*\(\s*new\s+SimpleTypeResolver\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "This deserializer reads type names from the input, so crafted data can create arbitrary types and run code. Use System.Text.Json (or Json.NET with TypeNameHandling.None) and deserialize into a fixed type."
 
   - id: ASP-PATH-TRAVERSAL
-    name: "Path Traversal Risk"
+    name: "File path built from request input"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: '(?:Path\.Combine|File\.Open|File\.Read|StreamReader)\s*\(.*(?:Request|HttpContext|query|route)'
-    severity: CRITICAL
-    suggestion: "User input in file path operation. Validate and canonicalize paths. Reject inputs containing '..' or absolute paths."
+    regions: code
+    pattern: '\b(?:Path\.Combine|File\.(?:Open\w*|Read\w*|Write\w*|Append\w*|Delete|Copy|Move)|PhysicalFile|new\s+FileStream)\s*\([^;\n]*\b(?:Request\.(?:Query|Form|RouteValues|Headers)\s*\[|HttpContext\.Request\.(?:Query|Form|RouteValues|Headers)\s*\[|Request\.Form\.Files)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A file path is built from request input, so values such as ../ can reach files outside the intended folder. Take only the file name with Path.GetFileName, then check that Path.GetFullPath of the result starts with the base directory."
 
   - id: ASP-CONN-STRING
-    name: "Hardcoded Connection String"
+    name: "Connection string with an embedded password"
     stack: aspnetcore
-    extensions: [".cs"]
+    extensions: [".cs", ".json", ".config"]
     target: all
+    regions: code_and_strings
     exclude_tests: true
-    pattern: '(?i)(?:Server|Data Source)\s*=.*(?:Password|Pwd)\s*='
+    pattern: '(?i)"[^"\n]*\b(?:Server|Data Source|Host|Address)\s*=[^"\n]*\b(?:Password|Pwd)\s*=\s*[^;"{<\s$]|"[^"\n]*\b(?:Password|Pwd)\s*=\s*[^;"{<\s$][^"\n]*\b(?:Server|Data Source|Host|Address)\s*='
     severity: HIGH
-    suggestion: "Connection string with embedded password. Move to appsettings.json with user-secrets or Azure Key Vault."
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A database connection string contains a literal password. Keep it out of source and committed config: use user-secrets in development and environment variables, Azure Key Vault or managed identity in production, then rotate the exposed password."
 
   - id: ASP-LOGGING-SENSITIVE
-    name: "Sensitive Data in Logs"
+    name: "Password, token or card data passed to a logger"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
-    pattern: '(?i)_logger\.(?:Log|Info|Warn|Error|Debug)\w*\s*\(.*(?:password|token|secret|creditCard|ssn)'
-    severity: HIGH
-    suggestion: "Sensitive data (password, token, credit card) found in log statement. Mask or redact before logging."
+    regions: code
+    pattern: '\b(?:_?[lL]ogger|_log|[lL]og)\.(?:Log\w*|Information|Warning|Error|Debug|Verbose|Fatal|Trace|Critical)\s*\((?:[^;]*?\{[^}\n]*(?i:password|passwd|pwd|secret|token|apikey|api_key|creditcard|cardnumber|ssn)[^}\n]*\}|[^;]*?,\s*[\w.]*(?i:password|passwd|secret|token|apikey|creditcard|cardnumber|ssn)\w*\s*[,)])'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-532"
+      owasp: "A09:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A password, token, key or card number is written to the log, where anyone with log access can read it. Log an identifier or a masked value instead."
 
+  # Project-level: fires when no .cs file in the project declares any
+  # authorization. Enforcement may also live at a gateway.
   - id: ASP-AUTH-MISSING
-    name: "Missing Authorization Attribute"
+    name: "No authorization declared in the project"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
+    regions: code
     condition: "required_pattern"
-    pattern: '\[Authorize\]|\[AllowAnonymous\]|RequireAuthorization'
-    severity: HIGH
-    suggestion: "No [Authorize] attributes found. Controllers/endpoints may be accessible without authentication."
+    pattern: '\[(?:[\w\s,()="]*,\s*)?(?:Authorize|AllowAnonymous)\b|\.RequireAuthorization\s*\(|\bFallbackPolicy\s*=|\bnew\s+AuthorizeFilter\s*\('
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-862"
+      owasp: "A01:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "No [Authorize] attribute, RequireAuthorization() call or fallback authorization policy was found, so every endpoint may be reachable without signing in. Set a FallbackPolicy that requires authenticated users and mark public endpoints with [AllowAnonymous]."
 
+  # Project-level. CSRF only matters for cookie-based authentication.
   - id: ASP-ANTIFORGERY
-    name: "Missing Anti-Forgery Validation"
+    name: "No anti-forgery validation in the project"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
+    regions: code
     condition: "required_pattern"
-    pattern: '\[ValidateAntiForgeryToken\]|AddAntiforgery|AutoValidateAntiforgeryToken'
-    severity: HIGH
-    suggestion: "No anti-forgery token validation found. MVC/Razor pages are vulnerable to CSRF attacks."
+    pattern: 'ValidateAntiForgeryToken|AutoValidateAntiforgeryToken|\bAddAntiforgery\b|\bUseAntiforgery\s*\(|\bDisableAntiforgery\s*\(|IgnoreAntiforgeryToken'
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-352"
+      owasp: "A01:2025"
+      confidence: low
+      subcategory: audit
+    suggestion: "No anti-forgery validation was found. If the app signs users in with cookies, forms and state-changing endpoints can be triggered from other sites (CSRF): add AutoValidateAntiforgeryTokenAttribute globally or UseAntiforgery(). APIs that use only bearer tokens are not affected."
 
   - id: ASP-HARDCODED-CREDS
-    name: "Hardcoded Credentials"
+    name: "Hardcoded password, secret or API key"
     stack: aspnetcore
     extensions: [".cs"]
     target: all
+    regions: code
     exclude_tests: true
-    pattern: '(?i)(?:password|secret|apiKey)\s*=\s*"[^"]{8,}"'
+    pattern: '\b\w*(?i:password|passwd|pwd|secret|apikey|api_key|token)\s*(?:\{\s*get;\s*(?:set;|init;)?\s*\}\s*)?(?:=|:)\s*"[^"\s]{2,}[0-9!@#$%^&*+=~?][^"\s]{2,}"'
     severity: HIGH
-    suggestion: "Hardcoded credentials in source code. Use IConfiguration with user-secrets or environment variables."
+    metadata:
+      cwe: "CWE-798"
+      owasp: "A07:2025"
+      confidence: medium
+      subcategory: vuln
+    suggestion: "A password, secret or key is written in the source code. Read it from IConfiguration backed by user-secrets, environment variables or a key vault, and rotate the exposed value."
+
+  - id: ASP-CERT-VALIDATION-DISABLED
+    name: "TLS certificate validation disabled"
+    stack: aspnetcore
+    extensions: [".cs"]
+    target: all
+    regions: code
+    pattern: '\b(?:ServerCertificate(?:Custom)?ValidationCallback|RemoteCertificateValidationCallback)\s*\+?=\s*(?:(?:\([^()]*\)|\w+)\s*=>\s*(?:true\b|\{\s*return\s+true\s*;)|delegate\s*(?:\([^()]*\))?\s*\{\s*return\s+true\s*;)|\bDangerousAcceptAnyServerCertificateValidator\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-295"
+      owasp: "A04:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The certificate callback accepts every server certificate, so anyone on the network path can intercept the connection. Remove the callback; to trust a private CA, check the chain against that CA instead of returning true."
+
+  - id: ASP-JWT-VALIDATION-DISABLED
+    name: "JWT signature or lifetime validation disabled"
+    stack: aspnetcore
+    extensions: [".cs"]
+    target: all
+    regions: code
+    pattern: '\bRequireSignedTokens\s*=\s*false\b|\bSignatureValidator\s*=\s*(?:\([^()]*\)|\w+)\s*=>\s*new\s+(?:JwtSecurityToken|JsonWebToken)\s*\(|\bValidateLifetime\s*=\s*false\b'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-347"
+      owasp: "A07:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "Token validation accepts unsigned tokens, skips the signature check or ignores expiry, so forged or expired tokens are accepted. Keep RequireSignedTokens and ValidateLifetime at true and do not replace SignatureValidator with a function that only parses the token."
+
+  - id: ASP-CORS-CREDENTIALS-ANY-ORIGIN
+    name: "Credentialed CORS that accepts any origin"
+    stack: aspnetcore
+    extensions: [".cs"]
+    target: all
+    regions: code
+    pattern: '\.SetIsOriginAllowed\s*\(\s*\(?\s*\w*\s*\)?\s*=>\s*true\s*\)[^;]*?\.AllowCredentials\s*\(|\.AllowCredentials\s*\(\s*\)[^;]*?\.SetIsOriginAllowed\s*\(\s*\(?\s*\w*\s*\)?\s*=>\s*true\s*\)'
+    severity: HIGH
+    metadata:
+      cwe: "CWE-942"
+      owasp: "A01:2025"
+      confidence: high
+      subcategory: vuln
+    suggestion: "The policy reflects any Origin and allows credentials, so any website can send requests with the user's cookies and read the responses. List the allowed origins with WithOrigins, or check the origin against an allowlist in SetIsOriginAllowed."
+
+  - id: ASP-WEAK-CRYPTO
+    name: "Weak hash or cipher (MD5, SHA-1, DES, RC2, ECB)"
+    stack: aspnetcore
+    extensions: [".cs"]
+    target: all
+    regions: code
+    pattern: '\b(?:MD5|SHA1|DES|TripleDES|RC2)\.Create\s*\(|\bnew\s+(?:MD5CryptoServiceProvider|SHA1Managed|SHA1CryptoServiceProvider|DESCryptoServiceProvider|TripleDESCryptoServiceProvider|RC2CryptoServiceProvider)\b|\bCipherMode\.ECB\b|\b(?:MD5|SHA1)\.HashData\s*\('
+    severity: MEDIUM
+    metadata:
+      cwe: "CWE-327"
+      owasp: "A04:2025"
+      confidence: medium
+      subcategory: audit
+    suggestion: "MD5, SHA-1, DES, 3DES, RC2 and ECB mode are broken or weak for security use. Use SHA-256 or better for integrity, AES-GCM for encryption, and PBKDF2 (Rfc2898DeriveBytes.Pbkdf2) or ASP.NET Core Identity's hasher for passwords. MD5 for non-security checksums such as cache keys can be suppressed."

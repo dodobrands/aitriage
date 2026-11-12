@@ -1,0 +1,5 @@
+services:
+  debugger:
+    image: example/debugger:0.9
+    # ruleid: DOCKER-HOST-PID
+    pid: host

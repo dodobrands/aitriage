@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-agent
+spec:
+  containers:
+    - name: agent
+      image: example/agent:1.4
+      securityContext:
+        # ruleid: DOCKER-PRIVILEGED
+        privileged: true

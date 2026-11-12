@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: profiler
+spec:
+  # ruleid: DOCKER-HOST-PID
+  hostPID: true
+  containers:
+    - name: profiler
+      image: example/profiler:2.2
