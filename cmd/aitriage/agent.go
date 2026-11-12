@@ -386,6 +386,16 @@ var agentEnvAllowlist = []string{
 	"GROQ_API_KEY",
 }
 
+// agentContainerEnv is set inside the agent container. AITRIAGE_REPORTS_DIR
+// names the writable reports mount, where the Web UI and IDE tools in the
+// container record dismissals for the read-only project, so the run applies
+// them.
+var agentContainerEnv = []string{
+	"AITRIAGE_RUNTIME=container",
+	"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
+	"AITRIAGE_REPORTS_DIR=/workspace/aitriage-reports",
+}
+
 func runAgentInContainer(ctx context.Context, cmd *cobra.Command, args []string) error {
 	if agentAPIKey != "" {
 		return fmt.Errorf("--api-key is not accepted in container mode because secrets must not appear in process arguments; set GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, or AITRIAGE_LLM_API_KEY in the environment")
@@ -436,11 +446,8 @@ func runAgentInContainer(ctx context.Context, cmd *cobra.Command, args []string)
 		Interactive: !agentNoChat,
 		TTY:         false,
 		EnvPassed:   agentEnvAllowlist,
-		EnvSet: []string{
-			"AITRIAGE_RUNTIME=container",
-			"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
-		},
-		Argv: inner,
+		EnvSet:      agentContainerEnv,
+		Argv:        inner,
 	})
 
 	return containerExitStatus(runManagedContainer(ctx, dockerArgs, name))

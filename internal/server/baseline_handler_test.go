@@ -43,13 +43,29 @@ func containerBaselineEnv(t *testing.T, reports string) {
 
 // mountReadOnly makes the project root unwritable, as the container's
 // read-only /workspace mount does, while the reports directory inside it stays
-// writable. Permission bits do not restrict root or Windows, so there the
-// assertions about where the file lands still hold but the failure mode of
+// writable. The files already in the root are made read-only as well: an
+// unwritable directory alone still lets an existing file be overwritten, which
+// the mount does not. Permission bits do not restrict root or Windows, so there
+// the assertions about where the file lands still hold but the failure mode of
 // writing into the project is not reproduced.
 func mountReadOnly(t *testing.T, dir string) {
 	t.Helper()
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		file := filepath.Join(dir, entry.Name())
+		if err := os.Chmod(file, 0o444); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(file, 0o644) })
 	}
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
@@ -97,7 +113,7 @@ func TestWebBaselineInContainerIsWrittenUnderReports(t *testing.T) {
 	s.hostPrefix = root
 
 	created := callBaseline(t, s, http.MethodPost, "/api/baseline", `{}`)
-	want := filepath.Join(reports, webBaselinesDir, baseline.BaselineFile)
+	want := filepath.Join(reports, baseline.ReportsArea, baseline.BaselineFile)
 	if !created.Exists || created.Total == 0 || created.Path != want || created.ReadOnly {
 		t.Fatalf("create response = %+v, want an existing, writable baseline at %s", created, want)
 	}
@@ -108,16 +124,16 @@ func TestWebBaselineInContainerIsWrittenUnderReports(t *testing.T) {
 	if !status.Exists || status.Path != want || status.Total != created.Total || status.ReadOnly {
 		t.Fatalf("status after create = %+v, want the copy under reports", status)
 	}
-	// A scan of the same folder applies the same file.
-	if got := s.effectiveBaselineDir(root); got != filepath.Dir(want) {
-		t.Fatalf("scan reads the baseline from %s, want %s", got, filepath.Dir(want))
+	// A scan of the same folder applies what was written.
+	if applied, err := baseline.LoadAt(baseline.Locate(root)); err != nil || applied == nil || applied.Stats().Total != created.Total {
+		t.Fatalf("a scan of the folder applies %+v (err=%v), want the %d accepted finding(s)", applied, err, created.Total)
 	}
 }
 
 // A baseline that ships with the project (committed, or written by
 // `aitriage baseline`) keeps applying in the container. Updating it writes a
-// copy that takes precedence; clearing removes only that copy and reports the
-// project's file, which the Web UI cannot change.
+// local copy that applies on top of it; clearing removes only that copy and
+// reports the project's file, which the Web UI cannot change.
 func TestWebBaselineInContainerHonoursTheProjectFile(t *testing.T) {
 	root, reports := baselineTestProject(t)
 	containerBaselineEnv(t, reports)
@@ -140,11 +156,11 @@ func TestWebBaselineInContainerHonoursTheProjectFile(t *testing.T) {
 	if !status.Exists || status.Path != projectFile || !status.ReadOnly {
 		t.Fatalf("status = %+v, want the project's own read-only baseline", status)
 	}
-	if got := s.effectiveBaselineDir(root); got != root {
-		t.Fatalf("scan reads the baseline from %s, want the project %s", got, root)
+	if applied, err := baseline.LoadAt(baseline.Locate(root)); err != nil || applied == nil || !applied.CreatedAt.Equal(committed.CreatedAt) {
+		t.Fatalf("a scan of the folder applies %+v (err=%v), want the project's own baseline", applied, err)
 	}
 
-	copyFile := filepath.Join(reports, webBaselinesDir, baseline.BaselineFile)
+	copyFile := filepath.Join(reports, baseline.ReportsArea, baseline.BaselineFile)
 	updated := callBaseline(t, s, http.MethodPost, "/api/baseline", `{"path":"."}`)
 	if updated.Path != copyFile || updated.ReadOnly || updated.Total == 0 {
 		t.Fatalf("update response = %+v, want a populated copy at %s", updated, copyFile)
@@ -152,8 +168,8 @@ func TestWebBaselineInContainerHonoursTheProjectFile(t *testing.T) {
 	if updated.CreatedAt != "2025-01-02T03:04:05Z" {
 		t.Fatalf("update created_at = %q, want the project baseline's creation date", updated.CreatedAt)
 	}
-	if got := s.effectiveBaselineDir(root); got != filepath.Dir(copyFile) {
-		t.Fatalf("after update the scan reads %s, want the copy in %s", got, filepath.Dir(copyFile))
+	if applied, err := baseline.LoadAt(baseline.Locate(root)); err != nil || applied == nil || applied.Stats().Total != updated.Total {
+		t.Fatalf("after update a scan applies %+v (err=%v), want the %d finding(s) reported", applied, err, updated.Total)
 	}
 
 	cleared := callBaseline(t, s, http.MethodDelete, "/api/baseline", "")
@@ -184,12 +200,12 @@ func TestWebBaselineInContainerMirrorsTheScannedFolder(t *testing.T) {
 	s.hostPrefix = root
 
 	created := callBaseline(t, s, http.MethodPost, "/api/baseline", `{"path":"services/api"}`)
-	want := filepath.Join(reports, webBaselinesDir, "services", "api", baseline.BaselineFile)
+	want := filepath.Join(reports, baseline.ReportsArea, "services", "api", baseline.BaselineFile)
 	if created.Path != want {
 		t.Fatalf("nested baseline written to %s, want %s", created.Path, want)
 	}
 	mustExist(t, want)
-	mustNotExist(t, filepath.Join(reports, webBaselinesDir, baseline.BaselineFile))
+	mustNotExist(t, filepath.Join(reports, baseline.ReportsArea, baseline.BaselineFile))
 	mustNotExist(t, filepath.Join(nested, baseline.BaselineFile))
 
 	root2 := callBaseline(t, s, http.MethodGet, "/api/baseline", "")
@@ -213,7 +229,7 @@ func TestWebBaselineNativeWritesTheProjectFile(t *testing.T) {
 		t.Fatalf("native baseline response = %+v, want the project file %s", created, want)
 	}
 	mustExist(t, want)
-	mustNotExist(t, filepath.Join(reports, webBaselinesDir))
+	mustNotExist(t, filepath.Join(reports, baseline.ReportsArea))
 
 	cleared := callBaseline(t, s, http.MethodDelete, "/api/baseline", "")
 	if cleared.Exists || cleared.Path != want {

@@ -240,18 +240,6 @@ synthetic/fastapi-terrible/ghostroute.py has no auth — report it as File=synth
 If the issue applies to multiple files, list all affected files.
 NEVER leave File as N/A in your output — a developer cannot fix "N/A".`
 
-const TriageUserPromptTemplate = `Please triage the following batch of security findings:
-
-%s`
-
-// TriageUserPromptWithThreatModelTemplate is used when a threat model is available.
-const TriageUserPromptWithThreatModelTemplate = `Threat Model Context:
-%s
-
-Please triage the following batch of security findings using the threat model above:
-
-%s`
-
 // ── PoC Verification Prompt (ported from Python nodes.py:465-494) ────────────
 
 const PoCSystemPrompt = SecureCoderFramework + `

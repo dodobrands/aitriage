@@ -472,6 +472,32 @@ type scanResponse struct {
 	Error             string `json:"error,omitempty"`
 }
 
+// applyScanDecisions applies what the team has decided about a scan's
+// findings: the accepted baseline when requested, and the dismissals always.
+// Both combine the project's own file with the local copy this server writes
+// in the container runtime, where the project is read-only (baseline.LoadAt,
+// suppression.LoadAt), so a decision made in the container Web UI is applied
+// by the next scan there. It returns how many findings the baseline hid.
+func applyScanDecisions(rich *llm.RichScanResult, projectPath string, useBaseline bool) (int, error) {
+	// A baseline hides findings the team has already accepted, so what is
+	// left is what is new.
+	baselined := 0
+	if useBaseline {
+		accepted, err := baseline.LoadAt(baseline.Locate(projectPath))
+		if err != nil {
+			return 0, fmt.Errorf("failed to read baseline: %v", err)
+		}
+		baselined = orchestrator.ApplyBaseline(rich, accepted)
+	}
+
+	// Dismissals are always applied: a false positive someone already reviewed
+	// must not come back as an open finding on the next scan.
+	if store, err := suppression.LoadAt(suppression.Locate(projectPath)); err == nil {
+		orchestrator.ApplySuppressions(rich, store)
+	}
+	return baselined, nil
+}
+
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -518,23 +544,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A baseline hides findings the team has already accepted. It is applied
-	// here, before scoring and persistence, so the score, the gate verdict and
-	// the stored findings all describe the same set: what is new.
-	baselinedCount := 0
-	if req.UseBaseline {
-		accepted, loadErr := baseline.Load(s.effectiveBaselineDir(containerPath))
-		if loadErr != nil {
-			jsonError(w, fmt.Sprintf("failed to read baseline: %v", loadErr), http.StatusInternalServerError)
-			return
-		}
-		baselinedCount = orchestrator.ApplyBaseline(&rich, accepted)
-	}
-
-	// Dismissals are always applied: a false positive someone already reviewed
-	// must not come back as an open finding on the next scan.
-	if store, storeErr := suppression.Load(containerPath); storeErr == nil {
-		orchestrator.ApplySuppressions(&rich, store)
+	// Decisions are applied here, before scoring and persistence, so the score,
+	// the gate verdict and the stored findings all describe the same set.
+	baselinedCount, err := applyScanDecisions(&rich, containerPath, req.UseBaseline)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	scannerCoverage := "core"

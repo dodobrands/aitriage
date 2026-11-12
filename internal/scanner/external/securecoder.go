@@ -100,16 +100,6 @@ type IgnoreEntry struct {
 	Timestamp   int64  `json:"timestamp"`
 }
 
-type secureCoderIgnoredResponse struct {
-	Entries []IgnoreEntry `json:"entries"`
-}
-
-type fixCompletedRequest struct {
-	FindingsCountBefore     int    `json:"findingsCountBefore"`
-	FindingsCountAfter      int    `json:"findingsCountAfter"`
-	FindingsByFiletypeAfter string `json:"findingsByFiletypeAfter"`
-}
-
 // apiConfig holds the port from ~/.securecoder/api.json.
 type apiConfig struct {
 	Port int `json:"port"`
@@ -311,68 +301,4 @@ func IgnoreSecureCoderFinding(ctx context.Context, params IgnoreRequest) (*Ignor
 		return nil, fmt.Errorf("failed to parse securecoder ignore response: %w", err)
 	}
 	return &result, nil
-}
-
-// GetSecureCoderIgnored returns the full suppression list from SecureCoder.
-func GetSecureCoderIgnored(ctx context.Context) ([]IgnoreEntry, error) {
-	url, err := baseURL()
-	if err != nil {
-		return nil, fmt.Errorf("securecoder not available: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/ignored", nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("securecoder ignored list request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("securecoder returned status %d", resp.StatusCode)
-	}
-
-	var result secureCoderIgnoredResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to parse securecoder ignored response: %w", err)
-	}
-	return result.Entries, nil
-}
-
-// ── Fix Completed ────────────────────────────────────────────────────────────
-
-// ReportFixCompleted reports remediation results back to SecureCoder IDE panel.
-func ReportFixCompleted(ctx context.Context, before, after int, byFiletypeAfter string) error {
-	url, err := baseURL()
-	if err != nil {
-		return fmt.Errorf("securecoder not available: %w", err)
-	}
-
-	payload := fixCompletedRequest{
-		FindingsCountBefore:     before,
-		FindingsCountAfter:      after,
-		FindingsByFiletypeAfter: byFiletypeAfter,
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/fix_completed", bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("securecoder fix_completed request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("securecoder returned status %d", resp.StatusCode)
-	}
-	return nil
 }

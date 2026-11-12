@@ -6,11 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
 	"github.com/dodobrands/aitriage/internal/engine/orchestrator"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 )
 
 // A baseline accepts today's findings as the starting line so the gate judges
@@ -26,14 +25,11 @@ import (
 // The container runtime is the exception. It mounts the project read-only at
 // /workspace and only <project>/aitriage-reports read-write
 // (internal/runtime.DockerRunArgs), so writing the project file there can only
-// fail. The Web UI then keeps the baseline it manages under the reports
-// directory, at a path that mirrors the scanned folder, and still honours the
-// project's own file — committed with the repository or written by
-// `aitriage baseline` — whenever it has no copy of its own.
-
-// webBaselinesDir is the folder under the reports directory that holds the
-// baselines the Web UI writes when the project itself is read-only.
-const webBaselinesDir = "baselines"
+// fail. The baseline the Web UI writes then goes to a local copy under the
+// reports directory, at a path that mirrors the scanned folder. The project's
+// own file — committed with the repository or written by `aitriage baseline`
+// — keeps applying alongside it: a finding accepted in either is accepted
+// (baseline.LoadAt). The IDE tools in the container use the same location.
 
 type baselineStatusResponse struct {
 	OK         bool           `json:"ok"`
@@ -43,105 +39,33 @@ type baselineStatusResponse struct {
 	BySeverity map[string]int `json:"by_severity,omitempty"`
 	CreatedAt  string         `json:"created_at,omitempty"`
 	UpdatedAt  string         `json:"updated_at,omitempty"`
-	// ReadOnly reports that the baseline in effect is the project's own file,
-	// which this server cannot change or remove. Updating writes a copy that
-	// takes precedence; changing the file itself is done from a terminal.
+	// ReadOnly reports that the baseline in effect is only the project's own
+	// file, which this server cannot change or remove. Updating writes a local
+	// copy that applies on top of it; the file itself is changed from a
+	// terminal.
 	ReadOnly bool `json:"read_only,omitempty"`
+	// Note explains a local copy in effect: its findings are accepted in
+	// addition to the project's, and only reach CI once committed.
+	Note string `json:"note,omitempty"`
 }
 
-// webBaselineStore is where the Web UI keeps the baseline of one scanned folder.
-type webBaselineStore struct {
-	// projectDir is the scanned folder. Its own .aitriage-baseline.json is the
-	// file the CLI and the IDE tools read and write.
-	projectDir string
-	// writeDir receives .aitriage-baseline.json on create and update and loses
-	// it on clear. It is projectDir unless the project is mounted read-only.
-	writeDir string
-}
-
-// webBaseline resolves where the baseline for projectPath is read and written.
-func (s *Server) webBaseline(projectPath string) webBaselineStore {
-	store := webBaselineStore{projectDir: projectPath, writeDir: projectPath}
-	if os.Getenv("AITRIAGE_RUNTIME") != "container" {
-		return store
-	}
-	reports := strings.TrimSpace(os.Getenv("AITRIAGE_REPORTS_DIR"))
-	rel, ok := s.projectRelativeDir(projectPath)
-	if reports == "" || !ok {
-		// Without a reports directory there is nowhere else to write; the
-		// attempt on the project fails and the error says why.
-		return store
-	}
-	store.writeDir = filepath.Join(reports, webBaselinesDir, rel)
-	return store
-}
-
-// effectiveBaselineDir is the folder whose baseline a Web scan of projectPath
-// applies.
-func (s *Server) effectiveBaselineDir(projectPath string) string {
-	return s.webBaseline(projectPath).readDir()
-}
-
-// projectRelativeDir expresses a resolved project path relative to the opened
-// project root, so baselines of different folders never share a file.
-func (s *Server) projectRelativeDir(projectPath string) (string, bool) {
-	if s.hostPrefix == "" {
-		return "", false
-	}
-	root, err := filepath.Abs(s.hostPrefix)
-	if err != nil {
-		return "", false
-	}
-	if resolved, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
-		root = resolved
-	}
-	rel, err := filepath.Rel(root, projectPath)
-	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return rel, true
-}
-
-// readDir returns the folder whose baseline applies: the Web UI's own copy
-// when there is one, otherwise the project's file.
-func (st webBaselineStore) readDir() string {
-	if st.writeDir == st.projectDir {
-		return st.projectDir
-	}
-	_, err := os.Stat(filepath.Join(st.writeDir, baseline.BaselineFile))
-	if err == nil || !os.IsNotExist(err) {
-		// Present, or present but unreadable: either way the load must see it
-		// and report, rather than silently fall back to another file.
-		return st.writeDir
-	}
-	return st.projectDir
-}
-
-func (st webBaselineStore) writeFile() string {
-	return filepath.Join(st.writeDir, baseline.BaselineFile)
-}
-
-// prepare creates the mirrored folder under the reports directory. The
-// project folder is never created: it exists, or the request was wrong.
-func (st webBaselineStore) prepare() error {
-	if st.writeDir == st.projectDir {
-		return nil
-	}
-	return os.MkdirAll(st.writeDir, 0o700)
-}
-
-func describeBaseline(b *baseline.Baseline, file string, readOnly bool) baselineStatusResponse {
+// describeBaseline reports b, the baseline that applies at loc.
+func describeBaseline(b *baseline.Baseline, loc statefile.Location) baselineStatusResponse {
 	stats := b.Stats()
-	return baselineStatusResponse{
+	resp := baselineStatusResponse{
 		OK:         true,
 		Exists:     true,
-		Path:       file,
+		Path:       loc.CurrentFile(),
 		Total:      stats.Total,
 		BySeverity: stats.BySeverity,
 		CreatedAt:  b.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:  b.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-		ReadOnly:   readOnly,
+		ReadOnly:   loc.Redirected() && !loc.HasCopy(),
 	}
+	if loc.HasCopy() {
+		resp.Note = statefile.LocalOverrideNote
+	}
+	return resp
 }
 
 // handleBaseline serves the baseline lifecycle: inspect, create/update, clear.
@@ -165,17 +89,16 @@ func (s *Server) baselineStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store := s.webBaseline(projectPath)
-	dir := store.readDir()
-	existing, err := baseline.Load(dir)
+	loc := baseline.Locate(projectPath)
+	existing, err := baseline.LoadAt(loc)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("failed to read baseline: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	resp := baselineStatusResponse{OK: true, Path: store.writeFile()}
+	resp := baselineStatusResponse{OK: true, Path: loc.WriteFile()}
 	if existing != nil {
-		resp = describeBaseline(existing, filepath.Join(dir, baseline.BaselineFile), dir != store.writeDir)
+		resp = describeBaseline(existing, loc)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -197,7 +120,7 @@ func (s *Server) baselineWrite(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	store := s.webBaseline(projectPath)
+	loc := baseline.Locate(projectPath)
 
 	// Run every scanner that is available, so the baseline covers what the
 	// project actually reports rather than only the built-in engine's share.
@@ -207,25 +130,28 @@ func (s *Server) baselineWrite(w http.ResponseWriter, r *http.Request) {
 	})
 
 	created := baseline.NewFromItems(orchestrator.BaselineItems(&rich))
-	if existing, loadErr := baseline.Load(store.readDir()); loadErr == nil && existing != nil {
+	if existing, loadErr := baseline.LoadAt(loc); loadErr == nil && existing != nil {
 		// Preserve the original creation date so the record shows how long the
 		// project has been operating against a baseline.
 		created.CreatedAt = existing.CreatedAt
 	}
 
-	if err := store.prepare(); err != nil {
-		jsonError(w, fmt.Sprintf("failed to write baseline: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if err := baseline.Save(store.writeDir, created); err != nil {
-		jsonError(w, fmt.Sprintf("failed to write baseline: %v", err), http.StatusInternalServerError)
+	if err := baseline.SaveAt(loc, created); err != nil {
+		// The error already says the baseline could not be written.
+		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	slog.Info("Baseline written", "path", store.writeFile(), "findings", len(created.Findings))
+	slog.Info("Baseline written", "path", loc.WriteFile(), "findings", len(created.Findings))
 
+	// In the container the project's own baseline keeps applying next to the
+	// copy just written, so report what applies now.
+	applied := created
+	if merged, loadErr := baseline.LoadAt(loc); loadErr == nil && merged != nil {
+		applied = merged
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(describeBaseline(created, store.writeFile(), false))
+	_ = json.NewEncoder(w).Encode(describeBaseline(applied, loc))
 }
 
 func (s *Server) baselineClear(w http.ResponseWriter, r *http.Request) {
@@ -235,8 +161,8 @@ func (s *Server) baselineClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store := s.webBaseline(projectPath)
-	target := store.writeFile()
+	loc := baseline.Locate(projectPath)
+	target := loc.WriteFile()
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		jsonError(w, fmt.Sprintf("failed to remove baseline: %v", err), http.StatusInternalServerError)
 		return
@@ -246,9 +172,9 @@ func (s *Server) baselineClear(w http.ResponseWriter, r *http.Request) {
 	resp := baselineStatusResponse{OK: true, Exists: false, Path: target}
 	// A read-only project's own baseline cannot be removed from here and keeps
 	// applying. Report it rather than claim that no baseline is left.
-	if dir := store.readDir(); dir != store.writeDir {
-		if remaining, loadErr := baseline.Load(dir); loadErr == nil && remaining != nil {
-			resp = describeBaseline(remaining, filepath.Join(dir, baseline.BaselineFile), true)
+	if loc.Redirected() {
+		if remaining, loadErr := baseline.LoadAt(loc); loadErr == nil && remaining != nil {
+			resp = describeBaseline(remaining, loc)
 		}
 	}
 

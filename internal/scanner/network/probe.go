@@ -68,66 +68,6 @@ var criticalPorts = map[int]bool{
 // network.
 var lookupHost = net.LookupHost
 
-// TargetDiscovery searches for potential network targets in the project.
-func FindTargets(projectPath string) []string {
-	targets := make(map[string]bool)
-	targets["127.0.0.1"] = true // Always scan localhost
-
-	// Scan for common infra patterns in yaml, env, and config files
-	extensions := map[string]bool{
-		".yaml": true, ".yml": true, ".env": true, ".conf": true, ".json": true, ".go": true,
-	}
-
-	_ = filepath.WalkDir(projectPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if extensions[filepath.Ext(path)] {
-			content, err := os.ReadFile(path)
-			if err == nil {
-				// Search for IPs and localhost variants
-
-				lines := strings.Split(string(content), "\n")
-				for _, line := range lines {
-					if strings.Contains(line, "127.0.0.1") {
-						targets["127.0.0.1"] = true
-					}
-					// Very rough extraction for demo purposes
-					if strings.Contains(line, "http") || strings.Contains(line, "host") || strings.Contains(line, "addr") {
-						// Look for anything that looks like a hostname in quotes or after =
-						parts := strings.FieldsFunc(line, func(r rune) bool {
-							return r == '"' || r == '\'' || r == '=' || r == ':' || r == '/' || r == ' '
-						})
-						for _, p := range parts {
-							p = strings.TrimSpace(p)
-							if len(p) > 2 && (strings.Contains(p, ".") || p == "localhost" || p == "db") {
-								// Basic validation: must not be a file path or a common word
-								if !strings.Contains(p, "/") && !strings.HasPrefix(p, "0.") {
-									targets[p] = true
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return nil
-	})
-
-	var result []string
-	for t := range targets {
-		// Filter out noisy common words that might be caught
-		if t == "localhost" || t == "127.0.0.1" || strings.Contains(t, ".") {
-			result = append(result, t)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
 // ProbeHost scans a target host to identify exposed services.
 // If fullScan is true, scans all 65535 ports (slower, ~30-60s).
 // If fullScan is false, only scans well-known common ports (~0.5s).

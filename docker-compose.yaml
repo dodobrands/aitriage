@@ -22,6 +22,9 @@ services:
     volumes:
       # Mount scan workspace (configure SCAN_ROOT in .env)
       # Example: SCAN_ROOT=~/Documents/GitHub
+      # It is writable, so baselines and dismissals made in the dashboard are
+      # written to each project's own files, the ones committed with it. For
+      # that reason no AITRIAGE_REPORTS_DIR is set below.
       - ${SCAN_ROOT:-.}:/host
       # Persistent SQLite volume
       - aitriage-data:/app/data
@@ -50,7 +53,12 @@ services:
 
   # ─── AITriage MCP Server (SSE) ──────────────────────────────────────────────
   # Serves the AITriage MCP tools over HTTP for AI clients that connect by URL.
-  # The audited project is PROJECT_PATH, mounted read-only at /project.
+  # The audited project is PROJECT_PATH, mounted read-only at /project. As in
+  # the managed container (`aitriage serve --runtime container`), only its
+  # aitriage-reports directory is writable: baselines, dismissals and reports
+  # written through the tools go there, and the tools apply them on top of the
+  # project's own files. That directory is not committed; copy a decision into
+  # the project and commit it to share it with CI.
   # Endpoint: http://localhost:9090/sse
   aitriage-mcp:
     image: aitriage:latest
@@ -66,8 +74,12 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - AITRIAGE_RUNTIME=container
+      - AITRIAGE_REPORTS_DIR=/project/aitriage-reports
+      - AITRIAGE_CACHE_DIR=/project/aitriage-reports/cache
     volumes:
       - ${PROJECT_PATH:-.}:/project:ro
+      - ${PROJECT_PATH:-.}/aitriage-reports:/project/aitriage-reports
     profiles:
       - agent
 

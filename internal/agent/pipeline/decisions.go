@@ -34,7 +34,10 @@ func applyProjectDecisions(rich *llm.RichScanResult, projectPath string) graph.S
 	}
 	root := rich.ProjectPath
 
-	store, err := suppression.Load(projectPath)
+	// In the container runtime the Web UI and IDE tools keep local decisions
+	// under aitriage-reports, because the project is read-only there; they
+	// apply on top of the project's own file.
+	store, err := suppression.LoadAt(suppression.Locate(projectPath))
 	switch {
 	case err != nil:
 		// Fail closed: the decisions are not applied, so the findings stay

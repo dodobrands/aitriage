@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/dodobrands/aitriage/internal/engine/baseline"
+	"github.com/dodobrands/aitriage/internal/engine/statefile"
 	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -17,6 +19,13 @@ import (
 //
 // aitriage_suppress writes the shared project file, so what an agent dismisses
 // here is what a human sees in the Web UI and in the terminal.
+//
+// In the container runtime the project is mounted read-only, so decisions go
+// to a local copy under aitriage-reports, the one the Web UI writes there too.
+// Every scan in the container applies it on top of the project's own file
+// (suppression.LoadAt): local entries win for the same finding and stay in
+// force after the project drops its own. The CLI on the host and CI read only
+// the project file, so the copy reaches them once it is committed.
 
 type suppressInput struct {
 	Path string `json:"path,omitempty"`
@@ -29,7 +38,8 @@ type suppressInput struct {
 	File   string `json:"file,omitempty"`
 	Line   int    `json:"line,omitempty"`
 	// Evidence is the matched text. Without it the dismissal covers any finding
-	// of that rule in that file, which is usually broader than intended.
+	// of that rule in that file (in the whole project when File is empty too),
+	// which is usually broader than intended.
 	Evidence string `json:"evidence,omitempty"`
 	// Reason: false_positive, accepted_risk, wont_fix.
 	Reason string `json:"reason,omitempty"`
@@ -73,7 +83,7 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			return nil, suppressResult{}, err
 		}
 
-		store, err := suppression.Load(path)
+		record, err := suppression.Open(suppression.Locate(path))
 		if err != nil {
 			return nil, suppressResult{}, err
 		}
@@ -85,7 +95,7 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 
 		switch action {
 		case "list":
-			return nil, listSuppressions(path, store), nil
+			return nil, listSuppressions(record), nil
 
 		case "add":
 			if !allowMutation {
@@ -104,11 +114,11 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 				Line:     input.Line,
 				Evidence: input.Evidence,
 			}
-			entry, replaced, addErr := store.Add(item, input.Reason, input.Note, "ai-ide")
+			entry, replaced, addErr := record.Add(item, input.Reason, input.Note, "ai-ide")
 			if addErr != nil {
 				return nil, suppressResult{}, addErr
 			}
-			if saveErr := suppression.Save(path, store); saveErr != nil {
+			if saveErr := record.Save(); saveErr != nil {
 				return nil, suppressResult{}, saveErr
 			}
 
@@ -116,11 +126,11 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			if replaced {
 				verb = "Updated the dismissal of"
 			}
-			result := listSuppressions(path, store)
+			result := listSuppressions(record)
 			result.Action = "add"
-			result.Summary = fmt.Sprintf("%s %s (%s) as %s. It is now dismissed for the Web UI and the CLI too.",
-				verb, entry.RuleID, entry.Source, entry.Reason)
-			return nil, result, nil
+			result.Summary = fmt.Sprintf("%s %s (%s) as %s. %s",
+				verb, entry.RuleID, entry.Source, entry.Reason, decisionsReach(record.Location))
+			return nil, withLocalNote(result, record.Location), nil
 
 		case "remove":
 			if !allowMutation {
@@ -130,18 +140,24 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			if identifier == "" {
 				return nil, suppressResult{}, fmt.Errorf("rule_id (or a fingerprint) is required to undo a dismissal")
 			}
-			removed := store.Remove(identifier)
-			if removed == 0 {
+			removed, committed := record.Remove(identifier)
+			switch {
+			case removed == 0 && committed > 0:
+				return nil, suppressResult{}, errors.New(committedDecision(identifier))
+			case removed == 0:
 				return nil, suppressResult{}, fmt.Errorf("no dismissal matches %q", identifier)
 			}
-			if saveErr := suppression.Save(path, store); saveErr != nil {
+			if saveErr := record.Save(); saveErr != nil {
 				return nil, suppressResult{}, saveErr
 			}
 
-			result := listSuppressions(path, store)
+			result := listSuppressions(record)
 			result.Action = "remove"
 			result.Summary = fmt.Sprintf("Removed %d dismissal(s) for %s. Those findings are reported again.", removed, identifier)
-			return nil, result, nil
+			if committed > 0 {
+				result.Summary = fmt.Sprintf("Removed %d local dismissal(s) for %s. %s.", removed, identifier, committedDecision(identifier))
+			}
+			return nil, withLocalNote(result, record.Location), nil
 
 		default:
 			return nil, suppressResult{}, fmt.Errorf("unknown action %q (supported: list, add, remove)", input.Action)
@@ -149,7 +165,34 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 	})
 }
 
-func listSuppressions(path string, store *suppression.Store) suppressResult {
+// decisionsReach says which surfaces see a decision once it is written.
+func decisionsReach(loc statefile.Location) string {
+	if loc.Redirected() {
+		return writtenUnderReports(loc.WriteFile())
+	}
+	return "It is now dismissed for the Web UI and the CLI too."
+}
+
+// committedDecision explains why a decision cannot be undone from the
+// container: the project's own file records it and is read-only there.
+func committedDecision(identifier string) string {
+	return fmt.Sprintf("%q is still dismissed by the project's own %s, which is read-only in the container; remove it there and commit the change",
+		identifier, suppression.File)
+}
+
+// withLocalNote adds, while a local copy is in effect, how it relates to the
+// project's own file.
+func withLocalNote(result suppressResult, loc statefile.Location) suppressResult {
+	if loc.HasCopy() {
+		result.Summary += " " + statefile.LocalOverrideNote
+	}
+	return result
+}
+
+// listSuppressions reports the dismissals that apply and the file they are
+// recorded in: after a write, the file the write went to.
+func listSuppressions(record *suppression.Record) suppressResult {
+	store := record.Applied
 	entries := store.List()
 	out := make([]suppressEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -165,12 +208,12 @@ func listSuppressions(path string, store *suppression.Store) suppressResult {
 	}
 
 	counts := store.CountByReason()
-	return suppressResult{
+	return withLocalNote(suppressResult{
 		Action:  "list",
-		File:    path + "/" + suppression.File,
+		File:    record.Location.CurrentFile(),
 		Total:   len(out),
 		Entries: out,
 		Summary: fmt.Sprintf("%d dismissed finding(s): %d false positive(s), %d accepted risk(s), %d won't fix.",
 			len(out), counts[suppression.ReasonFalsePositive], counts[suppression.ReasonAcceptedRisk], counts[suppression.ReasonWontFix]),
-	}
+	}, record.Location)
 }

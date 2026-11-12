@@ -12,7 +12,6 @@ import (
 
 	"github.com/dodobrands/aitriage/internal/config"
 	"github.com/dodobrands/aitriage/internal/engine/core"
-	"github.com/dodobrands/aitriage/internal/engine/loader"
 	"github.com/dodobrands/aitriage/internal/engine/suppression"
 	"github.com/dodobrands/aitriage/internal/models"
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
@@ -22,21 +21,6 @@ import (
 
 // Re-export Rule for convenience or just use models.Rule
 type Rule = models.Rule
-
-// ... (Rest of Engine and Ruleset)
-
-func (e *Engine) LoadExternalRules(path string) error {
-	newRules, err := loader.LoadSemgrepRules(path)
-	if err != nil {
-		return err
-	}
-
-	for _, r := range newRules {
-		e.compileRule(&r)
-		e.Rules = append(e.Rules, r)
-	}
-	return nil
-}
 
 func (e *Engine) compileRule(r *models.Rule) {
 	if r.Pattern != "" {
@@ -160,8 +144,6 @@ func loadPackRules() ([]models.Rule, error) {
 
 	return allRules, err
 }
-
-type Ruleset = models.Ruleset
 
 type Engine struct {
 	Rules  []models.Rule

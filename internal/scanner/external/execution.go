@@ -85,7 +85,3 @@ func normalizeToolVersion(out string) string {
 // audit. Trivy filesystem and configuration scans are deliberately separate:
 // one successful mode must never hide a failure in the other.
 var RequiredScannerExecutions = []string{"aitriage", "semgrep", "trivy_fs", "trivy_config", "gitleaks", "bandit"}
-
-// RequiredExternalScanners is kept for callers that reason about installed
-// binaries rather than logical executions.
-var RequiredExternalScanners = []string{"semgrep", "trivy", "gitleaks", "bandit"}

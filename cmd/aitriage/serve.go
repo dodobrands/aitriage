@@ -85,6 +85,9 @@ func containerServeArgs(image, hostRoot, profile, cache, name string) []string {
 		EnvSet: []string{
 			"AITRIAGE_RUNTIME=container",
 			"AITRIAGE_CACHE_DIR=/workspace/aitriage-reports/cache",
+			// The baseline and dismissal tools write here, because the
+			// project itself is read-only.
+			"AITRIAGE_REPORTS_DIR=/workspace/aitriage-reports",
 		},
 		Argv: []string{"serve", "--runtime", "native", "--profile", profile, "--scan-root", "/workspace"},
 	})
