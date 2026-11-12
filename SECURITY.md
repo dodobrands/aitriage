@@ -48,8 +48,10 @@ In scope:
 
 - The `aitriage` CLI and Go engine (`cmd/`, `internal/`).
 - The web dashboard and API server (`internal/server`, `web/`).
-- The MCP server (`internal/agent/mcp`).
-- The published Docker image and GitHub Action.
+- The MCP server (`internal/agent/mcp`) and the project connectors that
+  register it (`aitriage install-*`).
+- The published Docker image, the GitHub Action (`action.yml`), and the release
+  installers (`scripts/install.sh`, `scripts/install.ps1`).
 
 Out of scope:
 

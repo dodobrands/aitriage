@@ -13,7 +13,7 @@
 
   <p>
     <a href="#1-install-once"><strong>Install</strong></a> ·
-    <a href="#2-ai-ide-codex-or-claude-code"><strong>AI IDE</strong></a> ·
+    <a href="#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code"><strong>AI IDE</strong></a> ·
     <a href="#3-web-ui"><strong>Web</strong></a> ·
     <a href="#4-cicd"><strong>CI/CD</strong></a> ·
     <a href="#5-cli"><strong>CLI</strong></a> ·
@@ -60,18 +60,18 @@ shell startup files without asking me.
 
 Then run `aitriage version` and `aitriage setup --status --json` using the same
 executable (absolute path if the current terminal has not picked up PATH yet).
-If setup returns `action_required`, show me its message, official Docker URL,
-and retry command, then stop. Never install Docker from another source.
-If setup returns `ok`, run `aitriage setup --status --json` and tell me the
-AITriage version, executable path, container image, and status of every bundled
-scanner. Do not connect a project or run an audit yet.
+If the status is not `ok`, show me its `message`, `action_url` (if present) and
+`retry_command`, then stop. Never install Docker from another source.
+If the status is `ok`, tell me the AITriage version, executable path, container
+image, and status of every bundled scanner from that output. Do not connect a
+project or run an audit yet.
 ```
 
 The result is one host CLI plus one verified Docker image. The source repository is unnecessary for normal use.
 
 ### Set up manually on macOS or Linux
 
-Requirements: macOS or Linux, and a running [Docker Desktop or Docker Engine](https://docs.docker.com/get-started/get-docker/).
+Requirements: macOS or Linux on x86_64 or arm64, and a running [Docker Desktop or Docker Engine](https://docs.docker.com/get-started/get-docker/).
 
 ```bash
 curl -fsSL https://github.com/dodobrands/aitriage/releases/latest/download/install.sh | sh
@@ -79,8 +79,8 @@ aitriage setup --status
 ```
 
 The installer downloads the matching official GitHub Release, verifies its
-SHA-256 checksum, installs the CLI, and runs `aitriage setup --full`. To inspect
-the script before running it:
+SHA-256 checksum, installs the CLI into `/usr/local/bin`, and runs
+`aitriage setup --full`. To inspect the script before running it:
 
 ```bash
 curl -fsSLO https://github.com/dodobrands/aitriage/releases/latest/download/install.sh
@@ -93,7 +93,7 @@ administrator approval, the installer falls back to `$HOME/.local/bin` and
 prints the exact executable path. Add that directory to `PATH` for future
 shells if it is not already present.
 
-Go 1.25.12 or newer remains a developer fallback:
+Go 1.25.13 or newer with a C compiler (tree-sitter needs CGO) remains a developer fallback:
 
 ```bash
 go install github.com/dodobrands/aitriage/cmd/aitriage@latest
@@ -174,7 +174,7 @@ curl -fsSL https://github.com/dodobrands/aitriage/releases/latest/download/insta
 | :--- | :--- | :--- |
 | `aitriage` CLI | system executable path | setup, project connectors, CLI, Web, MCP launcher |
 | scanner image | local Docker image cache | AITriage, Semgrep, Trivy, Gitleaks, Bandit |
-| scanner cache | user cache directory | reusable scanner databases; never stored in source |
+| scanner cache | `aitriage/scanners` in the user cache directory | reusable scanner databases; never stored in source |
 | reports | `<project>/aitriage-reports/` | results and local run state for that project |
 
 `aitriage setup --full` is safe to repeat after an upgrade. Remove only the downloaded AITriage image with `aitriage setup --remove-runtime`.
@@ -193,7 +193,9 @@ curl -fsSL https://github.com/dodobrands/aitriage/releases/latest/download/insta
 This mode uses the model included in the AI IDE's own subscription. It does not need a separate LLM API key.
 
 > **Two activation paths.** Only Claude Code can approve the MCP server from the
-> command line (`claude mcp add`), so it is live right after the connector runs.
+> command line (`claude mcp add`), so it is live right after the connector runs
+> when the `claude` CLI is on `PATH` (otherwise the connector writes `.mcp.json`
+> and Claude Code asks you to approve the server).
 > **Cursor, Antigravity, VS Code and Codex** have no scriptable approval: the
 > connector writes the project-local config, then **you must enable the
 > `aitriage` server and approve its tools in that IDE's UI** (Codex: trust the
@@ -232,7 +234,7 @@ server in the IDE now (the connector prints the exact step). Then open a new
 task/session in the same project. From then on, ordinary requests are enough:
 
 ```text
-Проверь этот проект через AITriage. Пока ничего не исправляй.
+Audit this project with AITriage. Do not fix anything yet.
 ```
 
 AITriage—not the AI IDE—supplies the SecureCoder prompts, controls the workflow, and creates the final artifacts. The agent returns each model answer to AITriage until triage completes.
@@ -240,8 +242,8 @@ AITriage—not the AI IDE—supplies the SecureCoder prompts, controls the workf
 When you decide to fix findings, say which ones or explicitly approve all confirmed findings:
 
 ```text
-Исправь подтверждённые AITriage уязвимости. Не трогай сомнительные находки и
-false positives. Запусти тесты и проверь исправления через AITriage.
+Fix the vulnerabilities AITriage confirmed. Leave uncertain findings and false
+positives alone. Run the tests and verify the fixes with AITriage.
 ```
 
 ### Connect manually
@@ -258,7 +260,7 @@ aitriage install-vscode .        # VS Code      → .vscode/mcp.json
 
 Every connector uses the verified container runtime by default, preserves unrelated client settings, adds `/aitriage-reports/` to `.gitignore`, writes a **project-local** config (never a global one), and confines tools to the opened root and its subdirectories. Claude Code is live immediately; for the others, enable and approve the `aitriage` server in the IDE UI as the command prints. Open a new task/session after connecting.
 
-Windsurf is not supported as a first-class connector: it only reads a single global `~/.codeium/windsurf/mcp_config.json`, which cannot keep one project's scan-root isolated from another. Point it at `aitriage serve --profile safe --scan-root <project>` manually if you accept that trade-off.
+Windsurf is not supported as a first-class connector: it only reads a single global `~/.codeium/windsurf/mcp_config.json`, which cannot keep one project's scan-root isolated from another. Point it at `aitriage serve --runtime container --profile safe --scan-root <project>` manually if you accept that trade-off (this is the command the connectors register; `serve` alone runs natively with the full, unconfined tool profile).
 
 Update by running the same command again. Remove only the AITriage integration with `--uninstall`:
 
@@ -320,12 +322,12 @@ URL: ask me if the approved URL is not already documented in this repository.
 
 Choose the closest template in [`examples/github-actions/`](examples/github-actions/):
 
-- [`aitriage-security.yml`](examples/github-actions/aitriage-security.yml) — standard security run;
-- [`aitriage-pr-gate.yml`](examples/github-actions/aitriage-pr-gate.yml) — pull-request gate;
-- [`aitriage-ai-advisor.yml`](examples/github-actions/aitriage-ai-advisor.yml) — AI advisory output;
-- [`aitriage-manual-html-report.yml`](examples/github-actions/aitriage-manual-html-report.yml) — manually triggered report.
+- [`aitriage-security.yml`](examples/github-actions/aitriage-security.yml) — standard run: deterministic evidence plus the AI-triaged policy gate;
+- [`aitriage-pr-gate.yml`](examples/github-actions/aitriage-pr-gate.yml) — fast deterministic pull-request gate, no provider key;
+- [`aitriage-ai-advisor.yml`](examples/github-actions/aitriage-ai-advisor.yml) — non-blocking AI advisory output;
+- [`aitriage-manual-html-report.yml`](examples/github-actions/aitriage-manual-html-report.yml) — manually triggered HTML report.
 
-Copy the selected file to `.github/workflows/`, add the referenced provider key in GitHub Secrets, and run `workflow_dispatch` once. Verify the uploaded reports, SARIF, and post-AI gate before making the check required.
+Copy the selected file to `.github/workflows/` and set what its header comment lists: the repository variable `AITRIAGE_ALLOWED_ACTOR_ID` (every job is skipped while it is empty) and, for the AI templates, the provider key in GitHub Secrets. Trigger it once, then verify the uploaded reports, SARIF, and post-AI gate before making the check required.
 
 For organizations, the application workflow may call one centrally managed reusable workflow. Use the exact approved repository and secret names; AITriage documentation intentionally does not guess them.
 
@@ -357,9 +359,9 @@ export GEMINI_API_KEY="..."
 aitriage agent . --no-chat
 ```
 
-`agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`.
+`agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice.
 
-To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-or-claude-code).
+To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code).
 
 ## Reports
 
@@ -373,14 +375,15 @@ aitriage-reports/
 │   ├── fixspec.md            # remediation instructions
 │   ├── triage-findings.json  # all AI verdicts
 │   ├── aitriage.sarif        # standard scanner output
-│   ├── scan.json             # deterministic input to triage
 │   ├── manifest.json         # state, scanner coverage, integrity metadata
-│   └── audit.log             # run events
+│   ├── scan.json             # AI IDE runs: deterministic input to triage
+│   └── audit.log             # AI IDE runs: run events
+├── cache/                    # verdict and artifact cache
 ├── history/                  # deterministic scan history
 └── web/                      # local Web state
 ```
 
-Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this directory from every scanner and AI context so its own output cannot trigger another audit loop.
+Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this directory from every scanner and AI context so its own output cannot trigger another audit loop. List or remove AI IDE run bundles with `aitriage runs list .` and `aitriage runs clean .` (`--dry-run` previews; unfinished runs are kept unless you pass `--force`).
 
 ## Scope, cost and the gate verdict
 
@@ -398,8 +401,17 @@ secret scan, so a vendored dependency is never reported as your vulnerability.
 | `AITRIAGE_SCAN_VENDORED=true` | Audit vendored and generated directories as if they were your own source |
 | `.aitriageignore` | Per-project excludes, same syntax as `.gitignore`, always honoured |
 
-Network port probing is opt-in. It reports on the machine AITriage runs on rather than on
-the repository, so its findings are never counted in the repository's security score.
+The two variables change what the bundled scanners and the git-history scan cover; the
+built-in engine always skips ignored files and those directories. They are read by the
+process that runs the scanners: set them in the GitHub Action's job environment, or in your
+shell with `--runtime native` (development mode). The local container launcher used by
+`agent` and `web` forwards only provider keys, `AITRIAGE_LLM_*` settings and
+`AITRIAGE_BATCH_SIZE`.
+
+Network findings describe the machine AITriage runs on rather than the repository: AITriage
+probes the services declared by a Compose file in the project root, and
+`aitriage agent --probe <host>` adds a host of your choice. These findings are reported but
+never counted in the repository's security score.
 
 ### Why the gate can fail with nothing confirmed
 
@@ -418,16 +430,22 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | `fail_on: any` | Any active finding blocks, reviewed or not |
 | `fail_on: confirmed` | Only findings someone confirmed block; unreviewed are reported, not blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
-| `aitriage baseline create .` | Accept today's findings as the starting line and gate only on regressions |
+| `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
+
+Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
+including the Action's default `scan` command, uses `critical`; `aitriage agent` exits non-zero
+only when a gate is configured or `--fail-on`/`--fail-score` is passed.
 
 A baseline is a property of the project, not of the tool that created it. It lives in
-`.aitriage-baseline.json` at the repository root and is available from every surface: the CLI
+`.aitriage-baseline.json` at the repository root, and every surface reads the same file: the CLI
 (`aitriage baseline`), the Web UI (SecureCoder → Baseline) and an AI IDE (`aitriage_baseline`).
-A baseline created in one is honoured by the others. Under the MCP safe profile only inspection
-is offered, because accepting findings writes to the project.
+Under the MCP safe profile only inspection is offered, because accepting findings writes to the
+project.
 
-Today a baseline covers the built-in engine's findings. Results from the bundled Semgrep, Trivy,
-Gitleaks and Bandit are not yet baselined.
+A baseline records findings from every scanner that ran when it was created: the built-in
+engine, Semgrep, Trivy, Gitleaks, Bandit, and the NFR and deploy checks. Network findings are
+never baselined. `aitriage baseline create` runs on the host, so it records Semgrep, Trivy,
+Gitleaks and Bandit findings only where those tools are installed locally.
 
 For a legacy codebase adopting AITriage, `aitriage baseline create .` is usually the right
 first move: it keeps every finding visible in reports while the gate judges only new work.
@@ -440,9 +458,9 @@ a provider.
 
 | Lever | Effect |
 | :--- | :--- |
-| Verdict cache (on by default) | A re-run of the same findings reuses stored verdicts. The report prints the reuse percentage |
-| `AITRIAGE_GATING=on` | Send only CRITICAL/HIGH findings to the LLM. The rest get a deterministic `Needs Manual Review` — never an automatic dismissal |
-| `AITRIAGE_BATCH_SIZE` | Findings per request. Larger batches cost fewer round trips and more tokens per call |
+| Verdict cache | A re-run of the same findings reuses stored verdicts, and the report prints the reuse percentage. On for local `agent`, Web and AI IDE runs (`aitriage-reports/cache/`); in the GitHub Action, set the `verdict-cache-dir` input |
+| `AITRIAGE_GATING=on` | Send only CRITICAL/HIGH findings to the LLM. The rest get a deterministic `Needs Manual Review` — never an automatic dismissal. Set it where the scope variables above go |
+| `AITRIAGE_BATCH_SIZE` | Findings per request (default 150). Larger batches cost fewer round trips and more tokens per call |
 | Provider choice | Triage is classification, not composition. A small fast model is usually the better trade here; reserve a frontier model for narrative quality |
 
 If no provider key is set, Web still scans, scores, applies the policy and generates every

@@ -5,7 +5,8 @@
 > The engine loads every `*.yaml` file in this directory tree (embedded at compile
 > time) as its single source of truth. Regex and AST rules run in the AITriage
 > engine; taint-mode rules (`mode: taint`) are compiled into a trusted config and
-> executed by the bundled Semgrep during a full audit.
+> executed by the bundled Semgrep during a full audit. When two entries share an
+> `id`, the engine keeps the first one it loads.
 >
 > The per-category counts below are verified against the embedded catalog by a
 > test (`TestREADMECountsMatchCatalog`), so they cannot silently drift.
@@ -27,7 +28,7 @@
 | [ASP.NET Core](./aspnetcore/) | 10 | C# |
 | [LLM / AI Security](./llm/) | 10 | All (OWASP LLM Top 10:2025) |
 | [Docker / IaC](./docker/) | 11 | Dockerfile, YAML |
-| **Shannon Entropy** | Built-in | All (binary analysis) |
+| **Shannon Entropy** | Built-in | Go, Python, JS/TS and `.env` files (documented in `universal/secrets.yaml`) |
 
 ### OWASP Mapping
 
@@ -63,34 +64,47 @@ Each rule is a YAML object with the following fields:
 - id: UNIQUE-ID            # e.g., DJANGO-DEBUG, LLM-OUTPUT-EXEC
   name: "Human-Readable Name"
   stack: universal          # Target stack: universal | nextjs | fastapi | django | flask | express | go | aspnetcore
-  extensions: [".py"]      # File extensions to scan
-  target: all               # Matching mode: all | ast | raw | code | filename | lines_percentage | condition
+  extensions: [".py"]      # File extensions, or exact file names such as "Dockerfile"
+  target: code              # Matching mode (default: code), see below
   exclude_tests: true       # Skip test files (optional)
-  pattern: 'regex_pattern'  # Go-compatible regex
-  condition: "..."          # Optional: required_pattern | not_contains:X | contains:X | threshold:N
-  suggestion: "Fix advice"  # Actionable remediation guidance
+  exclude_paths: ["seed"]   # Skip paths containing any of these fragments (optional)
+  pattern: 'regex_pattern'  # Go RE2 regex; a tree-sitter query for target: ast
+  condition: "..."          # Optional, see Conditions
+  severity: HIGH            # Optional: CRITICAL | HIGH | MEDIUM | LOW
+  suggestion: "HIGH: Fix advice"  # Remediation; a severity prefix sets severity when `severity` is absent
 ```
+
+A rule runs only when its `stack` is `universal` or matches the detected (or
+`--stack`) stack. A built-in rule without a severity defaults to `LOW`.
 
 ### Target Modes
 
 | Mode | Description |
 |---|---|
-| `all` | Regex search across file content |
-| `ast` | Tree-sitter AST query (Go, Python, JS/TS) |
-| `raw` | Match against raw file bytes |
-| `filename` | Match against filename |
-| `condition` | Engine-specific condition (e.g., `large_file`) |
+| `code` | Default. Regex over the source with comments and string literals removed |
+| `all` | Regex over the full file content |
+| `docs` | Regex over comments and string literals only |
+| `ast` | Tree-sitter query (Go, Python, JavaScript/JSX, TypeScript/TSX) |
+| `filename` | With `condition: missing`: alert when no scanned file name matches the pattern |
+| `condition` | Engine-specific check; currently `condition: large_file` (files over 1,500 lines) |
+| `entropy-analysis` | Documentation-only entry for a check implemented in Go (Shannon entropy) |
+
+`raw` and `lines_percentage` still appear in some catalog rules but have no
+dedicated implementation: they are matched like `code` (like `all` under
+`required_pattern`).
 
 ### Conditions
 
 | Condition | Description |
 |---|---|
-| `required_pattern` | Alert if pattern is NOT found (missing security control) |
-| `not_contains:X` | Alert if pattern matches but file doesn't contain X |
-| `contains:X` | Alert only if file also contains X |
-| `threshold:N` | Alert if matching lines exceed N% of total lines |
-| `missing` | Alert if the expected file does not exist |
+| `required_pattern` | Alert if files with the rule's extensions exist but none contains the pattern (missing security control) |
+| `not_contains:X` | Alert on a match only if the file does not also contain X (case-insensitive) |
+| `missing` | With `target: filename`: alert if no file name matches the pattern |
 | `missing_lockfile` | Alert if a project uses a package manager (its manifest is present) but has no lockfile for it; see `ecosystems` below |
+| `large_file` | With `target: condition`: alert on files over 1,500 lines |
+
+`contains:X` and `threshold:N` also appear in the catalog, but the engine does
+not evaluate them yet: those rules match as if no condition were set.
 
 ### Lockfile Ecosystems (`condition: missing_lockfile`)
 
@@ -120,25 +134,36 @@ rather than run without them. Example: `FAST-XSS` (reflected XSS in FastAPI).
 
 ## Writing Custom Rules
 
-Add rules to `.aitriage.yaml` in your project root:
+Add rules under the `rules:` key of `.aitriage.yaml` in your project root:
 
 ```yaml
-custom_rules:
+rules:
   - id: MY-CUSTOM-RULE
     name: "Describe the vulnerability"
     stack: universal
     extensions: [".py", ".js"]
-    target: all
+    target: code
     pattern: 'dangerous_function\('
+    severity: HIGH
     suggestion: "Explain why this is dangerous and how to fix it."
 ```
+
+Custom rules accept `id`, `name`, `stack`, `extensions`, `target`, `pattern`,
+`condition`, `severity` and `suggestion`. Rule packs installed with
+`aitriage rules install ./my-rules/` are copied to `~/.aitriage/packs/` and
+loaded when the engine runs natively on that machine (for example
+`aitriage scan`); a pack rule whose `id` already exists in the built-in catalog
+is ignored. Custom and pack rules take their severity only from `severity:`;
+the suggestion prefix is parsed for built-in rules alone.
 
 ### Guidelines
 
 1. **Be specific** — narrow patterns reduce false positives
-2. **Test the regex** — use `grep -P` to verify before committing
+2. **Use Go RE2 syntax** — no lookarounds or backreferences; `grep -P` accepts
+   patterns RE2 rejects, and an invalid pattern silently degrades to a literal
+   substring match (a `required_pattern` rule with one never fires)
 3. **Map to OWASP** — reference the relevant OWASP category in the suggestion
-4. **Severity in suggestion** — prefix with CRITICAL / HIGH / MEDIUM / LOW
+4. **Set the severity** — `severity:`, or for built-in rules a CRITICAL / HIGH / MEDIUM / LOW prefix in the suggestion
 5. **Actionable fix** — always explain the remediation, not just the problem
 
 ---
@@ -146,6 +171,10 @@ custom_rules:
 ## Contributing
 
 1. Fork the repository
-2. Add rules to the appropriate `rules/<stack>/security.yaml`
-3. Test with `aitriage scan ./testdata`
-4. Submit a PR with the rule and a test case
+2. Add rules to the appropriate `rules/<category>/security.yaml`
+3. Add a test case (an engine test in `internal/engine/` or a fixture under `testdata/synthetic/`)
+4. Update the counts above and run `go test ./rules/`
+5. Verify with `aitriage scan <fixture> --stack <stack>`
+6. Submit a PR with the rule and its test
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full workflow.
