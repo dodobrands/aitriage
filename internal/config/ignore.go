@@ -64,12 +64,26 @@ func LoadIgnore(rootPath string) IgnoreConfig {
 //   - "*", "?" and "[...]" never match "/"; a leading "**/" matches in every
 //     directory, "/**/" spans zero or more directories and a trailing "/**"
 //     matches everything inside a directory, not the directory itself;
-//   - "!" re-includes, and the last pattern that matches decides.
+//   - "!" re-includes, and the last pattern that matches a path decides it;
+//   - a path is excluded with any directory above it that is excluded.
 //
-// One rule deliberately differs from git. Git cannot re-include a file whose
+// A path is decided the way git decides it, from the top: each directory above
+// it first, then the path itself, each by the patterns that match that
+// directory or path itself. A negated directory pattern therefore re-includes
+// the directory, not the files inside it that a pattern still excludes: with
+// "*", "!*/" and "!*.go" every directory is entered but only the .go files are
+// in scope, and with "*/" and "!src/" the subdirectories of src/ stay
+// excluded. The matcher used to let such a negation cover every file below
+// the directory, which scanned everything the whitelist was written to leave
+// out.
+//
+// One rule deliberately differs from git. Git cannot re-include a path whose
 // parent directory is excluded, so "infra/" followed by "!infra/prod/" leaves
-// infra/prod/ ignored there. Here the negation applies: it is what the entry
-// asks for, and scanning more never hides a finding.
+// infra/prod/ ignored there, as "logs/" followed by "!keep.log" leaves
+// logs/keep.log. Here a negation that comes after the pattern excluding the
+// parent and names the path itself re-includes it, and what is below it is
+// then decided as usual: it is what the entry asks for, and scanning more
+// never hides a finding.
 //
 // ignore.paths entries used to be matched as plain substrings, which silently
 // dropped the project's own code: "vendor" also excluded "src/vendors/", ".git"
@@ -100,9 +114,11 @@ type PathRule struct {
 // pathRule is a compiled pattern.
 type pathRule struct {
 	PathRule
-	// re matches a path the pattern names, or a path below a directory it
-	// names.
-	re *regexp.Regexp
+	// self matches a path the pattern names itself.
+	self *regexp.Regexp
+	// tree matches a path the pattern names, or a path below a directory it
+	// names. Without negated patterns that is all exclusion needs.
+	tree *regexp.Regexp
 	// segments match an anchored pattern one path segment at a time, with nil
 	// standing for "**". They are nil when the pattern cannot be split safely;
 	// mayMatchBelow then assumes the worst.
@@ -211,8 +227,8 @@ func (m *PathMatcher) Excludes(rel string, isDir bool) bool {
 	if m == nil || !ok {
 		return false
 	}
-	i := m.lastMatch(rel, isDir)
-	return i >= 0 && !m.rules[i].Negated
+	excluded, _ := m.decide(rel, isDir)
+	return excluded
 }
 
 // ExcludesTree reports whether a directory and everything below it are
@@ -226,11 +242,14 @@ func (m *PathMatcher) ExcludesTree(rel string) bool {
 	if m == nil || !ok {
 		return false
 	}
-	i := m.lastMatch(rel, true)
-	if i < 0 || m.rules[i].Negated {
+	excluded, by := m.decide(rel, true)
+	if !excluded {
 		return false
 	}
-	for _, later := range m.rules[i+1:] {
+	// Below an excluded directory, only a negation later than every pattern
+	// that excluded it or a directory on the way down can re-include a path
+	// (see decide), so the others cannot keep the walker going.
+	for _, later := range m.rules[by+1:] {
 		if later.Negated && later.mayMatchBelow(rel) {
 			return false
 		}
@@ -238,11 +257,50 @@ func (m *PathMatcher) ExcludesTree(rel string) bool {
 	return true
 }
 
-// lastMatch returns the index of the last pattern that matches rel or a
-// directory above it, or -1.
-func (m *PathMatcher) lastMatch(rel string, isDir bool) int {
+// decide reports whether rel is excluded and, when it is, the index of the
+// latest pattern that excluded it or a directory on the way down to it.
+//
+// Without a negated pattern, a path is excluded when any pattern names it or
+// a directory above it. With one, the path is decided as git decides it, from
+// the top: each directory above rel, then rel itself, by the last pattern that
+// names that path itself. Below an excluded directory everything is excluded,
+// except a path that a later negated pattern names (the deliberate difference
+// from git described at PathMatcher). A negation that names a directory never
+// decides the files below it.
+func (m *PathMatcher) decide(rel string, isDir bool) (bool, int) {
+	if !m.negation {
+		for i := len(m.rules) - 1; i >= 0; i-- {
+			if m.rules[i].inTree(rel, isDir) {
+				return true, i
+			}
+		}
+		return false, -1
+	}
+	excluded, by := false, -1
+	for start := 0; ; {
+		path, dir := rel, isDir
+		slash := strings.IndexByte(rel[start:], '/')
+		if slash >= 0 {
+			path, dir = rel[:start+slash], true
+		}
+		// Under an excluded directory only a later pattern changes anything:
+		// a later negation re-includes, a later exclusion raises the bar a
+		// negation has to clear further down.
+		if i := m.lastSelfMatch(path, dir); i >= 0 && (!excluded || i > by) {
+			excluded, by = !m.rules[i].Negated, i
+		}
+		if slash < 0 {
+			return excluded, by
+		}
+		start += slash + 1
+	}
+}
+
+// lastSelfMatch returns the index of the last pattern that names path itself,
+// or -1. A directory pattern names directories only.
+func (m *PathMatcher) lastSelfMatch(path string, isDir bool) int {
 	for i := len(m.rules) - 1; i >= 0; i-- {
-		if m.rules[i].covers(rel, isDir) {
+		if rule := &m.rules[i]; (isDir || !rule.DirOnly) && rule.self.MatchString(path) {
 			return i
 		}
 	}
@@ -259,9 +317,9 @@ func projectRelative(rel string) (string, bool) {
 	return rel, true
 }
 
-// covers reports whether the pattern matches rel itself or a directory above
+// inTree reports whether the pattern names rel itself or a directory above
 // it: everything below an excluded directory is excluded with it.
-func (r *pathRule) covers(rel string, isDir bool) bool {
+func (r *pathRule) inTree(rel string, isDir bool) bool {
 	if r.DirOnly && !isDir {
 		// A file is never matched by a directory pattern itself, only through
 		// the directory it is in.
@@ -271,7 +329,7 @@ func (r *pathRule) covers(rel string, isDir bool) bool {
 		}
 		rel = rel[:slash]
 	}
-	return r.re.MatchString(rel)
+	return r.tree.MatchString(rel)
 }
 
 // mayMatchBelow reports whether the pattern could match a path strictly below
@@ -293,10 +351,11 @@ func (r *pathRule) mayMatchBelow(dir string) bool {
 			return false
 		}
 	}
-	// The pattern ends at dir or above it. Being later than the pattern that
-	// excludes dir, it would have kept dir in scope if it matched it, so this
-	// is not reached in practice; true is the safe answer.
-	return true
+	// The pattern ends at dir or above it: without "**", each segment names
+	// one path segment, so it names dir or a directory above it, and nothing
+	// below dir. A negation that names a directory re-includes that directory,
+	// not what is below it (see decide).
+	return false
 }
 
 // trimTrailingSpaces drops trailing spaces that are not escaped with a
@@ -348,11 +407,15 @@ func parsePathRule(line string) (pathRule, bool) {
 	if !rule.Anchored {
 		prefix = "^(?:.*/)?"
 	}
-	re, err := regexp.Compile(prefix + body + "(?:/|$)")
+	self, err := regexp.Compile(prefix + body + "$")
 	if err != nil {
 		return pathRule{}, false
 	}
-	rule.re = re
+	tree, err := regexp.Compile(prefix + body + "(?:/|$)")
+	if err != nil {
+		return pathRule{}, false
+	}
+	rule.self, rule.tree = self, tree
 
 	// Brackets and escapes may hide a "/" that is not a separator; such a
 	// pattern is not split, and mayMatchBelow assumes the worst for it.

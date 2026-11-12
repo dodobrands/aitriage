@@ -11,14 +11,19 @@ import (
 // source, next to the code it is about. The directive grammar is:
 //
 //	aitriage-ignore: ID[, ID…] (reason)    its own line and the line below
+//	aitriage-ignore: ID ID… reason          same, IDs separated by spaces
 //	aitriage:ignore ID                      same, colon form
 //	aitriage-ignore-next-line: ID           the line below only
 //	aitriage-ignore-file[: ID, …]           the whole file; in its first 10 lines
 //
 // IDs compare whole and case-insensitively, and may carry a source qualifier
-// ("gitleaks:generic-api-key"). "all" silences every rule, but only as a token
-// of its own. Text after the ID list, such as a reason in parentheses, is never
-// read as an ID.
+// ("gitleaks:generic-api-key"). They are separated by commas or spaces. The
+// first ID and every ID after a comma are read as written; a word after a
+// space is read as another ID only when it looks like one (see
+// looksLikeRuleID), so the reason that follows the list is never taken for
+// IDs: "B105 allowed in tests" names B105 only, "ENTR-18 PY-BINDING-ALL" both.
+// The list also ends at "(". "all" silences every rule, but only as the first
+// ID or after a comma, never as a word of a reason.
 //
 // A directive counts only when it opens a comment: it follows a comment marker
 // ("#", "//", "/*", "<!--", "--" or ";", including forms such as "///", "{#"
@@ -26,9 +31,10 @@ import (
 // inside a block comment, optionally after the "*" of a "/** … */" block.
 // Anything else is a mention of the directive, not a decision: a README
 // sentence such as "add aitriage-ignore-file to skip a file", a string literal
-// such as "put aitriage-ignore-file here", a documentation link to
-// "#aitriage-ignore-file", or a comment that merely refers to the directive.
-// Any of them used to silence every finding in its file.
+// such as "put aitriage-ignore-file here", including one that spans lines (a
+// Python docstring, a JS template literal, a Go raw string), a documentation
+// link to "#aitriage-ignore-file", or a comment that merely refers to the
+// directive. Any of them used to silence every finding in its file.
 //
 // The earlier implementation looked for the substrings "all" and the rule id
 // anywhere on the line, so "# aitriage-ignore: B105 (allowed in tests)"
@@ -89,14 +95,14 @@ var directiveKeywords = []string{"aitriage-ignore", "aitriage:ignore"}
 var keywordStem = []byte("aitriage")
 
 // ParseLine returns every directive written on one line of source that does
-// not start inside a block comment.
+// not start inside a block comment or a string.
 func ParseLine(line string) []Directive {
-	return parseLine(line, noBlock)
+	return parseLine(line, inCode)
 }
 
-// parseLine returns the directives on one line. block is the block comment the
-// line starts in, if any.
-func parseLine(line string, block blockComment) []Directive {
+// parseLine returns the directives on one line. state is what the line starts
+// in: code, a block comment or a string that spans lines.
+func parseLine(line string, state lexState) []Directive {
 	var directives []Directive
 	var kinds []byte
 	pos := 0
@@ -123,9 +129,9 @@ func parseLine(line string, block blockComment) []Directive {
 			continue
 		}
 		if kinds == nil {
-			kinds, _ = classifyLine(line, block)
+			kinds, _ = classifyLine(line, state)
 		}
-		if !opensComment(line, start, kinds, block) {
+		if !opensComment(line, start, kinds, state) {
 			pos = next
 			continue
 		}
@@ -142,9 +148,8 @@ const markerBytes = "#/*!-<;{%"
 // opensComment reports whether the directive keyword at line[at] opens a
 // comment: it follows a comment marker that starts the line or follows a
 // space, or it starts a line inside a block comment. kinds classifies the
-// line's bytes (see classifyLine) and block is the block comment the line
-// starts in.
-func opensComment(line string, at int, kinds []byte, block blockComment) bool {
+// line's bytes (see classifyLine) and state is what the line starts in.
+func opensComment(line string, at int, kinds []byte, state lexState) bool {
 	end := at
 	for end > 0 && (line[end-1] == ' ' || line[end-1] == '\t') {
 		end--
@@ -157,11 +162,12 @@ func opensComment(line string, at int, kinds []byte, block blockComment) bool {
 	atLineStart := strings.TrimLeft(line[:start], " \t") == ""
 	switch {
 	case marker == "":
-		// A line of its own inside a block comment opened above.
-		return atLineStart && block != noBlock
+		// A line of its own inside a block comment opened above. Inside a
+		// string that spans lines it is text.
+		return atLineStart && state.comment()
 	case strings.Trim(marker, "*") == "":
 		// The " * " that starts each line of a "/** … */" block.
-		return atLineStart && block == slashStarBlock
+		return atLineStart && state == inSlashStar
 	case !strings.Contains(marker, "#") && !strings.Contains(marker, "//") && !strings.Contains(marker, "/*") &&
 		!strings.Contains(marker, "--") && !strings.Contains(marker, ";"):
 		return false
@@ -174,14 +180,65 @@ func opensComment(line string, at int, kinds []byte, block blockComment) bool {
 	return kinds[start] != stringByte
 }
 
-// blockComment is the kind of block comment a line starts in.
-type blockComment uint8
+// lexState is what a line starts in: code, a block comment, or a string that
+// spans lines.
+type lexState uint8
 
 const (
-	noBlock        blockComment = iota
-	slashStarBlock              // /* … */
-	markupBlock                 // <!-- … -->
+	inCode         lexState = iota
+	inSlashStar             // /* … */
+	inMarkup                // <!-- … -->
+	inTripleDouble          // """ … """: Python, and Kotlin, Swift or Java text blocks
+	inTripleSingle          // ''' … ''': Python
+	inBacktick              // ` … `: a JS/TS template literal or a Go raw string
 )
+
+// comment reports whether the state is a block comment.
+func (s lexState) comment() bool {
+	return s == inSlashStar || s == inMarkup
+}
+
+// closer is the delimiter that ends the state.
+func (s lexState) closer() string {
+	switch s {
+	case inSlashStar:
+		return "*/"
+	case inMarkup:
+		return "-->"
+	case inTripleDouble:
+		return `"""`
+	case inTripleSingle:
+		return "'''"
+	case inBacktick:
+		return "`"
+	}
+	return ""
+}
+
+// end returns the index just past the delimiter in line[from:] that ends the
+// state, or -1 when the line does not end it. A backslash escapes the next
+// byte of a triple-quoted string. A backtick string has no escapes, as in a Go
+// raw string: `\` is a whole string there, and the escaped backticks of a
+// template literal ("\`code\`") come in pairs, which keeps the count even.
+func (s lexState) end(line string, from int) int {
+	closer := s.closer()
+	if s.comment() {
+		if i := strings.Index(line[from:], closer); i >= 0 {
+			return from + i + len(closer)
+		}
+		return -1
+	}
+	for i := from; i < len(line); i++ {
+		if line[i] == '\\' && s != inBacktick {
+			i++
+			continue
+		}
+		if strings.HasPrefix(line[i:], closer) {
+			return i + len(closer)
+		}
+	}
+	return -1
+}
 
 // Byte classes classifyLine assigns; any other byte is code.
 const (
@@ -190,36 +247,47 @@ const (
 )
 
 // classifyLine marks every byte of line as code, string literal or comment,
-// and returns the block comment still open at its end. It knows no language,
-// so it errs towards reading text as code:
-//   - a quote opens a string only when the same line closes it, so an
-//     apostrophe in "don't" or a Rust lifetime is not a string;
+// and returns the state at its end: what the next line starts in. It knows no
+// language, so it errs towards reading text as code:
+//   - a single or double quote opens a string only when the same line closes
+//     it, so an apostrophe in "don't" or a Rust lifetime is not a string;
 //   - "#", "--" and ";" start a line comment at the start of the line, after
 //     whitespace, or after the "{" or "%" of a template comment ("{#", "<%#");
 //     "//" and "/*" after whitespace, a bracket or a semicolon. "https://",
 //     "x--", "a#b" and "src/*" are not comments;
-//   - strings and comments do not span lines, except /* … */ and <!-- … -->.
-func classifyLine(line string, block blockComment) ([]byte, blockComment) {
+//   - line comments and single-quoted or double-quoted strings end with the
+//     line. Block comments (/* … */, <!-- … -->), strings between three
+//     double or three single quotes (Python docstrings) and backtick strings
+//     (template literals, Go raw strings) continue on the next line until
+//     they are closed.
+func classifyLine(line string, state lexState) ([]byte, lexState) {
 	kinds := make([]byte, len(line))
 	mark := func(from, to int, kind byte) {
 		for i := from; i < to; i++ {
 			kinds[i] = kind
 		}
 	}
-	for i := 0; i < len(line); {
-		if block != noBlock {
-			closer := "*/"
-			if block == markupBlock {
-				closer = "-->"
+	i := 0
+	// opens enters next at line[i], which starts with its opening delimiter.
+	opens := func(next lexState, delimiter string, kind byte) {
+		state = next
+		mark(i, i+len(delimiter), kind)
+		i += len(delimiter)
+	}
+	for i < len(line) {
+		if state != inCode {
+			kind := stringByte
+			if state.comment() {
+				kind = commentByte
 			}
-			end := strings.Index(line[i:], closer)
+			end := state.end(line, i)
 			if end < 0 {
-				mark(i, len(line), commentByte)
-				return kinds, block
+				mark(i, len(line), kind)
+				return kinds, state
 			}
-			mark(i, i+end+len(closer), commentByte)
-			i += end + len(closer)
-			block = noBlock
+			mark(i, end, kind)
+			i = end
+			state = inCode
 			continue
 		}
 		var prev byte = ' '
@@ -229,18 +297,20 @@ func classifyLine(line string, block blockComment) ([]byte, blockComment) {
 		rest := line[i:]
 		switch c := line[i]; {
 		case strings.HasPrefix(rest, "<!--"):
-			block = markupBlock
-			mark(i, i+4, commentByte)
-			i += 4
+			opens(inMarkup, "<!--", commentByte)
 		case strings.HasPrefix(rest, "/*") && strings.IndexByte(" \t;{}()", prev) >= 0:
-			block = slashStarBlock
-			mark(i, i+2, commentByte)
-			i += 2
+			opens(inSlashStar, "/*", commentByte)
 		case strings.HasPrefix(rest, "//") && strings.IndexByte(" \t;{}()", prev) >= 0,
 			(c == '#' || c == ';' || strings.HasPrefix(rest, "--")) && strings.IndexByte(" \t{%", prev) >= 0:
 			mark(i, len(line), commentByte)
-			return kinds, noBlock
-		case c == '"' || c == '\'' || c == '`':
+			return kinds, inCode
+		case strings.HasPrefix(rest, `"""`):
+			opens(inTripleDouble, `"""`, stringByte)
+		case strings.HasPrefix(rest, "'''"):
+			opens(inTripleSingle, "'''", stringByte)
+		case c == '`':
+			opens(inBacktick, "`", stringByte)
+		case c == '"' || c == '\'':
 			end := closingQuote(line, i)
 			if end < 0 {
 				i++
@@ -252,7 +322,7 @@ func classifyLine(line string, block blockComment) ([]byte, blockComment) {
 			i++
 		}
 	}
-	return kinds, block
+	return kinds, state
 }
 
 // closingQuote returns the index of the unescaped quote that closes the one at
@@ -270,25 +340,29 @@ func closingQuote(line string, open int) int {
 	return -1
 }
 
-// advanceBlock returns the block comment open after line, given the one it
-// starts in. Most lines hold no block comment marker and are not lexed.
-func advanceBlock(line []byte, block blockComment) blockComment {
-	switch block {
-	case noBlock:
-		if !bytes.Contains(line, []byte("/*")) && !bytes.Contains(line, []byte("<!--")) {
-			return noBlock
+// openers are what can start a state that continues on the next line.
+var openers = [][]byte{[]byte("/*"), []byte("<!--"), []byte(`"""`), []byte("'''"), []byte("`")}
+
+// advanceState returns the state after line, given the one it starts in. Most
+// lines hold nothing that opens or closes a block comment or a string that
+// spans lines, and are not lexed.
+func advanceState(line []byte, state lexState) lexState {
+	if state == inCode {
+		lex := false
+		for _, opener := range openers {
+			if bytes.Contains(line, opener) {
+				lex = true
+				break
+			}
 		}
-	case slashStarBlock:
-		if !bytes.Contains(line, []byte("*/")) {
-			return block
+		if !lex {
+			return inCode
 		}
-	case markupBlock:
-		if !bytes.Contains(line, []byte("-->")) {
-			return block
-		}
+	} else if !bytes.Contains(line, []byte(state.closer())) {
+		return state
 	}
-	_, block = classifyLine(string(line), block)
-	return block
+	_, state = classifyLine(string(line), state)
+	return state
 }
 
 // nextKeyword finds the earliest directive keyword in s.
@@ -302,16 +376,21 @@ func nextKeyword(s string) (int, string) {
 	return best, keyword
 }
 
-// parseIDs reads the comma-separated ID list that follows a keyword and
-// reports how many bytes it consumed. The list ends at the first token not
-// followed by a comma, so "B105 allowed in tests" yields only B105: free text
-// must never widen a suppression.
+// parseIDs reads the ID list that follows a keyword and reports how many bytes
+// it consumed. IDs are separated by commas or spaces. The first token and
+// every token after a comma are IDs; a token after a space alone is one only
+// when it looks like a rule id, and otherwise starts the reason that ends the
+// list. "B105 allowed in tests" yields only B105 while "ENTR-18
+// PY-BINDING-ALL" yields both: free text must never widen a suppression, and
+// IDs separated by a space, which the earlier substring matching accepted,
+// must keep working. The list also ends at punctuation such as "(".
 func parseIDs(s string) ([]string, int) {
 	i := skipSpace(s, 0)
 	if i < len(s) && (s[i] == ':' || s[i] == '=') {
 		i++
 	}
 	var ids []string
+	afterSpace := false // the token follows a space, not the keyword or a comma
 	for {
 		i = skipSpace(s, i)
 		if i >= len(s) || !isAlnum(s[i]) {
@@ -323,16 +402,44 @@ func parseIDs(s string) ([]string, int) {
 		}
 		// Trailing punctuation belongs to the sentence, not to the id:
 		// "B105." or the "--" of a closing "-->".
-		if id := strings.TrimRight(s[start:i], ".:/-"); id != "" {
-			ids = append(ids, id)
+		id := strings.TrimRight(s[start:i], ".:/-")
+		if afterSpace && !looksLikeRuleID(id) {
+			return ids, start
 		}
-		i = skipSpace(s, i)
-		if i < len(s) && s[i] == ',' {
-			i++
-			continue
+		ids = append(ids, id)
+		next := skipSpace(s, i)
+		switch {
+		case next < len(s) && s[next] == ',':
+			i, afterSpace = next+1, false
+		case next > i:
+			i, afterSpace = next, true
+		default:
+			// The token ends at punctuation other than a comma, or the line
+			// ends: so does the list.
+			return ids, i
 		}
-		return ids, i
 	}
+}
+
+// looksLikeRuleID reports whether a word written after an ID with only a space
+// between is another ID rather than the start of a reason. Rule ids carry a
+// digit or punctuation (B105, ENTR-18, CVE-2024-1234, nginx_missing_csp,
+// python.lang.security.audit.eval, gitleaks:jwt) or are written in capitals
+// (SECRET); words of a sentence ("allowed", "we", "tests") are neither. "all"
+// in any case is a word here: "B105 all good" must not silence every rule.
+func looksLikeRuleID(token string) bool {
+	if token == "" || strings.EqualFold(token, allRules) {
+		return false
+	}
+	if strings.ContainsAny(token, "0123456789-:._") {
+		return true
+	}
+	for i := 0; i < len(token); i++ {
+		if c := token[i]; (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func skipSpace(s string, i int) int {
@@ -366,7 +473,7 @@ func Suppressed(content []byte, line int, ruleID string, sources ...string) bool
 		last = line
 	}
 	current := 0
-	block := noBlock
+	state := inCode
 	for len(content) > 0 && current < last {
 		current++
 		var text []byte
@@ -375,15 +482,16 @@ func Suppressed(content []byte, line int, ruleID string, sources ...string) bool
 		} else {
 			text, content = content, nil
 		}
-		// Block comments are tracked on every line, relevant or not: a
-		// directive on a line of its own counts only inside one.
-		startBlock := block
-		block = advanceBlock(text, block)
+		// Block comments and strings that span lines are tracked on every
+		// line, relevant or not: a directive on a line of its own counts only
+		// inside a block comment, and never inside such a string.
+		startState := state
+		state = advanceState(text, state)
 		relevant := current <= FileHeaderLines || current == line || current == line-1
 		if !relevant || !bytes.Contains(text, keywordStem) {
 			continue
 		}
-		for _, d := range parseLine(string(text), startBlock) {
+		for _, d := range parseLine(string(text), startState) {
 			var applies bool
 			switch d.Scope {
 			case ScopeFile:

@@ -3,6 +3,7 @@ package baseline
 import (
 	"crypto/sha256"
 	"fmt"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
@@ -213,27 +214,19 @@ func NewFromItems(items []Item) *Baseline {
 //     fingerprint, and only core findings can match them.
 //   - "1" and "2" stored absolute paths, so a finding whose path is now relative
 //     is also tried against the absolute form the file would have recorded.
-//
-// The caller supplies absPath because only it knows the project root; an empty
-// value simply skips the absolute-path attempt.
+//     That needs the project root: Accepts does not know it and matches an
+//     absolute entry only exactly; AcceptsInProject does.
 func (b *Baseline) Accepts(item Item) bool {
-	return b.acceptsWithAbsolute(item, "")
+	return b.accepts("", item)
 }
 
 // AcceptsInProject is Accepts for a known project root, so baselines written
 // before paths were made relative still match.
 func (b *Baseline) AcceptsInProject(root string, item Item) bool {
-	if b == nil {
-		return false
-	}
-	absolute := ""
-	if root != "" && item.File != "" && !filepath.IsAbs(item.File) {
-		absolute = filepath.Join(root, item.File)
-	}
-	return b.acceptsWithAbsolute(item, absolute)
+	return b.accepts(root, item)
 }
 
-func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
+func (b *Baseline) accepts(root string, item Item) bool {
 	if b == nil || len(b.Findings) == 0 {
 		return false
 	}
@@ -242,8 +235,8 @@ func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 	}
 
 	legacyPaths := []string{}
-	if absolutePath != "" && b.Version != CurrentSchema {
-		legacyPaths = append(legacyPaths, absolutePath)
+	if root != "" && item.File != "" && !filepath.IsAbs(item.File) && b.Version != CurrentSchema {
+		legacyPaths = append(legacyPaths, filepath.Join(root, item.File))
 	}
 
 	for _, path := range legacyPaths {
@@ -261,10 +254,11 @@ func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 	}
 	// An old file can also travel to a checkout with a different root. Its
 	// stored file path is enough to reconstruct the old fingerprint, including
-	// the evidence from the current finding, without accepting a different rule.
+	// the evidence from the current finding, without accepting a different rule
+	// or a different file (see LegacyPathMatches).
 	if b.Version == SchemaVersion1 || b.Version == SchemaVersion2 {
 		for key, finding := range b.Findings {
-			if finding.RuleID != item.RuleID || !LegacyPathMatches(finding.File, item.File) {
+			if finding.RuleID != item.RuleID || !LegacyPathMatches(root, finding.File, item.File) {
 				continue
 			}
 			if b.Version == SchemaVersion2 && normalizeSource(finding.Source) != normalizeSource(item.Source) {
@@ -291,12 +285,26 @@ func (b *Baseline) acceptsWithAbsolute(item Item, absolutePath string) bool {
 	return false
 }
 
-// LegacyPathMatches checks whether an absolute path from an older project file
-// names the same relative file in a checkout at a different location.
-func LegacyPathMatches(oldAbsolute, currentRelative string) bool {
-	old := strings.ReplaceAll(oldAbsolute, `\`, "/")
+// LegacyPathMatches reports whether oldAbsolute, a path an older project file
+// recorded before paths were made project-relative, names currentRelative, a
+// path relative to the project at root.
+//
+// A path recorded under root names exactly its path relative to root. One
+// recorded elsewhere comes from a checkout that has since moved, and the root
+// it was recorded under is unknown: currentRelative must end it, and must be
+// the longest tail of it that names a path in the project, because a longer
+// tail that exists there is the file it was recorded for. A record for
+// app/config.php therefore never matches config.php at the root, or another
+// file that merely shares its name or a shorter tail of its path, while
+// app/config.php exists. Without a root the relative path cannot be told and
+// nothing matches.
+//
+// Matching by tail alone let an entry recorded without evidence, which stands
+// for every finding of its rule in its file, cover every file of that name.
+func LegacyPathMatches(root, oldAbsolute, currentRelative string) bool {
+	old := pathpkg.Clean(strings.ReplaceAll(oldAbsolute, `\`, "/"))
 	rel := pathpkg.Clean(strings.ReplaceAll(currentRelative, `\`, "/"))
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") ||
+	if root == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") ||
 		strings.HasPrefix(rel, "/") || strings.Contains(rel, ":") {
 		return false
 	}
@@ -304,7 +312,47 @@ func LegacyPathMatches(oldAbsolute, currentRelative string) bool {
 	if !strings.HasPrefix(old, "/") && !windowsAbsolute {
 		return false
 	}
-	return strings.HasSuffix(pathpkg.Clean(old), "/"+rel)
+	if !strings.HasSuffix(old, "/"+rel) {
+		return false
+	}
+	if recorded, ok := underRoot(root, old); ok {
+		return recorded == rel
+	}
+	oldRoot := strings.Split(strings.TrimSuffix(old, "/"+rel), "/")
+	if windowsAbsolute {
+		oldRoot = oldRoot[1:] // the drive is no directory of the project
+	}
+	tail := rel
+	for i := len(oldRoot) - 1; i >= 0; i-- {
+		if oldRoot[i] == "" {
+			continue
+		}
+		tail = oldRoot[i] + "/" + tail
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(tail))); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// underRoot returns path, slash-separated and absolute, relative to root when
+// it lies under root as given, as an absolute path or with symbolic links
+// resolved.
+func underRoot(root, path string) (string, bool) {
+	roots := []string{root}
+	if abs, err := filepath.Abs(root); err == nil {
+		roots = append(roots, abs)
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			roots = append(roots, resolved)
+		}
+	}
+	for _, r := range roots {
+		prefix := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(r)), "/") + "/"
+		if strings.HasPrefix(path, prefix) {
+			return strings.TrimPrefix(path, prefix), true
+		}
+	}
+	return "", false
 }
 
 // ItemFilterResult separates a scan into what is new and what was accepted.

@@ -87,6 +87,9 @@ func (s *Server) suppressionAdd(w http.ResponseWriter, r *http.Request) {
 		Severity string `json:"severity"`
 		Reason   string `json:"reason"`
 		Note     string `json:"note"`
+		// RuleWide must be set to record a dismissal that is not tied to a
+		// file; such a decision covers the rule across the whole project.
+		RuleWide bool `json:"rule_wide"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -113,6 +116,10 @@ func (s *Server) suppressionAdd(w http.ResponseWriter, r *http.Request) {
 		Severity: req.Severity,
 		Evidence: req.Evidence,
 	}
+	if err := suppression.ValidateScope(item, req.RuleWide); err != nil {
+		jsonError(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	entry, _, err := record.Add(item, req.Reason, req.Note, usernameFromRequest(r))
 	if err != nil {
 		// A rejected reason or a missing justification is the caller's mistake,
@@ -126,7 +133,7 @@ func (s *Server) suppressionAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("Finding dismissed", "rule", entry.RuleID, "source", entry.Source, "reason", entry.Reason, "path", record.Location.WriteFile())
-	writeSuppressionList(w, record, "")
+	writeSuppressionList(w, record, "This dismissal "+suppression.DescribeScope(item)+".")
 }
 
 func (s *Server) suppressionRemove(w http.ResponseWriter, r *http.Request) {

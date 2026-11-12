@@ -389,7 +389,7 @@ aitriage-reports/
 
 Connectors add `/aitriage-reports/` to `.gitignore`. AITriage excludes this directory from every scanner and AI context so its own output cannot trigger another audit loop. List or remove AI IDE run bundles with `aitriage runs list .` and `aitriage runs clean .` (`--dry-run` previews; unfinished runs are kept unless you pass `--force`).
 
-Paths in every report are relative to the project root. When several scanners report the same vulnerability class at the same `file:line`, the report shows one finding that lists every scanner as an origin; different classes on one line stay separate. The summary header groups dependency CVEs by package, while the score and the gate still count each CVE. A finding's ID (`CS-<CLASS>-<6 hex>`; the full `stable_id` is in `triage-findings.json`) is derived from its class, its file and the content of the flagged line, so edits elsewhere in the file keep both the ID and the cached verdict. Dismissed findings are left out of SARIF output, because GitHub code scanning does not honour the SARIF `suppressions` property; they stay in `triage-findings.json` and in the summary counts. Dismissing any one scanner's report of a defect dismisses the merged finding.
+Paths in every report are relative to the project root. When several scanners report the same vulnerability class at the same `file:line`, the report shows one finding that lists every scanner as an origin; different classes on one line stay separate. Tools that read `triage-findings.json` should check `finding.origins[]`, which lists every scanner that reported the defect; `finding.source` names only the one shown (for a hardcoded secret that is Gitleaks whenever Gitleaks reported it). The summary header groups dependency CVEs by package, while the score and the gate still count each CVE. A finding's ID (`CS-<CLASS>-<6 hex>`; the full `stable_id` is in `triage-findings.json`) is derived from its class, its file and the content of the flagged line, so edits elsewhere in the file keep both the ID and the cached verdict. Dismissed findings are left out of SARIF output, because GitHub code scanning does not honour the SARIF `suppressions` property; they stay in `triage-findings.json` and in the summary counts. Dismissing any one scanner's report of a defect dismisses the merged finding.
 
 ## Scope, cost and the gate verdict
 
@@ -458,7 +458,10 @@ token = "fixture"  # aitriage-ignore: B105, gitleaks:generic-api-key (test data)
 `aitriage-ignore` (or `aitriage:ignore`) covers its own line and the next one;
 `-next-line` covers only the next one.
 A directive counts only when it opens a comment; a mention in prose, Markdown text or a string
-literal is ignored.
+literal (including multi-line strings such as Python docstrings, JS template literals and Go raw
+strings) is ignored. Rule IDs may be separated by commas or spaces; the list ends at the first word
+that does not look like a rule ID, or at `(`, so `aitriage-ignore: B105 allowed in tests` silences
+only B105.
 
 Commit `.aitriage-suppressions.json`: `aitriage agent` (in CI too), AI IDE runs and the Web UI
 apply it, and a dismissed finding is not sent to the LLM. This is how to accept a specific CVE
@@ -472,7 +475,11 @@ aitriage ignore add CVE-2024-1234 --source trivy --reason accepted-risk \
 A decision matches findings of its `--source` and rule. Without `--file` it covers them
 anywhere in the project, with `--file` every one in that file, and `--evidence` makes it exact:
 only the finding whose matched text it quotes (with no `--file`, only a finding that has no
-file). Dismissals made in the Web UI or an AI IDE under the container runtime are kept in a
+file). The Web API (`POST /api/suppressions`) and the AI IDE tool refuse a decision without a
+file unless `rule_wide: true` is passed, and every response states which findings the decision
+covers, so one call cannot silently dismiss a rule across the whole project. Dismissing any one
+scanner's report of a merged finding dismisses that defect only; it never covers a different rule's
+project-level check or another container in the same manifest. Dismissals made in the Web UI or an AI IDE under the container runtime are kept in a
 local copy first; see the baseline notes below.
 
 ### Why the gate can fail with nothing confirmed
@@ -492,6 +499,7 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | `fail_on: any` | Any active finding blocks, reviewed or not |
 | `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
+| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way. A later minor release makes `block` the default |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
@@ -506,9 +514,13 @@ and re-check a project you know before switching to another.
 CRITICAL finding for manual review unless the model calls it a false positive with high
 confidence. A false positive also needs evidence AITriage can check. A code mitigation must be
 code (not a comment, a string, a configuration file or the flagged line itself), in the same file
-at most 30 lines above the flagged line, and must name a variable or function the flagged
-statement uses. A CRITICAL finding or a hardcoded secret is never dismissed this way: it stays
-Needs Manual Review until a person decides.
+and the same function at most 30 lines above the flagged line, name a variable or function the
+flagged statement uses, and be a guard of it (an `if`, `elif` or `assert` that checks it and
+exits early or encloses the flagged statement) or a re-assignment of it through a call
+(`cmd = shlex.quote(cmd)`). AITriage checks this on the syntax tree for Python, Go, JavaScript
+and TypeScript; in other languages a HIGH finding dismissed this way stays Needs Manual Review.
+A CRITICAL finding is never dismissed by a code mitigation, and a hardcoded secret by no
+evidence at all, not even in a test file: they stay Needs Manual Review until a person decides.
 
 A baseline is a property of the project, not of the tool that created it. The shared record is
 `.aitriage-baseline.json` at the repository root, used by the CLI (`aitriage baseline`), the Web

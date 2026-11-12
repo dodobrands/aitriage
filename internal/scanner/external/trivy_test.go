@@ -105,6 +105,11 @@ func TestRunTrivyConfigReportsMisconfigurations(t *testing.T) {
 		if f.Source != "trivy" || f.RuleID == "" || f.Severity == "" || f.Message == "" {
 			t.Errorf("incomplete misconfiguration finding: %+v", f)
 		}
+		// The iac_findings policy recognises IaC findings by this marker,
+		// never by their rule id.
+		if f.Kind != KindMisconfiguration {
+			t.Errorf("misconfiguration finding %s has kind %q, want %q", f.RuleID, f.Kind, KindMisconfiguration)
+		}
 	}
 	if perFile["infra/main.tf"] != 10 || perFile["Dockerfile"] != 2 {
 		t.Errorf("findings per file = %v; want 10 in infra/main.tf and 2 in Dockerfile", perFile)

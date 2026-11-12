@@ -1,6 +1,7 @@
 package baseline
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -200,13 +201,94 @@ func TestOlderBaselinesStillMatchAfterCheckoutMoves(t *testing.T) {
 }
 
 func TestLegacyPathMatchesAcrossOperatingSystems(t *testing.T) {
-	if !LegacyPathMatches(`C:\Users\alice\shop\app\config.php`, "app/config.php") {
+	root := t.TempDir()
+	if !LegacyPathMatches(root, `C:\Users\alice\shop\app\config.php`, "app/config.php") {
 		t.Error("Windows baseline path did not match a relative file")
 	}
-	if LegacyPathMatches(`C:\Users\alice\shop\other\config.php`, "app/config.php") {
+	if LegacyPathMatches(root, `C:\Users\alice\shop\other\config.php`, "app/config.php") {
 		t.Error("different directories matched")
 	}
-	if LegacyPathMatches("/home/alice/shop/app/config.php", "../app/config.php") {
+	if LegacyPathMatches(root, "/home/alice/shop/app/config.php", "../app/config.php") {
 		t.Error("parent traversal matched an old path")
+	}
+	if LegacyPathMatches("", "/home/alice/shop/app/config.php", "app/config.php") {
+		t.Error("without a project root an old path cannot be read as a relative one")
+	}
+}
+
+// writeProject creates the files, relative to a new project root.
+func writeProject(t *testing.T, files ...string) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, file := range files {
+		path := filepath.Join(root, filepath.FromSlash(file))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// An absolute path recorded by an older project file names one file. It was
+// matched by its tail alone, so a record for app/config.php also matched
+// config.php at the root, and any other file sharing a shorter tail of it.
+func TestLegacyPathNamesOnlyTheFileItWasRecordedFor(t *testing.T) {
+	project := writeProject(t, "app/config.php", "config.php", "services/api/app/config.php")
+
+	cases := []struct {
+		name, old, rel string
+		want           bool
+	}{
+		// Recorded in this checkout: the path relative to the root, exactly.
+		{"same checkout", filepath.Join(project, "app", "config.php"), "app/config.php", true},
+		{"same checkout, same name at the root", filepath.Join(project, "app", "config.php"), "config.php", false},
+		{"same checkout, shorter tail", filepath.Join(project, "services", "api", "app", "config.php"), "app/config.php", false},
+		{"same checkout, nested file", filepath.Join(project, "services", "api", "app", "config.php"), "services/api/app/config.php", true},
+		// Recorded in a checkout that has moved: the longest tail that exists.
+		{"moved", "/home/alice/shop/app/config.php", "app/config.php", true},
+		{"moved, same name at the root", "/home/alice/shop/app/config.php", "config.php", false},
+		{"moved, nested file", "/home/alice/shop/services/api/app/config.php", "services/api/app/config.php", true},
+		{"moved, shorter tail", "/home/alice/shop/services/api/app/config.php", "app/config.php", false},
+		{"moved, name only", "/home/alice/shop/services/api/app/config.php", "config.php", false},
+		{"moved from Windows", `C:\Users\alice\shop\app\config.php`, "app/config.php", true},
+		{"moved from Windows, same name at the root", `C:\Users\alice\shop\app\config.php`, "config.php", false},
+		// A file recorded at the root of the old checkout still matches its
+		// namesake at the root of the new one.
+		{"moved, file at the root", "/home/alice/shop/config.php", "config.php", true},
+	}
+	for _, tc := range cases {
+		if got := LegacyPathMatches(project, tc.old, tc.rel); got != tc.want {
+			t.Errorf("%s: LegacyPathMatches(%q, %q) = %t; want %t", tc.name, tc.old, tc.rel, got, tc.want)
+		}
+	}
+}
+
+// An older baseline accepts a finding only in the file it was recorded for,
+// in its original checkout and after the checkout moves, even when another
+// file of the same name carries the same evidence.
+func TestOlderBaselineAcceptsOnlyTheRecordedFile(t *testing.T) {
+	project := writeProject(t, "app/config.php", "config.php")
+	recordedIn := map[string]string{
+		"same checkout": filepath.Join(project, "app", "config.php"),
+		"moved":         "/home/alice/shop/app/config.php",
+	}
+	for name, file := range recordedIn {
+		accepted := core.CheckResult{ID: "ENTR-17", File: file, Evidence: "key=abc"}
+		v2 := NewFromItems(FromCore([]core.CheckResult{accepted}))
+		v2.Version = SchemaVersion2
+		for _, b := range []*Baseline{New([]core.CheckResult{accepted}), v2} {
+			same := Item{Source: "core", RuleID: "ENTR-17", File: "app/config.php", Evidence: "key=abc"}
+			if !b.AcceptsInProject(project, same) {
+				t.Errorf("%s, version %s: the recorded finding was not accepted", name, b.Version)
+			}
+			namesake := same
+			namesake.File = "config.php"
+			if b.AcceptsInProject(project, namesake) {
+				t.Errorf("%s, version %s: a finding in another file of the same name was accepted", name, b.Version)
+			}
+		}
 	}
 }

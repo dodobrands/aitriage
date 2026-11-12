@@ -87,6 +87,10 @@ type AgentState struct {
 	TriageStatus        string
 	TriageFailureReason string // redacted, single-line provider error
 	TriageFailureStage  string // "threat_model" | "classification"
+	// TriageFailureCause is TriageFailureCauseProvider (the provider failed)
+	// or TriageFailureCauseNoVerdict (no reply carried a verdict for some
+	// findings after every retry).
+	TriageFailureCause string
 	// StageFailures lists LLM stages that degraded or fell back to a
 	// deterministic rendering instead of failing the run.
 	StageFailures []StageFailure
@@ -118,6 +122,14 @@ type AgentState struct {
 }
 
 // EnrichedFinding is a unified representation of any finding with its source snippet attached.
+//
+// One finding may stand for several scanner reports of the same defect (see
+// semanticFindingKey). ID, Type, Source and Message are then those of one of
+// them, the representative; Origins lists every report. A consumer that asks
+// whether a given scanner or rule reported the finding must look in Origins,
+// not at Source: a Gitleaks secret merged with a built-in rule has Source
+// "gitleaks", but a Semgrep report merged under a built-in rule does not have
+// Source "semgrep".
 type EnrichedFinding struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"` // "core", "external", "nfr", "deploy", "network"
@@ -125,12 +137,15 @@ type EnrichedFinding struct {
 	Severity string `json:"severity"`
 	// File is relative to the project root, with forward slashes. A path
 	// outside the root stays absolute.
-	File      string          `json:"file,omitempty"`
-	Line      int             `json:"line,omitempty"`
-	Message   string          `json:"message"`
-	Snippet   string          `json:"code_snippet,omitempty"`
-	ExtraData string          `json:"extra_data,omitempty"`
-	Origins   []FindingOrigin `json:"origins,omitempty"`
+	File      string `json:"file,omitempty"`
+	Line      int    `json:"line,omitempty"`
+	Message   string `json:"message"`
+	Snippet   string `json:"code_snippet,omitempty"`
+	ExtraData string `json:"extra_data,omitempty"`
+	// Origins is the complete list of the scanner reports behind the finding,
+	// the representative's included, each with the location and severity its
+	// scanner reported.
+	Origins []FindingOrigin `json:"origins,omitempty"`
 	// VulnID is the display id, CS-<CLASS>-<first hex digits of StableID>.
 	VulnID string `json:"vuln_id,omitempty"`
 	// StableID identifies the finding across runs without depending on its
@@ -145,10 +160,15 @@ type EnrichedFinding struct {
 	InstalledVersion string `json:"installed_version,omitempty"`
 	FixedVersion     string `json:"fixed_version,omitempty"`
 	PrimaryURL       string `json:"primary_url,omitempty"`
+	// Kind is the representative report's kind as its scanner marked it:
+	// "misconfiguration" for an IaC misconfiguration, empty otherwise. Each
+	// origin carries its own.
+	Kind string `json:"kind,omitempty"`
 }
 
-// FindingOrigin keeps every scanner/rule that corroborated a semantic issue.
-// Deduplication reduces user-visible issue count without losing provenance.
+// FindingOrigin is one scanner report behind a finding. Deduplication reduces
+// the user-visible issue count without losing provenance: a finding's
+// origins name every scanner and rule that reported it.
 type FindingOrigin struct {
 	Type   string `json:"type"`
 	Source string `json:"source"`
@@ -159,6 +179,9 @@ type FindingOrigin struct {
 	File     string `json:"file,omitempty"`
 	Line     int    `json:"line,omitempty"`
 	Severity string `json:"severity,omitempty"`
+	// Kind is "misconfiguration" for an IaC misconfiguration (Trivy config),
+	// empty otherwise.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ── SecureCoder Threat Model Types ───────────────────────────────────────────
@@ -277,12 +300,14 @@ type FindingDisposition struct {
 	// Confidence is the model's self-reported certainty: "high" | "medium" | "low".
 	Confidence string `json:"confidence,omitempty"`
 	// DispositionSource records how the disposition was produced for the audit
-	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model
-	// answered the request but gave this finding no accepted verdict after
-	// retries) | "triage-failed" (the provider failed, or every reply about
-	// the finding was malformed, empty or rejected) | "suppressed" (a
-	// recorded project decision) | "network-probe" (describes the scanning
-	// host, never scored).
+	// trail: "llm" | "cache" | "deterministic" | "nr-fallback" (the model gave
+	// this finding verdicts of its own and validation rejected each of them,
+	// or the finding was over the LLM budget) | "triage-failed" (the provider
+	// failed, or no reply carried a verdict for the finding after retries:
+	// left out, malformed or empty) | "suppressed" (a recorded project
+	// decision) | "network-probe" (describes the scanning host, never scored).
+	// It is decided per finding, never by what other findings of the same
+	// request got.
 	DispositionSource string `json:"disposition_source,omitempty"`
 	// Fingerprint is the stable content hash used for dedup/caching.
 	Fingerprint string `json:"fingerprint,omitempty"`

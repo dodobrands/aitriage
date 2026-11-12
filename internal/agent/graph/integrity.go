@@ -83,8 +83,12 @@ func integrityNotice(count int) string {
 // not finish: what failed, what it means for the findings, and what to do.
 func triageIncompleteBanner(state *AgentState) string {
 	tally := tallyDispositions(state)
-	return fmt.Sprintf("> **AI triage did not complete: %s.** %d finding(s) have no verdict and are listed as Needs Manual Review (unclassified, `triage-failed`). The security gate cannot pass on an incomplete triage; re-run once the LLM provider is available.\n\n",
-		state.TriageFailureReason, tally.TriageFailed)
+	remedy := "re-run once the LLM provider is available"
+	if state.TriageFailureCause == TriageFailureCauseNoVerdict {
+		remedy = "re-run, and if the model keeps leaving findings out, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`"
+	}
+	return fmt.Sprintf("> **AI triage did not complete: %s.** %d finding(s) have no verdict and are listed as Needs Manual Review (unclassified, `triage-failed`). The security gate cannot pass on an incomplete triage; %s.\n\n",
+		state.TriageFailureReason, tally.TriageFailed, remedy)
 }
 
 // stageFallbackNotice explains why a document was rendered without the LLM.
@@ -123,6 +127,9 @@ func deterministicGateSection(state *AgentState) string {
 	_, _ = fmt.Fprintf(&sb, "- **Findings**: %d active (%d confirmed, %d needs review, %d of them unclassified), %d ignored, %d deduplicated\n",
 		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings,
 		hc.Breakdown.UnclassifiedFindings, hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings)
+	if n := hc.Breakdown.ReportOnlyFindings; n > 0 {
+		_, _ = fmt.Fprintf(&sb, "- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
+	}
 	for _, reason := range hc.Verdict.BlockingReasons {
 		_, _ = fmt.Fprintf(&sb, "- Blocking `%s`: %s\n", reason.Code, reason.Message)
 	}

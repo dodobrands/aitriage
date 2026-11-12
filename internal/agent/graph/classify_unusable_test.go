@@ -11,13 +11,15 @@ import (
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
-// Malformed model output must never let the gate pass. A finding the model was
-// asked about in requests that never produced a single accepted verdict is
-// triage-failed, exactly like a provider failure, whatever shape the useless
-// replies had.
+// Missing model output must never let the gate pass. A finding no reply ever
+// carried a verdict of its own for is triage-failed, exactly like a provider
+// failure, whatever shape the useless replies had. A finding whose own verdict
+// came back and was rejected by validation is an ordinary fallback: the model
+// judged it. Both are decided per finding.
 
-// unusableReplies are parseable or near-parseable replies that classify
-// nothing. Each takes the request's prompt findings.
+// unusableReplies are parseable or near-parseable replies that carry no
+// verdict for any finding of the request. Each takes the request's prompt
+// findings.
 var unusableReplies = map[string]func(batch []classificationPromptFinding) string{
 	"empty object":     func([]classificationPromptFinding) string { return `{}` },
 	"null":             func([]classificationPromptFinding) string { return `null` },
@@ -26,9 +28,6 @@ var unusableReplies = map[string]func(batch []classificationPromptFinding) strin
 	"error object":     func([]classificationPromptFinding) string { return `{"error":"rate limited, try later"}` },
 	"array":            func([]classificationPromptFinding) string { return `[]` },
 	"unparseable text": func([]classificationPromptFinding) string { return "I cannot classify these findings." },
-	"false positives without evidence": func(batch []classificationPromptFinding) string {
-		return classifyAll(batch, "False Positive")
-	},
 	"unsupported disposition": func(batch []classificationPromptFinding) string {
 		return classifyAll(batch, "Probably fine")
 	},
@@ -130,6 +129,35 @@ func TestRunWithUnusableClassificationRepliesBlocksConfirmedGate(t *testing.T) {
 	}
 }
 
+// A verdict of its own that validation rejects every time is a model
+// judgement that could not be accepted, not missing output: every finding is
+// an ordinary fallback, Needs Manual Review, and the triage completes. Such
+// findings stay unreviewed, so every gate but fail_on=confirmed still blocks
+// on them, as it would on a model that answered Needs Manual Review.
+func TestClassifyFindingsWithOnlyRejectedVerdictsAreOrdinaryFallbacks(t *testing.T) {
+	pinConcurrency(t)
+	t.Setenv("AITRIAGE_CLASSIFY_RETRIES", "")
+	client := llmFunc(func(messages []llm.Message) (string, error) {
+		if strings.Contains(messages[0].Content, "Threat Model & Finding Classification") {
+			return `{"component_overview":"c"}`, nil
+		}
+		return classifyAll(parsePromptBatchFromUser(messages[1].Content), "False Positive"), nil
+	})
+	var usage llm.Usage
+	_, disps, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", makeFindings(3), client, &usage, 40)
+	if err != nil {
+		t.Fatalf("err = %v, want a complete triage: the model judged every finding", err)
+	}
+	for i, d := range disps {
+		if d.Disposition != "Needs Manual Review" || d.DispositionSource != dispositionSourceNRFallback {
+			t.Fatalf("disps[%d] = %+v, want an nr-fallback Needs Manual Review", i, d)
+		}
+	}
+	if !auditMentions(audit, "false positive has no evidence") {
+		t.Fatalf("audit = %+v, want the rejections recorded", audit)
+	}
+}
+
 // Findings are judged one by one: when a retry split leaves some findings in
 // requests that never got a usable reply, those findings are triage-failed
 // even though other findings of the same batch were classified.
@@ -157,10 +185,12 @@ func TestClassifyFindingsSplitRetryWithoutUsableReplyIsTriageFailure(t *testing.
 	}
 }
 
-// A genuine partial answer stays an ordinary fallback: the model classified
-// part of the request, and the verdict it gave for the rest was rejected or
-// missing. The triage completes.
-func TestClassifyFindingsPartialRejectionIsAnOrdinaryFallback(t *testing.T) {
+// A partial answer is judged finding by finding: R-0 is classified, R-1's own
+// verdict was rejected (an ordinary fallback), and R-2, which no reply ever
+// carried a verdict for, is triage-failed although its batch-mates were
+// answered. It used to be an ordinary fallback here and triage-failed when it
+// was asked about alone, so the outcome depended on the batch and the cache.
+func TestClassifyFindingsPartialAnswerIsJudgedPerFinding(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(3)
 	mock := &fakeLLM{t: t, classifyHandler: func(_ int, batch []EnrichedFinding) (string, error) {
@@ -178,13 +208,59 @@ func TestClassifyFindingsPartialRejectionIsAnOrdinaryFallback(t *testing.T) {
 	var usage llm.Usage
 
 	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 40)
-	if err != nil {
-		t.Fatalf("err = %v, want a complete triage: the model answered part of the request", err)
+	var incomplete *TriageIncompleteError
+	if !errors.As(err, &incomplete) || incomplete.Unclassified != 1 {
+		t.Fatalf("err = %v, want an incomplete triage for the one finding no reply carried", err)
 	}
-	for i, want := range []string{dispositionSourceLLM, dispositionSourceNRFallback, dispositionSourceNRFallback} {
+	for i, want := range []string{dispositionSourceLLM, dispositionSourceNRFallback, dispositionSourceTriageFailed} {
 		if disps[i].DispositionSource != want || (i > 0 && disps[i].Disposition != "Needs Manual Review") {
 			t.Fatalf("disps[%d] = %+v, want source %q", i, disps[i], want)
 		}
+	}
+}
+
+// The outcome of a finding no reply carries a verdict for does not depend on
+// whether its batch-mates were answered, or came from the verdict cache: the
+// cold run (R1 and R2 in one request) and the warm run (R1 cached, R2 asked
+// alone) both leave R2 triage-failed and the triage incomplete. A finding whose
+// own verdict is rejected is an ordinary fallback in both runs.
+func TestUnclassifiedOutcomeDoesNotDependOnTheVerdictCache(t *testing.T) {
+	for name, r2Reply := range map[string]string{
+		"left out of every reply": "",
+		"rejected every time":     "False Positive",
+	} {
+		t.Run(name, func(t *testing.T) {
+			hermeticRun(t)
+			t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", t.TempDir())
+			project := writeProjectFiles(t, map[string]string{"app.go": "package app\n"})
+			run := func() (*AgentState, error) {
+				state := fallbackRunState(project)
+				state.Policy = healthcheck.Policy{FailOn: healthcheck.FailOnConfirmed}
+				llmClient := newFallbackRunLLM(t)
+				// R1 confirms nothing, so under fail_on=confirmed only an
+				// incomplete triage can block.
+				llmClient.r1Disposition, llmClient.r2Disposition = "Needs Manual Review", r2Reply
+				err := Run(context.Background(), state, llmClient)
+				return state, err
+			}
+			cold, coldErr := run()
+			warm, warmErr := run()
+			if warm.VerdictCacheStats.Hits == 0 {
+				t.Fatalf("warm run verdict cache = %+v, want R1 served from the cache", warm.VerdictCacheStats)
+			}
+			wantFailed := r2Reply == ""
+			for label, state := range map[string]*AgentState{"cold": cold, "warm": warm} {
+				if state.TriageFailed() != wantFailed {
+					t.Fatalf("%s run: triage failed = %v, want %v", label, state.TriageFailed(), wantFailed)
+				}
+				if passed := state.HealthCheck.Verdict.Passed; passed == wantFailed {
+					t.Fatalf("%s run: gate passed = %v under fail_on=confirmed", label, passed)
+				}
+			}
+			if errors.Is(coldErr, ErrTriageIncomplete) != wantFailed || errors.Is(warmErr, ErrTriageIncomplete) != wantFailed {
+				t.Fatalf("errors = %v / %v, want an incomplete triage = %v in both runs", coldErr, warmErr, wantFailed)
+			}
+		})
 	}
 }
 

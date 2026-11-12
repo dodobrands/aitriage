@@ -21,6 +21,9 @@ type Overrides struct {
 
 	FPCriticalRequiresHighConfidence    bool
 	FPCriticalRequiresHighConfidenceSet bool
+
+	IaCFindings    string
+	IaCFindingsSet bool
 }
 
 // FromConfig converts .aitriage.yaml policy settings plus legacy top-level
@@ -69,6 +72,14 @@ func FromConfig(cfg *config.Config) healthcheck.Policy {
 	if v := cfg.HealthCheck.FPCriticalRequiresHighConfidence; v != nil {
 		policy.FPCriticalRequiresHighConfidence = *v
 	}
+	if raw := strings.TrimSpace(cfg.HealthCheck.IaCFindings); raw != "" {
+		if _, ok := healthcheck.ParseIaCFindings(raw); !ok {
+			// NormalizePolicy falls back to block, the strict reading; say so
+			// instead of silently gating differently from what was written.
+			slog.Warn("Unknown health_check.iac_findings; using block", "value", raw)
+		}
+		policy.IaCFindings = raw
+	}
 
 	return healthcheck.NormalizePolicy(policy)
 }
@@ -99,6 +110,7 @@ func ApplyOverrides(policy healthcheck.Policy, overrides Overrides) healthcheck.
 		next.BlockClasses = policy.BlockClasses
 		next.ConfirmedMinSeverity = policy.ConfirmedMinSeverity
 		next.FPCriticalRequiresHighConfidence = policy.FPCriticalRequiresHighConfidence
+		next.IaCFindings = policy.IaCFindings
 		policy = next
 	}
 	if overrides.FailOnSet {
@@ -112,6 +124,9 @@ func ApplyOverrides(policy healthcheck.Policy, overrides Overrides) healthcheck.
 	}
 	if overrides.FPCriticalRequiresHighConfidenceSet {
 		policy.FPCriticalRequiresHighConfidence = overrides.FPCriticalRequiresHighConfidence
+	}
+	if overrides.IaCFindingsSet {
+		policy.IaCFindings = overrides.IaCFindings
 	}
 	return healthcheck.NormalizePolicy(policy)
 }

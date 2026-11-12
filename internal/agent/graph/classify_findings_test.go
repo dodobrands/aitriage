@@ -237,9 +237,10 @@ func TestClassifyFindingsClassifiesAllAcrossBatches(t *testing.T) {
 	}
 }
 
-// Req: omitted findings are retried; anything still missing defaults to NR
-// (never FP), and the pipeline does not crash.
-func TestClassifyFindingsPartialResponseFallsBackToNeedsReview(t *testing.T) {
+// Req: omitted findings are retried; a finding still missing from every reply
+// defaults to NR (never FP) and is triage-failed, so the triage is reported
+// incomplete; the pipeline does not crash.
+func TestClassifyFindingsPartialResponseLeavesTheOmittedFindingTriageFailed(t *testing.T) {
 	pinConcurrency(t)
 	findings := makeFindings(3)
 	mock := &fakeLLM{
@@ -258,8 +259,9 @@ func TestClassifyFindingsPartialResponseFallsBackToNeedsReview(t *testing.T) {
 	var usage llm.Usage
 
 	_, disps, err := ClassifyFindings(context.Background(), "", "p", findings, mock, &usage, 150)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	var incomplete *TriageIncompleteError
+	if !errors.As(err, &incomplete) || incomplete.Unclassified != 1 {
+		t.Fatalf("err = %v, want an incomplete triage for the finding no reply carried", err)
 	}
 	if disps[0].Disposition != "True Positive" || disps[1].Disposition != "True Positive" {
 		t.Fatalf("disps[0],[1] should be TP, got %q,%q", disps[0].Disposition, disps[1].Disposition)
@@ -267,8 +269,8 @@ func TestClassifyFindingsPartialResponseFallsBackToNeedsReview(t *testing.T) {
 	if disps[2].Disposition != "Needs Manual Review" {
 		t.Fatalf("disps[2] should be NR, got %q", disps[2].Disposition)
 	}
-	if disps[2].DispositionSource != dispositionSourceNRFallback {
-		t.Fatalf("disps[2] source = %q, want nr-fallback", disps[2].DispositionSource)
+	if disps[2].DispositionSource != dispositionSourceTriageFailed {
+		t.Fatalf("disps[2] source = %q, want triage-failed", disps[2].DispositionSource)
 	}
 	if _, fp, _ := countDispositions(disps); fp != 0 {
 		t.Fatalf("no finding may default to False Positive, got fp=%d", fp)

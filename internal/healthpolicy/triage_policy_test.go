@@ -27,6 +27,28 @@ func TestFromConfigReadsTriagePolicySettings(t *testing.T) {
 	}
 }
 
+// iac_findings: report by default, block when configured, block on a typo
+// (the strict reading); a CLI override wins and survives a profile switch.
+func TestIaCFindingsPolicySetting(t *testing.T) {
+	if got := FromConfig(&config.Config{}).IaCFindings; got != healthcheck.IaCFindingsReport {
+		t.Fatalf("default iac_findings = %q, want report", got)
+	}
+	for value, want := range map[string]string{"block": healthcheck.IaCFindingsBlock, "Report": healthcheck.IaCFindingsReport, "blok": healthcheck.IaCFindingsBlock} {
+		if got := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{IaCFindings: value}}).IaCFindings; got != want {
+			t.Errorf("iac_findings: %s = %q, want %q", value, got, want)
+		}
+	}
+	policy := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{IaCFindings: "report"}})
+	policy = ApplyOverrides(policy, Overrides{IaCFindings: "block", IaCFindingsSet: true})
+	if policy.IaCFindings != healthcheck.IaCFindingsBlock {
+		t.Fatalf("override = %q, want block", policy.IaCFindings)
+	}
+	policy = ApplyOverrides(policy, Overrides{Profile: healthcheck.PolicyStrict, ProfileSet: true})
+	if policy.IaCFindings != healthcheck.IaCFindingsBlock {
+		t.Fatalf("after a profile switch iac_findings = %q, want block kept", policy.IaCFindings)
+	}
+}
+
 func TestApplyOverridesTriagePolicySettings(t *testing.T) {
 	policy := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{
 		FailOn:               healthcheck.FailOnConfirmed,

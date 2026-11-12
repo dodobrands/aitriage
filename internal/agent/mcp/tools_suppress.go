@@ -26,6 +26,13 @@ import (
 // (suppression.LoadAt): local entries win for the same finding and stay in
 // force after the project drops its own. The CLI on the host and CI read only
 // the project file, so the copy reaches them once it is committed.
+//
+// A dismissal recorded without a file and without evidence covers every
+// finding of its rule from that scanner anywhere in the project, including
+// ones reported later. One call with nothing but a rule id used to record
+// exactly that, and the summary did not say so. Adding now needs the file,
+// unless the caller asks for that reach with rule_wide, and every add returns
+// which findings the dismissal covers.
 
 type suppressInput struct {
 	Path string `json:"path,omitempty"`
@@ -35,12 +42,18 @@ type suppressInput struct {
 	// Source names the scanner. Two scanners reporting the same line are
 	// different findings, so dismissing one must not hide the other.
 	Source string `json:"source,omitempty"`
-	File   string `json:"file,omitempty"`
-	Line   int    `json:"line,omitempty"`
+	// File is the file the finding is in. Adding needs it unless RuleWide is
+	// set.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
 	// Evidence is the matched text. Without it the dismissal covers any finding
-	// of that rule in that file (in the whole project when File is empty too),
-	// which is usually broader than intended.
+	// of that rule in that file, which is usually broader than intended.
 	Evidence string `json:"evidence,omitempty"`
+	// RuleWide records a dismissal that is not tied to a file: without
+	// evidence it covers every finding of the rule from that source anywhere
+	// in the project; with evidence, the findings reported without a file
+	// (project-level checks) that carry it. It cannot be combined with File.
+	RuleWide bool `json:"rule_wide,omitempty"`
 	// Reason: false_positive, accepted_risk, wont_fix.
 	Reason string `json:"reason,omitempty"`
 	// Note is the justification. Required for an accepted risk.
@@ -62,7 +75,9 @@ type suppressResult struct {
 	File    string          `json:"file"`
 	Total   int             `json:"total"`
 	Entries []suppressEntry `json:"entries,omitempty"`
-	Summary string          `json:"summary"`
+	// Scope says which findings the dismissal just added covers.
+	Scope   string `json:"scope,omitempty"`
+	Summary string `json:"summary"`
 }
 
 func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool) {
@@ -71,7 +86,11 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 		description = "Record or review decisions about findings: dismiss one as a false positive, " +
 			"an accepted risk or won't-fix, undo a dismissal, or list what is already dismissed. " +
 			"Decisions are stored in the project and shared with the Web UI and the CLI. " +
-			"Actions: list (default), add, remove."
+			"Actions: list (default), add, remove. " +
+			"add needs the file the finding is in; pass its evidence (the matched text) too, " +
+			"or the dismissal covers every finding of the rule in that file. " +
+			"To dismiss a rule wherever it is reported, or a project-level finding that has no file, " +
+			"leave file empty and set rule_wide to true. The result's scope says which findings a dismissal covers."
 	}
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -114,6 +133,9 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 				Line:     input.Line,
 				Evidence: input.Evidence,
 			}
+			if err := suppression.ValidateScope(item, input.RuleWide); err != nil {
+				return nil, suppressResult{}, err
+			}
 			entry, replaced, addErr := record.Add(item, input.Reason, input.Note, "ai-ide")
 			if addErr != nil {
 				return nil, suppressResult{}, addErr
@@ -128,8 +150,9 @@ func registerSuppressTool(srv *mcp.Server, guard *PathGuard, allowMutation bool)
 			}
 			result := listSuppressions(record)
 			result.Action = "add"
-			result.Summary = fmt.Sprintf("%s %s (%s) as %s. %s",
-				verb, entry.RuleID, entry.Source, entry.Reason, decisionsReach(record.Location))
+			result.Scope = "This dismissal " + suppression.DescribeScope(item) + "."
+			result.Summary = fmt.Sprintf("%s %s (%s) as %s. %s %s",
+				verb, entry.RuleID, suppression.SourceName(entry.Source), entry.Reason, result.Scope, decisionsReach(record.Location))
 			return nil, withLocalNote(result, record.Location), nil
 
 		case "remove":

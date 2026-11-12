@@ -34,3 +34,14 @@ health_check:
 		t.Fatalf("fp_critical_requires_high_confidence = %v, want true", cfg.HealthCheck.FPCriticalRequiresHighConfidence)
 	}
 }
+
+func TestLoadConfigIaCFindingsSetting(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, ".aitriage.yaml", `
+health_check:
+  iac_findings: block
+`)
+	if got := LoadConfig(dir).HealthCheck.IaCFindings; got != "block" {
+		t.Fatalf("iac_findings = %q, want block", got)
+	}
+}

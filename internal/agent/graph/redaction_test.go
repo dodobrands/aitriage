@@ -93,6 +93,69 @@ func TestClassificationAuditRecordsRedactedProviderError(t *testing.T) {
 	}
 }
 
+// Go's network and TLS errors name hosts and addresses outside any URL, and
+// Gemini echoes the API key without a field name. The review's strings: every
+// host, address and key is removed, and what kind of failure it was stays.
+func TestFailureReasonRedactsHostsAddressesAndGoogleKeys(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{
+			`openai chat error: Post "https://llm.corp.internal/v1/chat/completions": dial tcp: lookup llm.corp.internal on 10.0.0.2:53: no such host`,
+			`openai chat error: Post "<url>": dial tcp: lookup <host>: no such host`,
+		},
+		{
+			`openai chat error: Post "https://llm.corp.internal/v1/chat/completions": dial tcp 10.20.30.40:8443: connect: connection refused`,
+			`openai chat error: Post "<url>": dial tcp <host>: connect: connection refused`,
+		},
+		{
+			`tls: failed to verify certificate: x509: certificate is valid for gw.corp.internal, not llm.corp.internal`,
+			`tls: failed to verify certificate: x509: certificate is valid for <host>, not <host>`,
+		},
+		{
+			`x509: certificate is valid for a.corp.internal, b.corp.internal, *.corp.internal, not llm.corp.internal`,
+			`x509: certificate is valid for <host>, not <host>`,
+		},
+		{
+			`x509: certificate is not valid for any names, but wanted to match llm.corp.internal`,
+			`x509: certificate is not valid for any names, but wanted to match <host>`,
+		},
+		{
+			`gemini error: 400 API key not valid: AIzaSyA1234567890abcdefghijklmnopqrstu`,
+			`gemini error: 400 API key not valid: [redacted]`,
+		},
+		{
+			`proxyconnect tcp: dial tcp proxy.corp.internal:3128: i/o timeout`,
+			`proxyconnect tcp: dial tcp <host>: i/o timeout`,
+		},
+		{
+			`dial tcp [2001:db8::10]:443: connect: network is unreachable; resolver fe80::1 and 192.168.1.20 unreachable`,
+			`dial tcp <host>: connect: network is unreachable; resolver <ip> and <ip> unreachable`,
+		},
+		{
+			// Nothing secret: the request id and the provider's own words stay.
+			`anthropic: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}} request-id req_011CU1234567890abcdef`,
+			`anthropic: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}} request-id req_011CU1234567890abcdef`,
+		},
+		{
+			// A failed lookup in prose is not a host.
+			`dns lookup failed at 12:30:45`,
+			`dns lookup failed at 12:30:45`,
+		},
+	}
+	for _, tc := range cases {
+		if got := failureReason(fmt.Errorf("%s", tc.text)); got != tc.want {
+			t.Errorf("failureReason(%q)\n got: %s\nwant: %s", tc.text, got, tc.want)
+		}
+	}
+	// A canonical key (AIza and 35 characters) inside a sentence.
+	key := "AIza" + strings.Repeat("A1b2C3d4e5", 3) + "_-x9Z"
+	if got := failureReason(fmt.Errorf("request rejected for key %s by policy", key)); strings.Contains(got, key) || !strings.Contains(got, "by policy") {
+		t.Errorf("failureReason = %q, want the Google API key removed", got)
+	}
+}
+
 // An Authorization header value is removed whole, not just its scheme.
 func TestFailureReasonRedactsBearerCredentials(t *testing.T) {
 	for _, text := range []string{

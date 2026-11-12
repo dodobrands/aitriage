@@ -51,6 +51,7 @@ var (
 	agentProbeCompose                     bool
 	agentConfirmedMinSeverity             string
 	agentFPCriticalRequiresHighConfidence bool
+	agentIaCFindings                      string
 )
 
 var agentCmd = &cobra.Command{
@@ -99,6 +100,7 @@ func init() {
 	agentCmd.Flags().BoolVar(&agentProbeCompose, "probe-compose", false, "Also probe the service hosts declared in docker-compose files (opt-in; results describe the network, not the code, and are never scored)")
 	agentCmd.Flags().StringVar(&agentConfirmedMinSeverity, "confirmed-min-severity", "", "With --fail-on confirmed: block only on confirmed findings at or above LOW, MEDIUM, HIGH or CRITICAL (default LOW: every confirmed finding blocks)")
 	agentCmd.Flags().BoolVar(&agentFPCriticalRequiresHighConfidence, "fp-critical-requires-high-confidence", false, "Accept an AI false-positive verdict for a CRITICAL finding only when the model reports high confidence; otherwise keep it for manual review")
+	agentCmd.Flags().StringVar(&agentIaCFindings, "iac-findings", "", "IaC misconfigurations (Trivy config): 'report' (default) triages and reports them without scoring or gating them; 'block' gates them like any other finding")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
@@ -137,6 +139,11 @@ func validateAgentFlags() error {
 	if strings.TrimSpace(agentConfirmedMinSeverity) != "" {
 		if _, ok := healthcheck.ParseConfirmedMinSeverity(agentConfirmedMinSeverity); !ok {
 			return fmt.Errorf("invalid --confirmed-min-severity %q: use LOW, MEDIUM, HIGH or CRITICAL", agentConfirmedMinSeverity)
+		}
+	}
+	if strings.TrimSpace(agentIaCFindings) != "" {
+		if _, ok := healthcheck.ParseIaCFindings(agentIaCFindings); !ok {
+			return fmt.Errorf("invalid --iac-findings %q: use report or block", agentIaCFindings)
 		}
 	}
 	return nil
@@ -219,7 +226,10 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		manifest := struct {
 			ScannerCoverage string                      `json:"scanner_coverage"`
 			Scanners        []external.ScannerExecution `json:"scanners"`
-		}{ScannerCoverage: coverage, Scanners: richResult.ScannerExecutions}
+			// ScannerCounts says what scanners[].findings counts, which
+			// differs from the findings in triage-findings.json.
+			ScannerCounts string `json:"scanner_counts"`
+		}{ScannerCoverage: coverage, Scanners: richResult.ScannerExecutions, ScannerCounts: scannerCountsNote}
 		data, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
 			return auditIncomplete(err)
@@ -530,9 +540,14 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 	if agentFPCriticalRequiresHighConfidence {
 		args = append(args, "--fp-critical-requires-high-confidence")
 	}
+	appendStringFlag("--iac-findings", agentIaCFindings)
 	args = append(args, ".")
 	return args, nil
 }
+
+// scannerCountsNote labels the per-scanner counts of manifest.json: they are
+// raw results, which the findings of triage-findings.json are not.
+const scannerCountsNote = "raw results: scanners[].findings counts the reports each scanner returned, before inline aitriage-ignore comments, ignore.rules, project decisions and the merging of reports of one defect into one finding (see triage-findings.json for the findings)"
 
 func agentOutputsEmpty() bool {
 	return agentReportOut == "" && agentFixSpecOut == "" && agentSummaryOut == "" &&
@@ -603,6 +618,8 @@ func agentPolicyFromFlags(cmd *cobra.Command, cfg *config.Config) healthcheck.Po
 		ConfirmedMinSeveritySet:             cmd.Flags().Changed("confirmed-min-severity"),
 		FPCriticalRequiresHighConfidence:    agentFPCriticalRequiresHighConfidence,
 		FPCriticalRequiresHighConfidenceSet: cmd.Flags().Changed("fp-critical-requires-high-confidence"),
+		IaCFindings:                         agentIaCFindings,
+		IaCFindingsSet:                      cmd.Flags().Changed("iac-findings"),
 	})
 	if failScoreSet && !failOnSet && policy.FailOn == healthcheck.FailOnNever {
 		policy.FailOn = healthcheck.FailOnCritical

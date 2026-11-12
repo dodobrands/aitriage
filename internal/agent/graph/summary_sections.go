@@ -4,23 +4,30 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
-// unclassifiedNotes explains the Needs Review findings without a model verdict,
-// with the remedy that fits each cause. Retries and smaller batches help when
-// the model answered but left findings out (nr-fallback); they do nothing
-// when the provider itself failed (triage-failed), and the only remedy then
-// is to run again once it is available.
+// unclassifiedNotes explains the Needs Review findings without an accepted
+// model verdict, with the remedy that fits each cause. A verdict that failed
+// validation (nr-fallback) needs a person. Retries and smaller batches help
+// when the model left findings out of every reply (triage-failed, no
+// verdict); they do nothing when the provider itself failed, and the only
+// remedy then is to run again once it is available.
 func unclassifiedNotes(state *AgentState) []string {
 	tally := tallyDispositions(state)
-	skipped := tally.Unclassified - tally.TriageFailed
+	rejected := tally.Unclassified - tally.TriageFailed
 	var notes []string
-	if skipped > 0 {
-		notes = append(notes, fmt.Sprintf("%d unclassified: no model verdict — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
-			skipped, classifyMaxRetries(), GetBatchSize(state)))
+	if rejected > 0 {
+		notes = append(notes, fmt.Sprintf("%d unclassified: the model's verdict did not pass validation, or the finding was over the LLM budget (see `classification_audit`) — review by hand", rejected))
 	}
 	if tally.TriageFailed > 0 {
-		notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
+		if state.TriageFailureCause == TriageFailureCauseNoVerdict {
+			notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
+				tally.TriageFailed, classifyMaxRetries(), GetBatchSize(state)))
+		} else {
+			notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
+		}
 	}
 	return notes
 }
@@ -118,17 +125,55 @@ func writeDependencySummary(sb *strings.Builder, groups []dependencyGroup) {
 	sb.WriteString("\n")
 }
 
-// mergedDetectorReports counts the scanner reports folded into another
-// finding of the repository because they described the same defect.
-func mergedDetectorReports(findings []EnrichedFinding) int {
-	merged := 0
-	for _, f := range findings {
-		if isEnvironmentFinding(f) || len(f.Origins) < 2 {
-			continue
+// mergedReports counts the repository's scanner reports folded into another
+// finding because they described the same defect: every report that entered
+// the triage graph, less the findings it produced. Network probe results are
+// not repository findings and are left out of both.
+func mergedReports(state *AgentState) int {
+	reports := len(state.CoreFindings) + len(state.ExternalFindings) + len(state.NFRFindings) + len(state.DeployFindings)
+	findings := 0
+	for _, f := range state.EnrichedFindings {
+		if !isEnvironmentFinding(f) {
+			findings++
 		}
-		merged += len(f.Origins) - 1
 	}
-	return merged
+	if merged := reports - findings; merged > 0 {
+		return merged
+	}
+	return 0
+}
+
+// rawResultsNote explains why the scanner table and the findings disagree:
+// the table counts each scanner's own reports, the findings count each
+// defect once, after the project's exclusions.
+func rawResultsNote(state *AgentState) string {
+	var parts []string
+	if n := mergedReports(state); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d merged into findings of the same defect", n))
+	}
+	if n := totalCount(state.SuppressedInline); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d silenced by inline `aitriage-ignore` comments", n))
+	}
+	if n := totalCount(state.IgnoredByConfig); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed by `ignore.rules`", n))
+	}
+	if n := len(state.Suppressions.Reports); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed by project decisions", n))
+	}
+	note := "_Raw results are the reports each scanner returned, before they became findings"
+	if len(parts) > 0 {
+		note += ": " + strings.Join(parts, ", ")
+	}
+	return note + "._"
+}
+
+// iacReportOnlyLine says how many IaC misconfiguration findings the policy
+// reported without gating them (iac_findings: report), or returns "".
+func iacReportOnlyLine(bd healthcheck.Breakdown) string {
+	if bd.ReportOnlyFindings == 0 {
+		return ""
+	}
+	return fmt.Sprintf("_%d IaC misconfiguration finding(s) reported, not gating (set `iac_findings: block` to enforce)._", bd.ReportOnlyFindings)
 }
 
 // ScopeSummary records what the project configuration kept out of the run:

@@ -384,3 +384,66 @@ func TestOlderDismissalWithoutEvidenceStillMatches(t *testing.T) {
 		t.Error("an older dismissal for one file hid the rule in another file")
 	}
 }
+
+// An older entry names one file by its absolute path. It was matched by the
+// tail of that path, so one recorded without evidence, which covers every
+// finding of its rule in its file, covered every file of that name in the
+// project, and every file sharing a shorter tail of its path.
+func TestOlderDismissalCoversOnlyTheFileItWasRecordedFor(t *testing.T) {
+	project := t.TempDir()
+	for _, file := range []string{"app/config.php", "config.php", "services/api/app/config.php"} {
+		path := filepath.Join(project, filepath.FromSlash(file))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The absolute path an older entry recorded for a file of the project, in
+	// this checkout and in one that has since moved.
+	for name, recordedPath := range map[string]func(rel string) string{
+		"same checkout": func(rel string) string { return filepath.Join(project, filepath.FromSlash(rel)) },
+		"moved":         func(rel string) string { return "/home/alice/shop/" + rel },
+	} {
+		for _, tc := range []struct {
+			recorded string   // the file the entry was recorded for
+			covers   string   // the finding it covers
+			spares   []string // findings of the same rule it must not cover
+		}{
+			{"app/config.php", "app/config.php", []string{"config.php"}},
+			{"services/api/app/config.php", "services/api/app/config.php", []string{"app/config.php", "config.php"}},
+		} {
+			store := New()
+			recorded := recordedPath(tc.recorded)
+			if _, _, err := store.Add(baseline.Item{Source: "core", RuleID: "SECRET-ASSIGN", File: recorded}, ReasonFalsePositive, "", ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.Add(baseline.Item{Source: "trivy", RuleID: "CVE-2026-1", File: recorded, Evidence: "pkg 1.0"}, ReasonFalsePositive, "", ""); err != nil {
+				t.Fatal(err)
+			}
+			ruleWide := func(file string) baseline.Item {
+				return baseline.Item{Source: "core", RuleID: "SECRET-ASSIGN", File: file, Evidence: "SECRET = '...'"}
+			}
+			exact := func(file string) baseline.Item {
+				return baseline.Item{Source: "trivy", RuleID: "CVE-2026-1", File: file, Evidence: "pkg 1.0"}
+			}
+
+			if _, ok := store.SuppressesInProject(project, ruleWide(tc.covers)); !ok {
+				t.Errorf("%s: the dismissal without evidence for %s stopped covering it", name, tc.recorded)
+			}
+			if _, ok := store.SuppressesInProject(project, exact(tc.covers)); !ok {
+				t.Errorf("%s: the dismissal with evidence for %s stopped covering it", name, tc.recorded)
+			}
+			for _, other := range tc.spares {
+				if _, ok := store.SuppressesInProject(project, ruleWide(other)); ok {
+					t.Errorf("%s: the dismissal without evidence for %s covered %s", name, tc.recorded, other)
+				}
+				if _, ok := store.SuppressesInProject(project, exact(other)); ok {
+					t.Errorf("%s: the dismissal with evidence for %s covered %s", name, tc.recorded, other)
+				}
+			}
+		}
+	}
+}

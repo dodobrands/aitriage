@@ -35,6 +35,18 @@ const (
 	SeverityCritical = "CRITICAL"
 )
 
+// Values of iac_findings: whether IaC misconfigurations (Trivy `config`
+// results, which earlier releases silently dropped) gate.
+const (
+	// IaCFindingsReport triages and reports them, but keeps them out of the
+	// score and the gate verdict. The default for now, so that findings a
+	// minor upgrade starts reporting do not break existing gates; a later
+	// minor release makes block the default.
+	IaCFindingsReport = "report"
+	// IaCFindingsBlock scores and gates them like any other finding.
+	IaCFindingsBlock = "block"
+)
+
 // Policy defines the security requirements used to decide whether a repository
 // may pass the security gate. Score remains informational; Verdict is the gate answer.
 type Policy struct {
@@ -54,6 +66,11 @@ type Policy struct {
 	// CRITICAL finding only when the model reports high confidence; anything
 	// less is kept as Needs Manual Review. It changes verdicts, not the gate.
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
+	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
+	// applies to findings every report of which is an IaC misconfiguration;
+	// a finding another detector also reported gates as before. The caller
+	// marks such findings Finding.ReportOnly.
+	IaCFindings string `json:"iac_findings,omitempty"`
 }
 
 // Verdict is the CI/CD-ready answer to "can this project pass its security policy?".
@@ -288,7 +305,33 @@ func normalizePolicy(policy Policy) Policy {
 	policy.BlockSources = normalizeList(policy.BlockSources)
 	policy.BlockClasses = normalizeList(policy.BlockClasses)
 	policy.ConfirmedMinSeverity = NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity)
+	policy.IaCFindings = NormalizeIaCFindings(policy.IaCFindings)
 	return policy
+}
+
+// NormalizeIaCFindings returns the canonical iac_findings mode. Empty is the
+// default, report. An unrecognised value becomes block: a typo must fall back
+// to the strict reading, not the loose one.
+func NormalizeIaCFindings(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return IaCFindingsReport
+	}
+	if mode, ok := ParseIaCFindings(value); ok {
+		return mode
+	}
+	return IaCFindingsBlock
+}
+
+// ParseIaCFindings reports whether value names a supported iac_findings mode.
+func ParseIaCFindings(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case IaCFindingsReport:
+		return IaCFindingsReport, true
+	case IaCFindingsBlock:
+		return IaCFindingsBlock, true
+	default:
+		return "", false
+	}
 }
 
 // NormalizeConfirmedMinSeverity returns the canonical severity floor. Empty
