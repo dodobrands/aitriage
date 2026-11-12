@@ -58,6 +58,11 @@ type Finding struct {
 	// a provider failure. Any such finding makes the gate fail, whatever the
 	// policy, because the verdict it would have produced is unknown.
 	TriageFailed bool
+	// ReportOnly marks a finding the policy reports without scoring or
+	// gating it (an IaC misconfiguration under iac_findings: report). It is
+	// counted in Breakdown.ReportOnlyFindings and nowhere else; whatever its
+	// triage outcome, it cannot change the verdict.
+	ReportOnly bool
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -109,6 +114,11 @@ type Breakdown struct {
 	// CountByRule counts active findings per rule id behind them, so a policy
 	// written against rule ids keeps matching merged findings.
 	CountByRule map[string]int `json:"count_by_rule,omitempty"`
+
+	// ReportOnlyFindings counts active findings the policy reports without
+	// scoring or gating them (IaC misconfigurations under iac_findings:
+	// report). They are not part of ActiveFindings or any other count.
+	ReportOnlyFindings int `json:"report_only_findings,omitempty"`
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -295,7 +305,7 @@ func Evaluate(in Input) Result {
 	keys := make([]string, 0, len(in.Findings))
 	collapsed := make(map[string][]Finding)
 	for i, f := range in.Findings {
-		if f.TriageFailed && !f.Ignored {
+		if f.TriageFailed && !f.Ignored && !f.ReportOnly {
 			bd.TriageFailedFindings++
 		}
 		key := dedupKey(f)
@@ -309,10 +319,18 @@ func Evaluate(in Input) Result {
 				collapsed[key] = []Finding{prev}
 			}
 			collapsed[key] = append(collapsed[key], f)
+			// An active copy wins over an ignored one, and one that gates
+			// over one that is only reported.
 			switch {
-			case prev.Ignored && !f.Ignored:
-				seen[key] = f
-			case prev.Ignored == f.Ignored && effectiveWeight(f) > effectiveWeight(prev):
+			case prev.Ignored != f.Ignored:
+				if prev.Ignored {
+					seen[key] = f
+				}
+			case prev.ReportOnly != f.ReportOnly:
+				if prev.ReportOnly {
+					seen[key] = f
+				}
+			case effectiveWeight(f) > effectiveWeight(prev):
 				seen[key] = f
 			}
 			continue
@@ -346,6 +364,10 @@ func Evaluate(in Input) Result {
 	for _, f := range deduped {
 		if f.Ignored {
 			bd.IgnoredFindings++
+			continue
+		}
+		if f.ReportOnly {
+			bd.ReportOnlyFindings++
 			continue
 		}
 		sev := strings.ToUpper(strings.TrimSpace(f.Severity))

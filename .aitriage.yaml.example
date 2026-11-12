@@ -69,6 +69,14 @@ health_check:
   # model reports high confidence; otherwise keep it for manual review.
   fp_critical_requires_high_confidence: false
 
+  # IaC misconfigurations found by Trivy (Dockerfile, Kubernetes, Terraform):
+  #   report (default in this release): triaged and shown in the summary, the
+  #     report and triage-findings.json, but not scored and not gating;
+  #   block: scored and gating like any other finding.
+  # A finding that another check also reported (DOCKER-NO-USER and Trivy's
+  # DS-0002) gates either way. A later minor release makes block the default.
+  iac_findings: report
+
   # Fail if the Health Check score is below this threshold (0 disables score gating)
   minimum_score: 0
 

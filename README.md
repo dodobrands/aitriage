@@ -492,6 +492,7 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | `fail_on: any` | Any active finding blocks, reviewed or not |
 | `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
+| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way. A later minor release makes `block` the default |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,

@@ -160,6 +160,10 @@ type EnrichedFinding struct {
 	InstalledVersion string `json:"installed_version,omitempty"`
 	FixedVersion     string `json:"fixed_version,omitempty"`
 	PrimaryURL       string `json:"primary_url,omitempty"`
+	// Kind is the representative report's kind as its scanner marked it:
+	// "misconfiguration" for an IaC misconfiguration, empty otherwise. Each
+	// origin carries its own.
+	Kind string `json:"kind,omitempty"`
 }
 
 // FindingOrigin is one scanner report behind a finding. Deduplication reduces
@@ -175,6 +179,9 @@ type FindingOrigin struct {
 	File     string `json:"file,omitempty"`
 	Line     int    `json:"line,omitempty"`
 	Severity string `json:"severity,omitempty"`
+	// Kind is "misconfiguration" for an IaC misconfiguration (Trivy config),
+	// empty otherwise.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ── SecureCoder Threat Model Types ───────────────────────────────────────────

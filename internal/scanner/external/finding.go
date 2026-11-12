@@ -1,5 +1,11 @@
 package external
 
+// KindMisconfiguration marks an infrastructure-as-code misconfiguration
+// reported by `trivy config` (Dockerfile, Kubernetes, Terraform, ...), as
+// opposed to a dependency vulnerability or a code finding. The policy
+// option iac_findings decides whether such findings gate.
+const KindMisconfiguration = "misconfiguration"
+
 // UnifiedFinding — common structure for results from all scanners
 type UnifiedFinding struct {
 	Source             string `json:"source"` // "aitriage" | "semgrep" | "gitleaks" | "trivy" | "bandit" | "securecoder"
@@ -24,4 +30,9 @@ type UnifiedFinding struct {
 	FixedVersion     string `json:"fixed_version,omitempty"`
 	// PrimaryURL is the scanner's reference page for the rule or advisory.
 	PrimaryURL string `json:"primary_url,omitempty"`
+
+	// Kind is KindMisconfiguration for IaC misconfigurations and empty for
+	// everything else. Set by the scanner that produced the finding; never
+	// inferred from the rule id.
+	Kind string `json:"kind,omitempty"`
 }

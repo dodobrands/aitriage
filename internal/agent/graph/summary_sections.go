@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
 // unclassifiedNotes explains the Needs Review findings without an accepted
@@ -163,6 +165,15 @@ func rawResultsNote(state *AgentState) string {
 		note += ": " + strings.Join(parts, ", ")
 	}
 	return note + "._"
+}
+
+// iacReportOnlyLine says how many IaC misconfiguration findings the policy
+// reported without gating them (iac_findings: report), or returns "".
+func iacReportOnlyLine(bd healthcheck.Breakdown) string {
+	if bd.ReportOnlyFindings == 0 {
+		return ""
+	}
+	return fmt.Sprintf("_%d IaC misconfiguration finding(s) reported, not gating (set `iac_findings: block` to enforce)._", bd.ReportOnlyFindings)
 }
 
 // ScopeSummary records what the project configuration kept out of the run:

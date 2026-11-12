@@ -264,6 +264,7 @@ func enrichFindings(state *AgentState) {
 			InstalledVersion: f.InstalledVersion,
 			FixedVersion:     f.FixedVersion,
 			PrimaryURL:       f.PrimaryURL,
+			Kind:             f.Kind,
 		})
 	}
 	// Add other findings without snippets or with basic info
@@ -365,6 +366,10 @@ func computeHealthCheck(state *AgentState) {
 		}
 	}
 	recorded := recordedDismissals(state)
+	// iac_findings: report keeps findings that are nothing but IaC
+	// misconfigurations out of the score and the gate; they are still
+	// triaged and reported.
+	reportIaC := healthcheck.NormalizeIaCFindings(state.Policy.IaCFindings) == healthcheck.IaCFindingsReport
 
 	in := healthcheck.Input{}
 	for _, r := range state.CoreFindings {
@@ -417,6 +422,7 @@ func computeHealthCheck(state *AgentState) {
 			NeedsReview:  isUnreviewed,
 			Unclassified: unclassified[i],
 			TriageFailed: triageFailed[i],
+			ReportOnly:   reportIaC && misconfigurationOnly(f),
 		})
 	}
 
@@ -498,7 +504,21 @@ func originOf(f EnrichedFinding) FindingOrigin {
 	if source == "" {
 		source = f.Type
 	}
-	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity}
+	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity, Kind: f.Kind}
+}
+
+// misconfigurationOnly reports whether every scanner report behind a finding
+// is a Trivy IaC misconfiguration. A finding another detector also reported
+// (DOCKER-NO-USER merged with DS-0002) is not: it gated before IaC results
+// were reported, and keeps gating.
+func misconfigurationOnly(f EnrichedFinding) bool {
+	origins := findingOrigins(f)
+	for _, origin := range origins {
+		if origin.Kind != external.KindMisconfiguration || !strings.EqualFold(strings.TrimSpace(origin.Source), "trivy") {
+			return false
+		}
+	}
+	return len(origins) > 0
 }
 
 func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
@@ -1022,6 +1042,9 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings, hc.Breakdown.UnclassifiedFindings,
 		hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings,
 		hc.Breakdown.Penalty, hc.Breakdown.Bonus)
+	if n := hc.Breakdown.ReportOnlyFindings; n > 0 {
+		healthBlock += fmt.Sprintf("- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
+	}
 	if len(hc.Verdict.BlockingReasons) > 0 {
 		var reasonLines []string
 		for _, reason := range hc.Verdict.BlockingReasons {
@@ -1129,6 +1152,9 @@ func policyTerms(policy healthcheck.Policy) string {
 	if policy.FPCriticalRequiresHighConfidence {
 		terms += ", `fp_critical_requires_high_confidence`"
 	}
+	if healthcheck.NormalizeIaCFindings(policy.IaCFindings) == healthcheck.IaCFindingsBlock {
+		terms += ", `iac_findings=block`"
+	}
 	return terms
 }
 
@@ -1221,7 +1247,7 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	// repository findings and are counted separately below.
 	bd := hc.Breakdown
 	_, _ = fmt.Fprintf(sb, "> **%d** findings analyzed · **%d** true positives · **%d** needs review",
-		bd.ActiveFindings+bd.IgnoredFindings+bd.DedupedFindings, bd.ConfirmedFindings, bd.NeedsReviewFindings)
+		bd.ActiveFindings+bd.IgnoredFindings+bd.DedupedFindings+bd.ReportOnlyFindings, bd.ConfirmedFindings, bd.NeedsReviewFindings)
 	if bd.UnclassifiedFindings > 0 {
 		_, _ = fmt.Fprintf(sb, " (%d unclassified)", bd.UnclassifiedFindings)
 	}
@@ -1232,6 +1258,9 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", merged)
 	}
 	sb.WriteString("\n\n")
+	if line := iacReportOnlyLine(bd); line != "" {
+		sb.WriteString(line + "\n\n")
+	}
 	if line := suppressionReasonsLine(state.Suppressions); line != "" {
 		_, _ = fmt.Fprintf(sb, "_Project decisions (`aitriage ignore`, audit log): %d finding(s) dismissed — %s. They are not sent to the LLM and not scored._\n\n",
 			state.Suppressions.Total, line)

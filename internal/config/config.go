@@ -50,6 +50,10 @@ type HealthCheckPolicyConfig struct {
 	// FPCriticalRequiresHighConfidence keeps a CRITICAL finding as Needs
 	// Manual Review unless the model dismisses it with high confidence.
 	FPCriticalRequiresHighConfidence *bool `yaml:"fp_critical_requires_high_confidence,omitempty"`
+	// IaCFindings (report | block) decides whether IaC misconfigurations
+	// (Trivy config results) count toward the score and the gate. report,
+	// the default for now, triages and reports them without gating.
+	IaCFindings string `yaml:"iac_findings,omitempty"`
 }
 
 // DefaultLLMBatchSize is how many findings one classification request carries

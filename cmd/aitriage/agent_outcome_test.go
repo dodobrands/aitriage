@@ -172,6 +172,43 @@ func TestValidateAgentFlagsRejectsUnknownSeverityFloor(t *testing.T) {
 	}
 }
 
+// --iac-findings accepts report or block, overrides the configuration and
+// reaches the agent inside the container.
+func TestAgentIaCFindingsFlag(t *testing.T) {
+	previous := agentIaCFindings
+	t.Cleanup(func() { agentIaCFindings = previous })
+
+	agentIaCFindings = "gate"
+	if err := validateAgentFlags(); err == nil || !strings.Contains(err.Error(), "--iac-findings") {
+		t.Fatalf("validateAgentFlags() = %v, want the bad mode rejected", err)
+	}
+
+	agentIaCFindings = "block"
+	if err := validateAgentFlags(); err != nil {
+		t.Fatalf("validateAgentFlags() = %v, want block accepted", err)
+	}
+	cmd := newAgentPolicyTestCommand()
+	cmd.Flags().String("iac-findings", "", "")
+	if err := cmd.Flags().Set("iac-findings", "block"); err != nil {
+		t.Fatal(err)
+	}
+	reported := &config.Config{HealthCheck: config.HealthCheckPolicyConfig{IaCFindings: "report"}}
+	if policy := agentPolicyFromFlags(cmd, reported); policy.IaCFindings != healthcheck.IaCFindingsBlock {
+		t.Fatalf("policy iac_findings = %q, want the flag to override the configuration", policy.IaCFindings)
+	}
+	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), &config.Config{}); policy.IaCFindings != healthcheck.IaCFindingsReport {
+		t.Fatalf("default iac_findings = %q, want report", policy.IaCFindings)
+	}
+
+	args, err := agentContainerCommandArgs(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "--iac-findings block") {
+		t.Fatalf("inner agent args do not forward --iac-findings:\n%s", joined)
+	}
+}
+
 func TestAgentPolicyAppliesTriagePolicyFlags(t *testing.T) {
 	cmd := newAgentPolicyTestCommand()
 	cmd.Flags().String("confirmed-min-severity", "", "")
