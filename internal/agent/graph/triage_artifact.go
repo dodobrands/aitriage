@@ -31,9 +31,11 @@ type TriageFindingsArtifact struct {
 	SchemaVersion int `json:"schema_version"`
 	// TriageStatus is "complete" or "failed".
 	TriageStatus string `json:"triage_status"`
-	// TriageFailureReason and TriageFailureStage explain a failed triage.
+	// TriageFailureReason, TriageFailureStage and TriageFailureCause
+	// ("provider_failure" or "no_verdict") explain a failed triage.
 	TriageFailureReason string             `json:"triage_failure_reason,omitempty"`
 	TriageFailureStage  string             `json:"triage_failure_stage,omitempty"`
+	TriageFailureCause  string             `json:"triage_failure_cause,omitempty"`
 	TotalFindings       int                `json:"total_findings"`
 	HealthCheck         healthcheck.Result `json:"health_check"`
 	LLMUsage            LLMUsageArtifact   `json:"llm_usage"`
@@ -73,6 +75,13 @@ type LLMUsageArtifact struct {
 // TriagedFinding pairs one original scanner finding with its one validated
 // disposition. FindingIndex preserves original scanner order and makes the
 // 1:1 mapping independently auditable.
+//
+// A finding stands for every scanner report of one defect: finding.id,
+// finding.source and finding.message are the representative report's, and
+// finding.origins[] is the full list of reports (type, source, rule_id,
+// file, line, severity). Consumers that gate on a scanner or a rule, such as
+// "fail when Gitleaks found a secret", must check origins[]; for a hardcoded
+// secret the representative is Gitleaks whenever Gitleaks reported it.
 type TriagedFinding struct {
 	FindingIndex int                `json:"finding_index"`
 	Finding      EnrichedFinding    `json:"finding"`
@@ -108,6 +117,7 @@ func BuildTriageFindingsArtifact(state *AgentState) (TriageFindingsArtifact, err
 		TriageStatus:        status,
 		TriageFailureReason: state.TriageFailureReason,
 		TriageFailureStage:  state.TriageFailureStage,
+		TriageFailureCause:  state.TriageFailureCause,
 		TotalFindings:       len(findings),
 		HealthCheck:         state.HealthCheck,
 		LLMUsage:            buildLLMUsageArtifact(state),

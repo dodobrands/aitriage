@@ -37,8 +37,9 @@ func TestClassifyFindingsRejectsWrongIdentityToNeedsReview(t *testing.T) {
 	}
 }
 
-// A False Positive without evidence is rejected; a model that answers
-// nothing else leaves the finding triage-failed.
+// A False Positive without evidence is rejected. The model did give the
+// finding a verdict of its own, so it ends as an ordinary fallback: Needs
+// Manual Review, never False Positive.
 func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 	pinConcurrency(t)
 	findings := []EnrichedFinding{{ID: "B101", VulnID: "CS-MISC-001", Severity: "LOW", File: "tests/a_test.py", Line: 7, Message: "assert"}}
@@ -50,11 +51,11 @@ func TestClassifyFindingsRejectsFalsePositiveWithoutEvidence(t *testing.T) {
 	}
 	var usage llm.Usage
 	_, dispositions, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", t.TempDir(), "", findings, mock, &usage, 150)
-	if !errors.Is(err, ErrTriageIncomplete) {
-		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want ErrTriageIncomplete", err)
+	if err != nil {
+		t.Fatalf("ClassifyFindingsWithAudit() error = %v, want a complete triage", err)
 	}
-	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceTriageFailed {
-		t.Fatalf("disposition = %+v, want triage-failed Needs Manual Review", got)
+	if got := dispositions[0]; got.Disposition != "Needs Manual Review" || got.DispositionSource != dispositionSourceNRFallback {
+		t.Fatalf("disposition = %+v, want nr-fallback Needs Manual Review", got)
 	}
 	if !auditMentions(audit, "false positive has no evidence") {
 		t.Fatalf("audit = %+v, want recorded rejection", audit)
@@ -93,16 +94,15 @@ func TestClassifyFindingsAcceptsValidatedTestOnlyFalsePositive(t *testing.T) {
 	}
 }
 
-// The mitigation sits on a different line from the HIGH finding: a mitigation
-// on the flagged line itself is no longer accepted for CRITICAL/HIGH findings
-// (see TestCodeMitigationRejectsSameLineForCriticalAndHigh).
+// The mitigation is a guard on another line above the HIGH finding, in the
+// same function: a check that exits early when the token does not verify.
 func TestClassifyFindingsAcceptsValidatedCodeMitigationFalsePositive(t *testing.T) {
 	pinConcurrency(t)
 	project := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("def handler(request):\n    verify_token(request)\n    return load_profile(request)\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(project, "auth.py"), []byte("def handler(request):\n    if not verify_token(request):\n        abort(401)\n    return load_profile(request)\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
-	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 3, Message: "missing auth"}}
+	findings := []EnrichedFinding{{ID: "R-1", VulnID: "CS-AUTH-001", Severity: "HIGH", File: "auth.py", Line: 4, Message: "missing auth"}}
 	mock := &fakeLLM{
 		t: t,
 		classifyHandler: func(_ int, _ []EnrichedFinding) (string, error) {

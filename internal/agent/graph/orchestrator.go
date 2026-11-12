@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/prompts"
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
 // ErrNoLLMClient is returned when the pipeline is asked to run without a usable
@@ -61,6 +63,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.TriageStatus = TriageStatusFailed
 		state.TriageFailureReason = incomplete.Reason
 		state.TriageFailureStage = incomplete.Stage
+		state.TriageFailureCause = incomplete.Cause
 		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
 			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
 	} else {
@@ -255,12 +258,13 @@ func enrichFindings(state *AgentState) {
 			Severity:         f.Severity,
 			File:             file,
 			Line:             f.Line,
-			Message:          paths.stripRoot(fmt.Sprintf("[%s] %s", f.Source, f.Message)),
+			Message:          paths.stripRoot(fmt.Sprintf("[%s] %s", f.Source, scannerMessage(f))),
 			Snippet:          extractFullContext(state.ProjectPath, file, f.Line),
 			Package:          f.Package,
 			InstalledVersion: f.InstalledVersion,
 			FixedVersion:     f.FixedVersion,
 			PrimaryURL:       f.PrimaryURL,
+			Kind:             f.Kind,
 		})
 	}
 	// Add other findings without snippets or with basic info
@@ -362,6 +366,10 @@ func computeHealthCheck(state *AgentState) {
 		}
 	}
 	recorded := recordedDismissals(state)
+	// iac_findings: report keeps findings that are nothing but IaC
+	// misconfigurations out of the score and the gate; they are still
+	// triaged and reported.
+	reportIaC := healthcheck.NormalizeIaCFindings(state.Policy.IaCFindings) == healthcheck.IaCFindingsReport
 
 	in := healthcheck.Input{}
 	for _, r := range state.CoreFindings {
@@ -414,6 +422,7 @@ func computeHealthCheck(state *AgentState) {
 			NeedsReview:  isUnreviewed,
 			Unclassified: unclassified[i],
 			TriageFailed: triageFailed[i],
+			ReportOnly:   reportIaC && misconfigurationOnly(f),
 		})
 	}
 
@@ -465,7 +474,11 @@ func mergeFinding(current, candidate EnrichedFinding, class healthcheck.FindingC
 		severity = class.Severity
 	}
 	representative, other := current, candidate
-	if shouldPreferSemanticRepresentative(candidate, current) {
+	classKey := ""
+	if classified {
+		classKey = class.Key
+	}
+	if shouldPreferSemanticRepresentative(candidate, current, classKey) {
 		representative, other = candidate, current
 	}
 	representative.Origins = origins
@@ -491,7 +504,21 @@ func originOf(f EnrichedFinding) FindingOrigin {
 	if source == "" {
 		source = f.Type
 	}
-	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity}
+	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity, Kind: f.Kind}
+}
+
+// misconfigurationOnly reports whether every scanner report behind a finding
+// is a Trivy IaC misconfiguration. A finding another detector also reported
+// (DOCKER-NO-USER merged with DS-0002) is not: it gated before IaC results
+// were reported, and keeps gating.
+func misconfigurationOnly(f EnrichedFinding) bool {
+	origins := findingOrigins(f)
+	for _, origin := range origins {
+		if origin.Kind != external.KindMisconfiguration || !strings.EqualFold(strings.TrimSpace(origin.Source), "trivy") {
+			return false
+		}
+	}
+	return len(origins) > 0
 }
 
 func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
@@ -515,7 +542,15 @@ func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
 	return out
 }
 
-func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding) bool {
+// shouldPreferSemanticRepresentative reports whether candidate should
+// represent a merged finding instead of current. The representative gives the
+// finding its rule id, source and message; origins keeps every detector.
+func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding, classKey string) bool {
+	if classKey == healthcheck.ClassHardcodedSecret {
+		if a, b := secretRepresentativeRank(candidate), secretRepresentativeRank(current); a != b {
+			return a < b
+		}
+	}
 	priority := func(f EnrichedFinding) int {
 		switch strings.ToLower(f.Type) {
 		case "core":
@@ -535,6 +570,42 @@ func shouldPreferSemanticRepresentative(candidate, current EnrichedFinding) bool
 		return candidate.File != ""
 	}
 	return strings.ToLower(candidate.ID) < strings.ToLower(current.ID)
+}
+
+// secretRepresentativeRank orders the detectors of a hardcoded secret for
+// the representative: Gitleaks first, then the built-in SECRET-* rules, then
+// the others. finding.source is then "gitleaks" whenever Gitleaks reported
+// the secret, which CI gates written against Gitleaks rely on, and the text
+// shown is Gitleaks' redacted message rather than, say, Bandit's, which
+// quotes the value.
+func secretRepresentativeRank(f EnrichedFinding) int {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(f.Source), "gitleaks"):
+		return 0
+	case strings.EqualFold(strings.TrimSpace(f.Type), "core") && strings.HasPrefix(strings.ToUpper(strings.TrimSpace(f.ID)), "SECRET-"):
+		return 1
+	default:
+		return 2
+	}
+}
+
+// banditPasswordRules report a possible hardcoded password and quote it in
+// their message ("Possible hardcoded password: 'SuperSecret123'").
+var banditPasswordRules = stringSet("B105", "B106", "B107")
+
+// quotedValuePattern matches a single- or double-quoted value.
+var quotedValuePattern = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+
+// scannerMessage is the message of an external report as the triage graph
+// shows it. Bandit's password checks quote the value they found; it is
+// masked, since the message reaches every artifact.
+func scannerMessage(f external.UnifiedFinding) string {
+	if !strings.EqualFold(strings.TrimSpace(f.Source), "bandit") || !banditPasswordRules[strings.ToUpper(strings.TrimSpace(f.RuleID))] {
+		return f.Message
+	}
+	return quotedValuePattern.ReplaceAllStringFunc(f.Message, func(quoted string) string {
+		return quoted[:1] + "[redacted]" + quoted[:1]
+	})
 }
 
 // hcKey builds a location key used to match AI dispositions to findings.
@@ -644,10 +715,11 @@ func GetBatchSize(state *AgentState) int {
 // how many repair requests a malformed threat model gets.
 const threatModelMaxRetries = 2
 
-// nrFallbackRationale is recorded for findings the LLM never classified, even
-// after bounded retries. They default to Needs Manual Review (never False
-// Positive) so they keep penalising the Health Check score.
-const nrFallbackRationale = "LLM did not classify this finding after retries; defaulting to Needs Manual Review for safety."
+// nrFallbackRationale is recorded for findings whose own model verdict was
+// rejected by validation in every attempt. They default to Needs Manual
+// Review (never False Positive) so they keep penalising the Health Check
+// score. A finding no reply carried a verdict for is triage-failed instead.
+const nrFallbackRationale = "The model's verdict for this finding did not pass validation after retries (see the classification audit); defaulting to Needs Manual Review for safety."
 
 // errThreatModelParse marks a malformed (unparseable) model response, for the
 // threat model and for classification alike. Transport errors are never
@@ -970,6 +1042,9 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings, hc.Breakdown.UnclassifiedFindings,
 		hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings,
 		hc.Breakdown.Penalty, hc.Breakdown.Bonus)
+	if n := hc.Breakdown.ReportOnlyFindings; n > 0 {
+		healthBlock += fmt.Sprintf("- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
+	}
 	if len(hc.Verdict.BlockingReasons) > 0 {
 		var reasonLines []string
 		for _, reason := range hc.Verdict.BlockingReasons {
@@ -1077,6 +1152,9 @@ func policyTerms(policy healthcheck.Policy) string {
 	if policy.FPCriticalRequiresHighConfidence {
 		terms += ", `fp_critical_requires_high_confidence`"
 	}
+	if healthcheck.NormalizeIaCFindings(policy.IaCFindings) == healthcheck.IaCFindingsBlock {
+		terms += ", `iac_findings=block`"
+	}
 	return terms
 }
 
@@ -1116,13 +1194,14 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	}
 	_, _ = fmt.Fprintf(sb, "**Scanner coverage**: `%s`\n\n", coverage)
 	if len(state.ScannerExecutions) > 0 {
-		sb.WriteString("| Scanner | Status | Findings | Version |\n")
+		sb.WriteString("| Scanner | Status | Raw results | Version |\n")
 		sb.WriteString("|---|---|---:|---|\n")
 		for _, scanner := range state.ScannerExecutions {
 			_, _ = fmt.Fprintf(sb, "| `%s` | `%s` | %d | %s |\n",
 				scanner.Scanner, scanner.Status, scanner.Findings, strings.ReplaceAll(scanner.Version, "|", "\\|"))
 		}
 		sb.WriteString("\n")
+		sb.WriteString(rawResultsNote(state) + "\n\n")
 	}
 
 	// ── Blocking Reasons ──────────────────────────────────────────────
@@ -1168,17 +1247,20 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 	// repository findings and are counted separately below.
 	bd := hc.Breakdown
 	_, _ = fmt.Fprintf(sb, "> **%d** findings analyzed · **%d** true positives · **%d** needs review",
-		bd.ActiveFindings+bd.IgnoredFindings+bd.DedupedFindings, bd.ConfirmedFindings, bd.NeedsReviewFindings)
+		bd.ActiveFindings+bd.IgnoredFindings+bd.DedupedFindings+bd.ReportOnlyFindings, bd.ConfirmedFindings, bd.NeedsReviewFindings)
 	if bd.UnclassifiedFindings > 0 {
 		_, _ = fmt.Fprintf(sb, " (%d unclassified)", bd.UnclassifiedFindings)
 	}
 	_, _ = fmt.Fprintf(sb, " · **%d** false positives suppressed", bd.IgnoredFindings)
 	// Reports of one defect by several detectors were merged into one finding
 	// before scoring; say how many, so the count is not a mystery.
-	if merged := bd.DedupedFindings + mergedDetectorReports(state.EnrichedFindings); merged > 0 {
+	if merged := bd.DedupedFindings + mergedReports(state); merged > 0 {
 		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", merged)
 	}
 	sb.WriteString("\n\n")
+	if line := iacReportOnlyLine(bd); line != "" {
+		sb.WriteString(line + "\n\n")
+	}
 	if line := suppressionReasonsLine(state.Suppressions); line != "" {
 		_, _ = fmt.Fprintf(sb, "_Project decisions (`aitriage ignore`, audit log): %d finding(s) dismissed — %s. They are not sent to the LLM and not scored._\n\n",
 			state.Suppressions.Total, line)

@@ -145,6 +145,7 @@ func misconfigurationFinding(target string, m trivyMisconfiguration) UnifiedFind
 		message = message + ": " + detail
 	}
 	finding := UnifiedFinding{
+		Kind:       KindMisconfiguration,
 		Source:     "trivy",
 		RuleID:     id,
 		Severity:   m.Severity,

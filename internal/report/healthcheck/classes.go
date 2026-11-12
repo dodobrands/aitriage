@@ -31,6 +31,9 @@ const (
 	// ScopeFile: one defect per file, whichever line a detector points at.
 	// A Dockerfile without USER runs its container as root no matter whether
 	// a scanner reports the missing instruction at CMD, at FROM or nowhere.
+	// Only a file that describes exactly one thing may be file-scoped: a
+	// Kubernetes manifest declares many containers, and a decision about one
+	// of them must not cover the others.
 	ScopeFile
 	// ScopeRule: one defect per rule (and package). Advisories never merge
 	// with each other: fifty CVEs in one manifest are fifty findings.
@@ -57,6 +60,11 @@ const (
 	ClassExceptionSwallow     = "exception_swallow"
 	ClassContainerRunsAsRoot  = "container_runs_as_root"
 	ClassVulnerableDependency = "vulnerable_dependency"
+	// ClassK8sContainerRunsAsRoot is a container of a Kubernetes workload
+	// that runs as root. Unlike ClassContainerRunsAsRoot (a Dockerfile, one
+	// image per file) it is line-scoped: one manifest declares many
+	// containers, each its own defect.
+	ClassK8sContainerRunsAsRoot = "k8s_container_runs_as_root"
 )
 
 var findingClasses = map[string]FindingClass{}
@@ -100,6 +108,7 @@ func init() {
 		{Key: "missing_security_headers", Code: "HEADERS"},
 		{Key: "privileged_container", Code: "PRIV"},
 		{Key: ClassContainerRunsAsRoot, Code: "ROOT", Scope: ScopeFile},
+		{Key: ClassK8sContainerRunsAsRoot, Code: "ROOT"},
 		{Key: "image_latest_tag", Code: "CONFIG"},
 		{Key: "dockerfile_add_instruction", Code: "CONFIG"},
 		{Key: ClassVulnerableDependency, Code: "DEP", Scope: ScopeRule},
@@ -197,8 +206,10 @@ var classRules = map[string][]string{
 	"missing_csrf_protection":  {"FAST-CSRF", "FLASK-CSRF", "NEXT-CSRF", "DJANGO-CSRF-EXEMPT", "ASP-ANTIFORGERY"},
 	"missing_security_headers": {"FLASK-HEADERS", "NEXT-HEADERS", "EXPRESS-HELMET", "DJANGO-MIDDLEWARE"},
 	"privileged_container":     {"DOCKER-PRIVILEGED", "compose_privileged_mode", "k8s_privileged_container"},
-	ClassContainerRunsAsRoot:   {"DOCKER-NO-USER", "dockerfile_root_user", "k8s_run_as_root"},
-	"image_latest_tag":         {"DOCKER-LATEST"},
+	// Dockerfile checks only: the class is file-scoped.
+	ClassContainerRunsAsRoot:    {"DOCKER-NO-USER", "dockerfile_root_user"},
+	ClassK8sContainerRunsAsRoot: {"k8s_run_as_root"},
+	"image_latest_tag":          {"DOCKER-LATEST"},
 	"dockerfile_add_instruction": {
 		"DOCKER-ADD", "dockerfile_add_instead_of_copy",
 	},
@@ -213,7 +224,7 @@ var trivyCheckClasses = map[string]string{
 	"DS-0001":  "image_latest_tag",
 	"DS-0002":  ClassContainerRunsAsRoot,
 	"DS-0005":  "dockerfile_add_instruction",
-	"KSV-0012": ClassContainerRunsAsRoot,
+	"KSV-0012": ClassK8sContainerRunsAsRoot,
 	"KSV-0017": "privileged_container",
 }
 

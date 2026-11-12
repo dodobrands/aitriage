@@ -29,9 +29,12 @@ import (
 // built ONCE and reused. A provider failure does not discard the work done:
 // the dispositions are returned complete (findings the model never saw carry
 // disposition_source "triage-failed") together with a *TriageIncompleteError.
-// Output that classifies nothing counts as such a failure: a finding whose
-// every request came back malformed, empty or with only rejected verdicts is
-// "triage-failed" too.
+// Missing output counts as such a failure, decided finding by finding: a
+// finding no reply carried a verdict for after every retry (left out,
+// malformed or empty replies, verdicts naming another finding) is
+// "triage-failed" too, whatever happened to the other findings of its
+// request. Only a finding whose own verdict came back and was rejected by
+// validation is an ordinary "nr-fallback".
 //
 // The returned slice always has exactly len(findings) entries, ordered by index.
 func ClassifyFindings(ctx context.Context, repoContextText, projectPath string, findings []EnrichedFinding, llmClient llm.Client, usage *llm.Usage, batchSize int) (*ThreatModel, []FindingDisposition, error) {
@@ -227,21 +230,25 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		case outcome.transportErr != nil:
 			failure = newTriageIncomplete(usageStageClassification, outcome.transportErr)
 		case len(outcome.unanswered) > 0:
-			// Every request that carried these findings came back without a
-			// single usable verdict: unparseable, {} or null, an error object,
-			// an empty list, or only verdicts that failed validation. That is
-			// broken output, not a model judgement; treating the findings as
-			// ordinary NR fallbacks would let it pass a fail_on=confirmed gate.
+			// No reply carried a verdict for these findings, after every
+			// retry: they were left out, the replies were unparseable, {} or
+			// null, an error object or an empty list, or their verdicts named
+			// another finding. That is missing output, not a model judgement,
+			// and it is judged per finding: whether a batch-mate got a verdict,
+			// or came from the verdict cache, must not decide whether the gate
+			// sees an incomplete triage. Treating these findings as ordinary
+			// NR fallbacks would let a fail_on=confirmed gate pass.
 			unanswered = outcome.unanswered
 			failure = newTriageIncomplete(usageStageClassification, fmt.Errorf(
-				"the provider returned no usable classification for %d finding(s) after %d attempt(s): every reply was malformed, empty or rejected by validation",
+				"the provider returned no usable classification for %d finding(s) after %d attempt(s): no reply carried a verdict for them (left out, malformed or empty, or naming another finding)",
 				len(unanswered), classifyMaxRetries()+1))
+			failure.Cause = TriageFailureCauseNoVerdict
 		}
 	}
 
 	// Findings the model did not classify: triage-failed when the provider
-	// failed for them or never gave a usable reply, NR fallback when the model
-	// answered the request but left them out or gave them a rejected verdict.
+	// failed for them or no reply carried their verdict, NR fallback when the
+	// model returned their own verdict and validation rejected it every time.
 	everyMissingFailed := failure != nil && unanswered == nil
 	for _, i := range toLLM {
 		if result[i] != nil {
@@ -305,9 +312,9 @@ func triageFailedRationale(reason string) string {
 type classifyOutcome struct {
 	// transportErr is the first provider failure (auth, rate limit, timeout).
 	transportErr error
-	// unanswered holds the unique indices of unclassified findings that never
-	// got a usable reply: no request that carried them produced an accepted
-	// verdict for any finding. Only meaningful when transportErr is nil.
+	// unanswered holds the unique indices of unclassified findings no reply
+	// carried a verdict of their own for, in any attempt. Only meaningful
+	// when transportErr is nil.
 	unanswered map[int]bool
 }
 
@@ -376,14 +383,14 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 			for li, gi := range batch {
 				subset[li] = unique[gi]
 			}
-			local, answered := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
+			local, rejected := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
 
 			mu.Lock()
 			for li, d := range local {
 				out[batch[li]] = d
 			}
 			for li, gi := range batch {
-				if _, ok := local[li]; !ok && !answered[li] {
+				if _, ok := local[li]; !ok && !rejected[li] {
 					unanswered[gi] = true
 				}
 			}
@@ -419,12 +426,13 @@ const (
 // the previous reply was unparseable or omitted more than a quarter of its
 // findings: weaker models drop items from long requests, and resending the
 // same long request tends to fail the same way. It returns a map keyed by
-// LOCAL batch index, and the local indices of the findings that were part of
-// at least one usable request: one whose reply produced an accepted verdict.
-// A finding outside every usable request never got a real answer.
+// LOCAL batch index, and the local indices of the findings whose own verdict
+// came back at least once (right index, echoed identity, a supported
+// disposition) and was rejected by validation. Any other unclassified
+// finding never got a verdict of its own, whatever its batch-mates got.
 func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyRequest, subset []EnrichedFinding, globalIndices []int, addUsageSafe func(llm.Usage), setErr func(error), audit *classificationAuditCollector) (map[int]FindingDisposition, map[int]bool) {
 	res := make(map[int]FindingDisposition)
-	answered := make(map[int]bool)
+	rejected := make(map[int]bool)
 
 	pass := func(attempt int, localMap []int) passOutcome {
 		items := make([]EnrichedFinding, len(localMap))
@@ -463,6 +471,11 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			validated, reject, note := validateLLMDisposition(req.projectPath, items[d.FindingIndex], d, req.policy)
 			if reject != "" {
 				entry.Rejected = append(entry.Rejected, AuditRejection{FindingIndex: globalIndices[local], Reason: redactFailureText(reject)})
+				if verdictNamesFinding(items[d.FindingIndex], d) {
+					// The model judged this finding; the verdict just did
+					// not pass validation.
+					rejected[local] = true
+				}
 				continue
 			}
 			if note != "" {
@@ -470,13 +483,6 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			}
 			res[local] = validated
 			entry.AcceptedFindingIndices = append(entry.AcceptedFindingIndices, globalIndices[local])
-		}
-		if len(entry.AcceptedFindingIndices) > 0 {
-			// The model answered this request: whatever it left out or got
-			// rejected is an omission, not a broken reply.
-			for _, local := range localMap {
-				answered[local] = true
-			}
 		}
 		audit.record(entry)
 		return passParsed
@@ -492,11 +498,11 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		for _, chunk := range chunks {
 			if ctx.Err() != nil {
 				// Another batch hit a provider failure, or the run was cancelled.
-				return res, answered
+				return res, rejected
 			}
 			outcome := pass(attempt, chunk)
 			if outcome == passFailed {
-				return res, answered
+				return res, rejected
 			}
 			var missing []int
 			for _, local := range chunk {
@@ -510,7 +516,14 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		}
 		chunks = next
 	}
-	return res, answered
+	return res, rejected
+}
+
+// verdictNamesFinding reports whether a reply item is a verdict about the
+// finding it is indexed to: it echoes the finding's identity. A verdict that
+// names another finding says nothing about this one.
+func verdictNamesFinding(finding EnrichedFinding, raw rawDisposition) bool {
+	return raw.FindingID == findingIdentity(finding) && raw.Fingerprint == Fingerprint(finding)
 }
 
 // retryChunks plans the retry of the findings a request left unclassified.

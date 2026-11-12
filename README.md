@@ -492,6 +492,7 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | `fail_on: any` | Any active finding blocks, reviewed or not |
 | `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
+| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way. A later minor release makes `block` the default |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
@@ -506,9 +507,13 @@ and re-check a project you know before switching to another.
 CRITICAL finding for manual review unless the model calls it a false positive with high
 confidence. A false positive also needs evidence AITriage can check. A code mitigation must be
 code (not a comment, a string, a configuration file or the flagged line itself), in the same file
-at most 30 lines above the flagged line, and must name a variable or function the flagged
-statement uses. A CRITICAL finding or a hardcoded secret is never dismissed this way: it stays
-Needs Manual Review until a person decides.
+and the same function at most 30 lines above the flagged line, name a variable or function the
+flagged statement uses, and be a guard of it (an `if`, `elif` or `assert` that checks it and
+exits early or encloses the flagged statement) or a re-assignment of it through a call
+(`cmd = shlex.quote(cmd)`). AITriage checks this on the syntax tree for Python, Go, JavaScript
+and TypeScript; in other languages a HIGH finding dismissed this way stays Needs Manual Review.
+A CRITICAL finding is never dismissed by a code mitigation, and a hardcoded secret by no
+evidence at all, not even in a test file: they stay Needs Manual Review until a person decides.
 
 A baseline is a property of the project, not of the tool that created it. The shared record is
 `.aitriage-baseline.json` at the repository root, used by the CLI (`aitriage baseline`), the Web

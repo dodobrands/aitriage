@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -257,9 +258,11 @@ func TestDockerfileWithoutUserStaysProjectLevelWhenAmbiguous(t *testing.T) {
 	}
 }
 
-// D3: a project-level finding is one finding however many stacks or
-// detectors reported it, and reports call its location "project".
-func TestProjectLevelFindingsAreNotMultipliedAcrossStacks(t *testing.T) {
+// D3: a project-level finding is one rule's verdict. The same rule reported
+// once per stack is one finding; two rules of one class (FastAPI's and
+// Express's missing authentication, and the NFR check) are three, because
+// each names a different component. Reports call the location "project".
+func TestProjectLevelFindingsAreOneFindingPerRule(t *testing.T) {
 	root := writeProjectFiles(t, identityFixtureFiles())
 	state := &AgentState{
 		ProjectPath: root,
@@ -274,23 +277,31 @@ func TestProjectLevelFindingsAreNotMultipliedAcrossStacks(t *testing.T) {
 		},
 	}
 	enrichFindings(state)
-	if len(state.EnrichedFindings) != 2 {
-		t.Fatalf("findings = %d, want missing authentication and missing lockfile once each: %+v", len(state.EnrichedFindings), state.EnrichedFindings)
+	if len(state.EnrichedFindings) != 4 {
+		t.Fatalf("findings = %d, want three authentication rules and the lockfile rule once: %+v", len(state.EnrichedFindings), state.EnrichedFindings)
 	}
-	if auth := findingByClass(t, state.EnrichedFindings, "missing_authentication"); len(auth.Origins) != 3 {
-		t.Fatalf("missing authentication origins = %+v, want both stacks and the NFR check", auth.Origins)
+	rules := map[string]int{}
+	for _, f := range state.EnrichedFindings {
+		rules[f.ID] = len(f.Origins)
+		if f.ID != "ENTR-02" && f.Class != "missing_authentication" {
+			t.Fatalf("finding %s class = %q, want missing_authentication", f.ID, f.Class)
+		}
+	}
+	// The two lockfile reports are one origin: same rule, same (project) place.
+	if want := map[string]int{"FAST-AUTH": 1, "EXPRESS-AUTH": 1, "NFR-API-003": 1, "ENTR-02": 1}; !reflect.DeepEqual(rules, want) {
+		t.Fatalf("origins per rule = %v, want %v", rules, want)
 	}
 
 	state.FindingDispositions = allDispositions(state, "Needs Manual Review")
 	computeHealthCheck(state)
-	if bd := state.HealthCheck.Breakdown; bd.ActiveFindings != 2 {
-		t.Fatalf("active findings = %d, want 2", bd.ActiveFindings)
+	if bd := state.HealthCheck.Breakdown; bd.ActiveFindings != 4 || bd.CountBySeverity["HIGH"] != 4 {
+		t.Fatalf("breakdown = %+v, want 4 active HIGH findings", bd)
 	}
 	if err := generateSummary(state); err != nil {
 		t.Fatal(err)
 	}
 	top := summarySection(state.SummaryMarkdown, "Top Critical Issues")
-	if strings.Count(top, "— `project`") != 2 || strings.Contains(state.SummaryMarkdown, "N/A") {
+	if strings.Count(top, "— `project`") != 4 || strings.Contains(state.SummaryMarkdown, "N/A") {
 		t.Fatalf("project-level findings must read `project`, not N/A:\n%s", state.SummaryMarkdown)
 	}
 }

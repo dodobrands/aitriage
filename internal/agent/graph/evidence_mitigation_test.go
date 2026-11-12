@@ -96,8 +96,15 @@ func mitigationFixture(t *testing.T) string {
 			"<!-- escaped by the template engine -->",
 			"<div>{{ user_input | escape }}</div>", // 2 flagged
 		}, "\n"),
-		"plugin/run.php":    "<?php\neval($_GET['code']);\n",
-		"plugin/hello.php":  "<?php\n$name = htmlspecialchars($_GET['name']);\necho $name;\n",
+		"plugin/run.php":   "<?php\neval($_GET['code']);\n",
+		"plugin/hello.php": "<?php\n$name = htmlspecialchars($_GET['name']);\necho $name;\n",
+		"plugin/greet.php": "<?php\n$name = $_GET['name'];\n$name = htmlspecialchars($name);\necho $name;\n",
+		"web/render.ts": strings.Join([]string{
+			"export function render(el: HTMLElement, html: string): void {", // 1
+			"  html = DOMPurify.sanitize(html);",                            // 2
+			"  el.innerHTML = html;",                                        // 3 flagged
+			"}",                                                             // 4
+		}, "\n"),
 		"build/task.gradle": "def cmd = sanitize(input)\nexec(cmd)\n",
 		"docker-compose.yml": strings.Join([]string{
 			"# Local smoke test only - NOT for production.",
@@ -116,9 +123,10 @@ func mitFinding(file, severity string, line int) EnrichedFinding {
 }
 
 // E1: code_mitigation evidence must be code only, sit a few lines above the
-// flagged line in the same source file, and name a variable or function of
-// the flagged statement. It never dismisses a CRITICAL finding or a hardcoded
-// secret: a person decides those.
+// flagged line in the same source file, name a variable or function of the
+// flagged statement, and be a guard of it or a re-assignment of it through a
+// call. It never dismisses a CRITICAL finding or a hardcoded secret: a person
+// decides those.
 func TestCodeMitigationEvidenceValidation(t *testing.T) {
 	project := mitigationFixture(t)
 	const needsPerson = "a person must decide"
@@ -180,16 +188,26 @@ func TestCodeMitigationEvidenceValidation(t *testing.T) {
 		{name: "yaml setting", finding: mitFinding("config/settings.yaml", "LOW", 2), evidLine: 1, observed: "debug: false", wantReject: "configuration or data file"},
 		{name: "unrecognised language", finding: mitFinding("build/task.gradle", "MEDIUM", 2), evidLine: 1, observed: "cmd = sanitize(input)", wantReject: "not a recognised source language"},
 
+		// A sanitiser whose result gets a new name is not x = f(x): the line
+		// cannot be told apart from the assignment that produces tainted data
+		// (`cmd = request.args.get("dir")`), so it is left for review.
+		{name: "ts sanitizer result under a new name", finding: mitFinding("web/app.ts", "HIGH", 7), evidLine: 3, observed: "clean = DOMPurify.sanitize(html)", wantReject: "does not pass clean through a call"},
+		{name: "ts template literal interpolation of the new name", finding: mitFinding("web/app.ts", "MEDIUM", 8), evidLine: 3, observed: "clean = DOMPurify.sanitize(html)", wantReject: "does not pass clean through a call"},
+		// Without a grammar the function cannot be checked: a HIGH finding is
+		// left for a person, a lower one needs a guard or x = f(x).
+		{name: "php escaping assignment, HIGH, no grammar", finding: mitFinding("plugin/hello.php", "HIGH", 3), evidLine: 2, observed: "$name = htmlspecialchars(", wantReject: needsPerson},
+		{name: "php escaping of another value, MEDIUM", finding: mitFinding("plugin/hello.php", "MEDIUM", 3), evidLine: 2, observed: "$name = htmlspecialchars(", wantReject: "neither a guard nor a re-assignment"},
+		{name: "php escaping quoted with its string argument", finding: mitFinding("plugin/hello.php", "HIGH", 3), evidLine: 2, observed: "$name = htmlspecialchars($_GET['name'])", wantReject: "part of it lies inside a string literal"},
+		{name: "php taint source, MEDIUM", finding: mitFinding("plugin/greet.php", "MEDIUM", 4), evidLine: 2, observed: "$name = $_GET", wantReject: "neither a guard nor a re-assignment"},
+
 		// Real mitigations tied to the flagged statement are accepted.
 		{name: "py quoting before the call", finding: mitFinding("app.py", "HIGH", 12), evidLine: 11, observed: "shlex.quote(cmd)"},
 		{name: "py authorization check", finding: mitFinding("app.py", "HIGH", 22), evidLine: 9, observed: "user.is_admin"},
 		{name: "py cast before an f-string query", finding: mitFinding("app.py", "MEDIUM", 16), evidLine: 15, observed: "uid = int(uid)"},
 		{name: "py quoting before a multi-line call", finding: mitFinding("app.py", "HIGH", 18), evidLine: 17, observed: "shlex.quote(cmd)"},
-		{name: "ts sanitizer assignment", finding: mitFinding("web/app.ts", "HIGH", 7), evidLine: 3, observed: "clean = DOMPurify.sanitize(html)"},
-		{name: "ts template literal interpolation", finding: mitFinding("web/app.ts", "MEDIUM", 8), evidLine: 3, observed: "clean = DOMPurify.sanitize(html)"},
+		{name: "ts sanitizer re-assignment", finding: mitFinding("web/render.ts", "HIGH", 3), evidLine: 2, observed: "html = DOMPurify.sanitize(html)"},
 		{name: "go validation check", finding: mitFinding("main.go", "HIGH", 5), evidLine: 4, observed: "validate(input)"},
-		{name: "php escaping assignment ($name is name)", finding: mitFinding("plugin/hello.php", "HIGH", 3), evidLine: 2, observed: "$name = htmlspecialchars("},
-		{name: "php escaping quoted with its string argument", finding: mitFinding("plugin/hello.php", "HIGH", 3), evidLine: 2, observed: "$name = htmlspecialchars($_GET['name'])", wantReject: "part of it lies inside a string literal"},
+		{name: "php escaping re-assignment, MEDIUM", finding: mitFinding("plugin/greet.php", "MEDIUM", 4), evidLine: 3, observed: "$name = htmlspecialchars($name)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
