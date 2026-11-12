@@ -5,3 +5,4 @@ ignore:
     - ENTR-SLOP-01
     - port-53
     - nginx_missing_server_tokens_off
+    - bandit:B404

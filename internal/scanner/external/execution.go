@@ -61,9 +61,19 @@ func ToolVersion(ctx context.Context, name string) string {
 	if err != nil {
 		return ""
 	}
-	line := strings.TrimSpace(string(out))
+	return normalizeToolVersion(string(out))
+}
+
+// normalizeToolVersion keeps the first line of a version banner and drops a
+// leading "Version:" label (Trivy prints "Version: 0.72.0"), so manifests and
+// summaries show the bare version like the other scanners.
+func normalizeToolVersion(out string) string {
+	line := strings.TrimSpace(out)
 	if i := strings.IndexByte(line, '\n'); i >= 0 {
 		line = strings.TrimSpace(line[:i])
+	}
+	if rest, ok := strings.CutPrefix(line, "Version:"); ok {
+		line = strings.TrimSpace(rest)
 	}
 	if len(line) > 80 {
 		line = line[:80]

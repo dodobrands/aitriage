@@ -41,7 +41,7 @@ import (
 // What each part of the fixture guards:
 //
 //	.aitriage.yaml ignore.paths             no finding inside wp-content/plugins/akismet/
-//	.aitriage.yaml ignore.rules             no ENTR-SLOP-01, port-53, nginx_missing_server_tokens_off
+//	.aitriage.yaml ignore.rules             no ENTR-SLOP-01, port-53, nginx_missing_server_tokens_off, B404 (bandit: qualifier; B404 fires on this fixture)
 //	.trivyignore                            CVE-2022-22817 is not reported
 //	docker-compose.yml (services app, db)   no network findings without --probe-compose
 //	infra/main.tf, Dockerfile without USER  trivy config reports misconfigurations
@@ -731,7 +731,7 @@ func landedRegressionChecks() []regressionCheck {
 			}
 		}},
 		{"ignore_rules", func(t *testing.T, r *regressionRun) {
-			for _, rule := range []string{"ENTR-SLOP-01", "port-53", "nginx_missing_server_tokens_off"} {
+			for _, rule := range []string{"ENTR-SLOP-01", "port-53", "nginx_missing_server_tokens_off", "B404"} {
 				t.Run(rule, func(t *testing.T) {
 					reported := r.requireTriage(t).where(func(f regressionFinding) bool { return f.hasRule(rule) })
 					if len(reported) > 0 {
