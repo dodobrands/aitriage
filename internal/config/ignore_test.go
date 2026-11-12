@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,42 @@ func TestPathMatcherUsesGitignoreSemanticsNotSubstrings(t *testing.T) {
 	}
 }
 
+// Git anchors a pattern with a slash in its middle at the root. The matcher
+// used to anchor only "dir/*.ext", so "app/legacy/" also hid
+// services/billing/app/legacy/ and "config/settings_local.py" hid
+// src/config/settings_local.py, in every scanner.
+func TestPathMatcherAnchorsPatternsWithASlashInTheMiddle(t *testing.T) {
+	cases := []struct {
+		pattern string
+		rel     string
+		isDir   bool
+		want    bool
+	}{
+		{"app/legacy/", "app/legacy/handler.py", false, true},
+		{"app/legacy/", "services/billing/app/legacy/handler.py", false, false},
+		{"app/legacy", "services/billing/app/legacy/handler.py", false, false},
+		{"config/settings_local.py", "config/settings_local.py", false, true},
+		{"config/settings_local.py", "pkg/config/settings_local.py", false, false},
+		{"generated/*", "generated/x.py", false, true},
+		{"generated/*", "src/generated/x.py", false, false},
+		{"generated/*", "generated", true, false}, // the directory itself is not matched
+		{"docs/**/examples", "docs/a/examples/x.py", false, true},
+		{"docs/**/examples", "lib/docs/a/examples/x.py", false, false},
+		{"legacy/*.py", "src/legacy/a.py", false, false},
+		{"**/fixtures/", "src/fixtures/a.json", false, true}, // "**/" spans every directory
+		{"file?.txt", "file1.txt", false, true},
+		{"file?.txt", "file12.txt", false, false},
+		{"foo/**", "foo", true, false},
+		{"foo/**", "foo/bar/x", false, true},
+		{"legacy/", "src/legacy/a.py", false, true}, // only a trailing slash: any depth
+	}
+	for _, tc := range cases {
+		if got := NewPathMatcher([]string{tc.pattern}).Excludes(tc.rel, tc.isDir); got != tc.want {
+			t.Errorf("%q: Excludes(%q, dir=%t) = %t; want %t (git check-ignore)", tc.pattern, tc.rel, tc.isDir, got, tc.want)
+		}
+	}
+}
+
 func TestPathMatcherNegationDisablesTreePruning(t *testing.T) {
 	m := NewPathMatcher([]string{"generated/", "!generated/keep.go"})
 
@@ -92,10 +129,90 @@ func TestPathMatcherNegationDisablesTreePruning(t *testing.T) {
 	}
 }
 
+// Any "!" line used to stop every excluded directory from being skipped, so a
+// common "!.vscode/settings.json" made walkers enter dist/, coverage/ and the
+// rest. Only a negation that can match something below a directory keeps the
+// walker going into it.
+func TestExcludesTreeEntersOnlyDirectoriesANegationCanReach(t *testing.T) {
+	cases := []struct {
+		lines []string
+		dir   string
+		want  bool
+	}{
+		{[]string{"dist/", "coverage/", ".vscode/*", "!.vscode/settings.json"}, "dist", true},
+		{[]string{"dist/", "coverage/", ".vscode/*", "!.vscode/settings.json"}, "coverage", true},
+		{[]string{"dist/", "coverage/", ".vscode/*", "!.vscode/settings.json"}, ".vscode", false}, // not excluded itself
+		{[]string{"dist/", "!dist/keep.js"}, "dist", false},
+		{[]string{"dist/", "!dist/keep.js"}, "src/dist", true}, // the negation is anchored at the root
+		{[]string{"dist/", "!*.keep"}, "dist", false},          // a name can appear at any depth
+		{[]string{"!dist/keep.js", "dist/"}, "dist", true},     // an earlier negation is overridden
+		{[]string{"generated/", "!**/keep.go"}, "generated", false},
+		{[]string{"out/", "!src/**/keep"}, "out", true},
+		{[]string{"out/", "!src/**/keep"}, "src", false}, // not excluded at all
+		{[]string{"infra/", "!infra/prod/"}, "infra", false},
+		{[]string{"infra/", "!infra/prod/"}, "infra/dev", true},
+		{[]string{"infra/", "!infra/prod/"}, "infra/prod", false},
+		{[]string{"deploy/*", "!deploy/prod/"}, "deploy", false}, // "deploy/*" does not match deploy itself
+		{[]string{"deploy/*", "!deploy/prod/"}, "deploy/dev", true},
+		{[]string{"docs/", "!docs/[ab]/keep.md"}, "docs", false}, // brackets: assume the worst
+	}
+	for _, tc := range cases {
+		m := ParseIgnoreFile(strings.Join(tc.lines, "\n"))
+		if got := m.ExcludesTree(tc.dir); got != tc.want {
+			t.Errorf("%q: ExcludesTree(%q) = %t; want %t", tc.lines, tc.dir, got, tc.want)
+		}
+	}
+}
+
+func TestParseIgnoreFileReadsLinesLikeGit(t *testing.T) {
+	m := ParseIgnoreFile("\xEF\xBB\xBFsecrets.env\r\n# comment\r\n\r\nlogs/   \nspace\\ \n  indented\n")
+
+	cases := []struct {
+		rel   string
+		isDir bool
+		want  bool
+	}{
+		{"secrets.env", false, true},     // byte order mark and CRLF are not part of the pattern
+		{"logs/app.log", false, true},    // trailing spaces are dropped
+		{"space ", false, true},          // unless escaped
+		{"space", false, false},          // and then the space is part of the name
+		{"indented", false, false},       // leading spaces are part of the pattern, as in git
+		{"# comment", false, false},      // a comment is not a pattern
+		{"src/secrets.env", false, true}, // no slash: any depth
+	}
+	for _, tc := range cases {
+		if got := m.Excludes(tc.rel, tc.isDir); got != tc.want {
+			t.Errorf("Excludes(%q) = %t; want %t", tc.rel, got, tc.want)
+		}
+	}
+	if got := ReadIgnoreFile(t.TempDir() + "/missing"); got != nil || got.Excludes("x", false) {
+		t.Error("a missing ignore file must exclude nothing")
+	}
+}
+
+func TestRulesExposeTheParsedPatterns(t *testing.T) {
+	got := NewPathMatcher([]string{"app/legacy/", "*.min.js", "./build", "!/keep/x.py", "**/fixtures/"}).Rules()
+	want := []PathRule{
+		{Glob: "app/legacy", Anchored: true, DirOnly: true},
+		{Glob: "*.min.js"},
+		{Glob: "build", Anchored: true},
+		{Glob: "keep/x.py", Negated: true, Anchored: true},
+		{Glob: "**/fixtures", Anchored: true, DirOnly: true},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Rules() = %+v; want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("rule %d = %+v; want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestPathMatcherIgnoresBlankEntries(t *testing.T) {
 	m := NewPathMatcher([]string{"", "  ", "/", "# comment"})
 	if !m.Empty() {
-		t.Fatalf("patterns = %q; want none", m.Patterns())
+		t.Fatalf("patterns = %+v; want none", m.Rules())
 	}
 	if m.Excludes("src/app.go", false) {
 		t.Error("an empty matcher excluded a path")

@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/dodobrands/aitriage/internal/config"
-	ignore "github.com/sabhiram/go-gitignore"
 )
 
 // AITriage's own engine has always honoured .gitignore and skipped vendored
@@ -95,47 +94,17 @@ func envFlag(name string) bool {
 // It combines four sources, all matched against root-relative paths: vendored
 // and generated directory names, .gitignore (unless disabled), .aitriageignore,
 // and ignore.paths from the project configuration. The last two are always
-// honoured: they exist for no other purpose.
+// honoured: they exist for no other purpose. The three pattern sources share
+// one matcher, config.PathMatcher, with the built-in engine's file walker, so
+// both draw the same line.
 type ScopeFilter struct {
 	root      string
 	realRoot  string // root with symlinks resolved, when that differs
-	gitignore *ignoreFile
-	aitriage  *ignoreFile
+	gitignore *config.PathMatcher
+	aitriage  *config.PathMatcher
 	paths     *config.PathMatcher
 	skipDirs  map[string]struct{}
 	stamp     scopeStamp
-}
-
-// ignoreFile is a compiled ignore file and whether it re-includes anything.
-type ignoreFile struct {
-	matcher  *ignore.GitIgnore
-	negation bool
-}
-
-func compileIgnoreFile(path string) *ignoreFile {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(string(data), "\n")
-	compiled := &ignoreFile{matcher: ignore.CompileIgnoreLines(lines...)}
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "!") {
-			compiled.negation = true
-			break
-		}
-	}
-	return compiled
-}
-
-func (f *ignoreFile) matches(rel string) bool {
-	return f != nil && f.matcher.MatchesPath(rel)
-}
-
-// excludesTree reports whether a directory can be skipped whole. A negated
-// pattern may re-include something below it, so then only files are judged.
-func (f *ignoreFile) excludesTree(rel string) bool {
-	return f != nil && !f.negation && f.matcher.MatchesPath(rel+"/")
 }
 
 // scopeStamp identifies the inputs a filter was built from. A long-running
@@ -192,9 +161,9 @@ func NewScopeFilter(root string) *ScopeFilter {
 		f.skipDirs[name] = struct{}{}
 	}
 	if stamp.honourGitignore {
-		f.gitignore = compileIgnoreFile(filepath.Join(abs, ".gitignore"))
+		f.gitignore = config.ReadIgnoreFile(filepath.Join(abs, ".gitignore"))
 	}
-	f.aitriage = compileIgnoreFile(filepath.Join(abs, ".aitriageignore"))
+	f.aitriage = config.ReadIgnoreFile(filepath.Join(abs, ".aitriageignore"))
 	f.paths = config.NewPathMatcher(config.LoadIgnore(abs).Paths)
 
 	filterCache[abs] = f
@@ -250,10 +219,13 @@ func (f *ScopeFilter) inScope(path string, dir bool) bool {
 		}
 	}
 
+	// Each source decides on its own: a negation in one never re-includes what
+	// another excludes. A directory is pruned only when one source excludes it
+	// with nothing below it that a negation of that source could re-include.
 	if dir {
-		return !f.paths.ExcludesTree(rel) && !f.aitriage.excludesTree(rel) && !f.gitignore.excludesTree(rel)
+		return !f.paths.ExcludesTree(rel) && !f.aitriage.ExcludesTree(rel) && !f.gitignore.ExcludesTree(rel)
 	}
-	return !f.paths.Excludes(rel, false) && !f.aitriage.matches(rel) && !f.gitignore.matches(rel)
+	return !f.paths.Excludes(rel, false) && !f.aitriage.Excludes(rel, false) && !f.gitignore.Excludes(rel, false)
 }
 
 // containerMounts are the directories AITriage's container runs mount the
@@ -318,11 +290,6 @@ type toolPattern struct {
 	wildcard bool   // contains * or **
 }
 
-// gitignoreAnchorQuirk mirrors go-gitignore: a pattern such as "legacy/*.py" is
-// anchored at the root even without a leading slash. Tools must anchor it too,
-// or they would skip more than the scope filter does.
-var gitignoreAnchorQuirk = regexp.MustCompile(`([^\/+])/.*\*\.`)
-
 // toolPatterns returns the ignore.paths entries the bundled tools can be told
 // about. An argument that excludes more than the scope filter loses coverage
 // the post-filter can never restore, so anything doubtful is left to the
@@ -330,41 +297,37 @@ var gitignoreAnchorQuirk = regexp.MustCompile(`([^\/+])/.*\*\.`)
 //   - with a negated entry present, none are passed: an argument cannot say
 //     "except";
 //   - entries using ?, [ ], { } or backslash escapes are skipped, because the
-//     tools and go-gitignore read them differently.
+//     tools read them differently from git and from each other.
+//
+// Anchoring comes from the scope filter's own parse, which follows git: an
+// entry with a slash before its last character ("app/legacy/") is anchored at
+// the root even without a leading slash. Every tool is told so explicitly,
+// because not every tool anchors such an entry by itself.
 func (f *ScopeFilter) toolPatterns() []toolPattern {
 	if f == nil || f.paths.Empty() || f.paths.HasNegation() {
 		return nil
 	}
 	var patterns []toolPattern
-	for _, raw := range f.paths.Patterns() {
-		if strings.ContainsAny(raw, `?[]{}\`) {
+	for _, rule := range f.paths.Rules() {
+		if strings.ContainsAny(rule.Glob, `?[]{}\`) {
 			continue
 		}
-		tp := toolPattern{}
-		glob := raw
-		if strings.HasSuffix(glob, "/") {
-			tp.dirOnly = true
-			glob = strings.TrimRight(glob, "/")
-		}
-		if strings.HasPrefix(glob, "/") {
-			tp.anchored = true
-			glob = strings.TrimLeft(glob, "/")
-		} else if gitignoreAnchorQuirk.MatchString(raw) {
-			tp.anchored = true
-		}
-		if glob == "" {
-			continue
-		}
-		tp.glob = glob
-		tp.wildcard = strings.Contains(glob, "*")
-		patterns = append(patterns, tp)
+		patterns = append(patterns, toolPattern{
+			glob: rule.Glob,
+			// A leading "**/" matches at any depth, which every tool
+			// already reads the same way without an anchor.
+			anchored: rule.Anchored && !strings.HasPrefix(rule.Glob, "**/"),
+			dirOnly:  rule.DirOnly,
+			wildcard: strings.Contains(rule.Glob, "*"),
+		})
 	}
 	return patterns
 }
 
 // SemgrepExcludeArgs renders the exclusion set as Semgrep --exclude arguments.
 // ignore.paths entries are passed in their own .gitignore syntax, which is the
-// syntax Semgrep's --exclude documents.
+// syntax Semgrep's --exclude documents; an entry anchored at the root always
+// carries a leading slash, so Semgrep never matches it at a deeper level.
 func SemgrepExcludeArgs(root string) []string {
 	args := make([]string, 0, len(ExcludedDirNames())*2)
 	for _, name := range ExcludedDirNames() {

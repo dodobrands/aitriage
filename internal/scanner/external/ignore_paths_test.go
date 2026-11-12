@@ -61,27 +61,34 @@ func TestScopeFilterHonoursIgnorePathsFromConfig(t *testing.T) {
 func TestToolArgsCarryIgnorePaths(t *testing.T) {
 	root := akismetProject(t)
 
+	// "wp-content/plugins/akismet/" has a slash in the middle, so git anchors
+	// it at the root, and every tool is told so.
 	semgrep := SemgrepExcludeArgs(root)
-	if !containsPair(semgrep, "--exclude", "wp-content/plugins/akismet/") {
-		t.Errorf("semgrep args %q do not exclude the ignored plugin", semgrep)
+	if !containsPair(semgrep, "--exclude", "/wp-content/plugins/akismet/") {
+		t.Errorf("semgrep args %q do not exclude the ignored plugin at the root", semgrep)
 	}
 
 	trivy := TrivySkipDirArgs(root)
-	if !containsPair(trivy, "--skip-dirs", "**/wp-content/plugins/akismet") {
+	anchored := filepath.ToSlash(filepath.Join(root, "wp-content/plugins/akismet"))
+	if !containsPair(trivy, "--skip-dirs", anchored) {
 		t.Errorf("trivy args %q do not skip the ignored plugin", trivy)
+	}
+	if containsPair(trivy, "--skip-dirs", "**/wp-content/plugins/akismet") {
+		t.Errorf("trivy args %q skip the plugin at any depth", trivy)
 	}
 	// A directory-only entry must not become --skip-files: that would also
 	// drop a file of the same name.
-	if containsPair(trivy, "--skip-files", "**/wp-content/plugins/akismet") {
+	if containsPair(trivy, "--skip-files", anchored) {
 		t.Errorf("trivy args %q skip files for a directory-only entry", trivy)
 	}
 
 	bandit := banditExcludePaths(root)
 	base := filepath.ToSlash(root)
-	for _, want := range []string{base + "/wp-content/plugins/akismet/", base + "/*/wp-content/plugins/akismet/*"} {
-		if !contains(bandit, want) {
-			t.Errorf("bandit -x %q is missing %q", bandit, want)
-		}
+	if !contains(bandit, base+"/wp-content/plugins/akismet/") {
+		t.Errorf("bandit -x %q does not exclude the ignored plugin", bandit)
+	}
+	if contains(bandit, base+"/*/wp-content/plugins/akismet/*") {
+		t.Errorf("bandit -x %q excludes the plugin at any depth", bandit)
 	}
 
 	config, cleanup, err := newGitleaksConfig(root)
@@ -97,9 +104,13 @@ func TestToolArgsCarryIgnorePaths(t *testing.T) {
 		t.Errorf("gitleaks config does not allowlist the ignored plugin:\n%s", content)
 	}
 	plugin := base + "/wp-content/plugins/akismet/akismet.php"
+	nested := base + "/x/wp-content/plugins/akismet/akismet.php"
 	allowed := false
 	for _, re := range compileAll(t, gitleaksAllowlistPaths(root)) {
 		allowed = allowed || re.MatchString(plugin)
+		if re.MatchString(nested) {
+			t.Errorf("gitleaks allowlist %q drops a plugin directory below the root", re)
+		}
 	}
 	if !allowed {
 		t.Errorf("no gitleaks allowlist pattern matches %s", plugin)
@@ -108,39 +119,99 @@ func TestToolArgsCarryIgnorePaths(t *testing.T) {
 
 // Every argument must exclude a subset of what the scope filter excludes: a
 // tool that skips too much loses findings the post-filter can never restore.
+//
+// The filter itself is pinned too, with paths it must drop and near misses it
+// must keep. Comparing the tools with the filter alone passed silently while
+// both over-matched: "config/local_settings.py" also dropped
+// src/config/local_settings.py from the filter and from every tool.
 func TestToolArgsNeverExcludeMoreThanTheScopeFilter(t *testing.T) {
-	configs := map[string]string{
-		"directory":       akismetConfig,
-		"bare names":      "ignore:\n  paths:\n    - vendor\n    - tests\n    - build/\n",
-		"anchored":        "ignore:\n  paths:\n    - /generated/\n    - ./out\n",
-		"wildcards":       "ignore:\n  paths:\n    - \"*.min.js\"\n    - \"legacy/*.py\"\n    - \"docs/**\"\n",
-		"single file":     "ignore:\n  paths:\n    - config/local_settings.py\n",
-		"double asterisk": "ignore:\n  paths:\n    - \"**/fixtures/\"\n",
+	cases := []struct {
+		name   string
+		config string
+		out    []string // the scope filter drops these
+		in     []string // near misses the scope filter keeps
+		// skipped are out-of-scope paths every tool skips too, so the
+		// arguments are not merely harmless. Wildcard and single-file
+		// entries are left to the post-filter by some tools.
+		skipped []string
+	}{
+		{
+			name:    "directory",
+			config:  akismetConfig,
+			out:     []string{"wp-content/plugins/akismet/akismet.php", "wp-content/plugins/akismet/inc/a.php"},
+			in:      []string{"x/wp-content/plugins/akismet/a.php", "wp-content/plugins/akismet-fork/f.py", "wp-content/plugins/other/p.php"},
+			skipped: []string{"wp-content/plugins/akismet/akismet.php"},
+		},
+		{
+			name:    "bare names",
+			config:  "ignore:\n  paths:\n    - vendor\n    - tests\n    - build/\n",
+			out:     []string{"vendor/lib.py", "src/vendor/lib.py", "src/tests/test_x.py", "build/out.js", "src/build/x.py"},
+			in:      []string{"src/vendors/api.py", "unit_tests/test_x.py", "contests/entry.py", "main.py"},
+			skipped: []string{"src/vendor/lib.py", "src/tests/test_x.py", "build/out.js"},
+		},
+		{
+			name:    "anchored",
+			config:  "ignore:\n  paths:\n    - /generated/\n    - ./out\n",
+			out:     []string{"generated/client.py", "out/app.py"},
+			in:      []string{"src/generated/client.py", "src/out/app.py"},
+			skipped: []string{"generated/client.py", "out/app.py"},
+		},
+		{
+			name:    "slash in the middle",
+			config:  "ignore:\n  paths:\n    - app/legacy/\n    - api/internal\n",
+			out:     []string{"app/legacy/handler.py", "app/legacy/sub/x.py", "api/internal/keys.go"},
+			in:      []string{"services/billing/app/legacy/handler.py", "src/app/legacy/x.py", "app/legacy.py", "src/api/internal/keys.go", "api/internals/keys.go"},
+			skipped: []string{"app/legacy/handler.py", "app/legacy/sub/x.py", "api/internal/keys.go"},
+		},
+		{
+			name:   "wildcards",
+			config: "ignore:\n  paths:\n    - \"*.min.js\"\n    - \"legacy/*.py\"\n    - \"docs/**\"\n    - \"generated/*\"\n",
+			out:    []string{"static/app.min.js", "app.min.js", "legacy/old.py", "docs/guide/index.md", "generated/client.py"},
+			in:     []string{"static/app.js", "legacy/sub/old.py", "src/legacy/old.py", "src/docs/x.md", "src/generated/client.py"},
+		},
+		{
+			name:   "single file",
+			config: "ignore:\n  paths:\n    - config/local_settings.py\n",
+			out:    []string{"config/local_settings.py"},
+			in:     []string{"src/config/local_settings.py", "config/local_settings.py.bak", "config/settings.py"},
+		},
+		{
+			name:   "double asterisk",
+			config: "ignore:\n  paths:\n    - \"**/fixtures/\"\n    - \"docs/**/examples/\"\n",
+			out:    []string{"fixtures/a.json", "src/fixtures/b.json", "docs/examples/e.py", "docs/a/b/examples/e.py"},
+			in:     []string{"fixturesdir/c.json", "lib/docs/a/examples/x.py", "docs/a/example/e.py"},
+		},
 	}
-	paths := []string{
-		"main.py", "src/vendors/api.py", "src/vendor/lib.py", "vendor/lib.py", "vendor", "src/tests/test_x.py",
-		"unit_tests/test_x.py", "contests/entry.py", "build/out.js", "src/build", "src/build/x.py",
-		"generated/client.py", "src/generated/client.py", "out/app.py", "src/out/app.py",
-		"static/app.min.js", "static/app.js", "legacy/old.py", "legacy/sub/old.py", "src/legacy/old.py",
-		"docs/guide/index.md", "src/docs/x.md", "config/local_settings.py", "config/local_settings.py.bak",
-		"src/config/local_settings.py", "fixtures/a.json", "src/fixtures/b.json", "fixturesdir/c.json",
-		"wp-content/plugins/akismet/akismet.php", "x/wp-content/plugins/akismet/a.php",
-		"wp-content/plugins/akismet-fork/f.py",
+	// Every case also checks the paths of the others, so an entry cannot drop
+	// something it was never written for.
+	var paths []string
+	for _, tc := range cases {
+		paths = append(append(paths, tc.out...), tc.in...)
 	}
 
-	for name, cfg := range configs {
-		t.Run(name, func(t *testing.T) {
-			root := writeProject(t, map[string]string{".aitriage.yaml": cfg})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeProject(t, map[string]string{".aitriage.yaml": tc.config})
 			filter := NewScopeFilter(root)
 			gitleaks := compileAll(t, gitleaksAllowlistPaths(root))
 			bandit := banditExcludePaths(root)
 			trivyDirs, trivyFiles := splitTrivyArgs(TrivySkipDirArgs(root))
 			base := filepath.ToSlash(root)
 
+			for _, rel := range tc.out {
+				if filter.InScope(base + "/" + rel) {
+					t.Errorf("%s must be out of scope", rel)
+				}
+			}
+			for _, rel := range tc.in {
+				if !filter.InScope(base + "/" + rel) {
+					t.Errorf("%s must stay in scope", rel)
+				}
+			}
+
 			for _, rel := range paths {
 				abs := base + "/" + rel
-				inScope := filter.InScope(abs)
-				if !inScope {
+				if !filter.InScope(abs) {
 					continue
 				}
 				for _, re := range gitleaks {
@@ -165,17 +236,8 @@ func TestToolArgsNeverExcludeMoreThanTheScopeFilter(t *testing.T) {
 				}
 			}
 
-			// The arguments are not merely harmless: each tool does skip the
-			// excluded trees.
-			for _, rel := range map[string][]string{
-				"directory":  {"wp-content/plugins/akismet/akismet.php"},
-				"bare names": {"src/vendor/lib.py", "src/tests/test_x.py", "build/out.js"},
-				"anchored":   {"generated/client.py", "out/app.py"},
-			}[name] {
+			for _, rel := range tc.skipped {
 				abs := base + "/" + rel
-				if filter.InScope(abs) {
-					t.Fatalf("%s should be out of scope", rel)
-				}
 				byGitleaks, byBandit := false, false
 				for _, re := range gitleaks {
 					byGitleaks = byGitleaks || re.MatchString(abs)
@@ -356,6 +418,94 @@ func TestDirInScopePrunesOnlyWhenNothingBelowCanReturn(t *testing.T) {
 	}
 	if filter.InScope(filepath.Join(root, "coverage", "lcov.info")) {
 		t.Error("files under the ignored directory must stay out of scope")
+	}
+}
+
+// Any "!" line in .gitignore used to stop every excluded directory from being
+// pruned, so the common "!.vscode/settings.json" sent walkers into dist/,
+// coverage/ and the rest. Only a negation that can re-include something below
+// a directory keeps it from being pruned.
+func TestDirInScopeIsNotDisabledByAnUnrelatedNegation(t *testing.T) {
+	root := writeProject(t, map[string]string{
+		".gitignore": "coverage/\nreports/\n.vscode/*\n!.vscode/settings.json\n",
+	})
+	filter := NewScopeFilter(root)
+	for _, dir := range []string{"coverage", "reports", "src/coverage"} {
+		if filter.DirInScope(filepath.Join(root, dir)) {
+			t.Errorf("%s/ is excluded and no negation reaches below it; it must be pruned", dir)
+		}
+	}
+	if !filter.DirInScope(filepath.Join(root, ".vscode")) || !filter.InScope(filepath.Join(root, ".vscode", "settings.json")) {
+		t.Error(".vscode/settings.json is re-included and must be reachable")
+	}
+	if filter.InScope(filepath.Join(root, ".vscode", "launch.json")) {
+		t.Error(".vscode/launch.json stays excluded")
+	}
+
+	root = writeProject(t, map[string]string{
+		".aitriageignore": "generated/\n!generated/keep.go\n",
+		".aitriage.yaml":  "ignore:\n  paths:\n    - \"infra/\"\n    - \"!infra/prod/\"\n",
+	})
+	filter = NewScopeFilter(root)
+	for dir, want := range map[string]bool{"generated": true, "infra": true, "infra/prod": true, "infra/dev": false} {
+		if got := filter.DirInScope(filepath.Join(root, dir)); got != want {
+			t.Errorf("DirInScope(%s) = %t; want %t", dir, got, want)
+		}
+	}
+}
+
+// .gitignore and .aitriageignore follow git's anchoring too: a pattern with a
+// slash in the middle names a path from the project root.
+func TestIgnoreFilesAnchorPatternsWithASlashInTheMiddle(t *testing.T) {
+	root := writeProject(t, map[string]string{
+		".gitignore":      "config/settings_local.py\n",
+		".aitriageignore": "app/legacy/\n",
+	})
+	filter := NewScopeFilter(root)
+	for rel, want := range map[string]bool{
+		"config/settings_local.py":               false,
+		"src/config/settings_local.py":           true,
+		"app/legacy/handler.py":                  false,
+		"services/billing/app/legacy/handler.py": true,
+	} {
+		if got := filter.InScope(filepath.Join(root, rel)); got != want {
+			t.Errorf("InScope(%s) = %t; want %t", rel, got, want)
+		}
+	}
+}
+
+// A walker trusts DirInScope to skip a whole tree, so a directory it prunes
+// must hold nothing InScope would keep.
+func TestDirInScopeNeverPrunesAnInScopePath(t *testing.T) {
+	files := []string{
+		"infra/prod/Dockerfile", "infra/dev/Dockerfile", "deploy/prod/Dockerfile", "deploy/dev/Dockerfile",
+		"generated/keep.go", "generated/other.go", "src/generated/keep.go", "logs/keep.log", "logs/app.log",
+		"docs/a/examples/e.py", "docs/b/x.md", "app/legacy/h.py", "src/app/legacy/h.py", ".vscode/settings.json",
+		".vscode/launch.json", "coverage/lcov.info", "main.go",
+	}
+	configs := []map[string]string{
+		{".gitignore": "deploy/*\n!deploy/prod/\ncoverage/\n.vscode/*\n!.vscode/settings.json\n"},
+		{".gitignore": "logs/\n!keep.log\n", ".aitriageignore": "docs/\n!docs/**/examples/\n"},
+		{".aitriage.yaml": "ignore:\n  paths:\n    - \"infra/\"\n    - \"!infra/prod/\"\n    - generated/\n    - \"!**/keep.go\"\n"},
+		{".aitriageignore": "app/legacy/\n*\n!*/\n!*.go\n"},
+	}
+	for i, ignoreFiles := range configs {
+		project := map[string]string{}
+		for _, file := range files {
+			project[file] = "x\n"
+		}
+		for name, content := range ignoreFiles {
+			project[name] = content
+		}
+		root := writeProject(t, project)
+		filter := NewScopeFilter(root)
+		for _, file := range files {
+			for dir := filepath.Dir(file); dir != "."; dir = filepath.Dir(dir) {
+				if !filter.DirInScope(filepath.Join(root, dir)) && filter.InScope(filepath.Join(root, file)) {
+					t.Errorf("config %d: %s is in scope but DirInScope(%s) prunes it", i, file, dir)
+				}
+			}
+		}
 	}
 }
 

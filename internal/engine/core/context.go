@@ -13,7 +13,6 @@ import (
 	"github.com/dodobrands/aitriage/internal/scanner/ast"
 	"github.com/dodobrands/aitriage/internal/scanner/entropy"
 	"github.com/dodobrands/aitriage/internal/scanner/pathpolicy"
-	ignore "github.com/sabhiram/go-gitignore"
 	tree_sitter "github.com/tree-sitter/go-tree-sitter"
 )
 
@@ -376,20 +375,14 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 		Config:   config.LoadConfig(rootPath),
 	}
 
-	// Try loading .gitignore
-	var gitIgnorer *ignore.GitIgnore
-	if ignoreFile, err := ignore.CompileIgnoreFile(filepath.Join(rootPath, ".gitignore")); err == nil {
-		gitIgnorer = ignoreFile
-	}
-
-	// Try loading .aitriageignore (takes priority, works like .gitignore)
-	var aitriageIgnorer *ignore.GitIgnore
-	if ignoreFile, err := ignore.CompileIgnoreFile(filepath.Join(rootPath, ".aitriageignore")); err == nil {
-		aitriageIgnorer = ignoreFile
-	}
-
-	// ignore.paths uses .gitignore syntax on root-relative paths, the same
-	// matcher the external scanners' scope filter applies.
+	// .gitignore, .aitriageignore and ignore.paths are read by the matcher the
+	// external scanners' scope filter uses, and combined the same way: each
+	// excludes on its own, and a directory is skipped only when nothing below
+	// it can be re-included. A walker that pruned with its own rules dropped
+	// directories the scope filter keeps, such as deploy/prod/ under
+	// "deploy/*" and "!deploy/prod/".
+	gitIgnore := config.ReadIgnoreFile(filepath.Join(rootPath, ".gitignore"))
+	aitriageIgnore := config.ReadIgnoreFile(filepath.Join(rootPath, ".aitriageignore"))
 	var userPatterns []string
 	if ws.Config != nil {
 		userPatterns = ws.Config.Ignore.Paths
@@ -418,18 +411,7 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 				return filepath.SkipDir
 			}
 
-			// Check user-defined ignored paths
-			if ignorePaths.ExcludesTree(relPath) {
-				return filepath.SkipDir
-			}
-
-			// Check .aitriageignore for directory (priority)
-			if aitriageIgnorer != nil && aitriageIgnorer.MatchesPath(relPath) {
-				return filepath.SkipDir
-			}
-
-			// Check .gitignore for directory
-			if gitIgnorer != nil && gitIgnorer.MatchesPath(relPath) {
+			if ignorePaths.ExcludesTree(relPath) || aitriageIgnore.ExcludesTree(relPath) || gitIgnore.ExcludesTree(relPath) {
 				return filepath.SkipDir
 			}
 
@@ -439,18 +421,7 @@ func NewWorkspace(rootPath string) (*Workspace, error) {
 			return nil
 		}
 
-		// Check user-defined ignored paths for file
-		if ignorePaths.Excludes(relPath, false) {
-			return nil
-		}
-
-		// Check .aitriageignore for file (priority)
-		if aitriageIgnorer != nil && aitriageIgnorer.MatchesPath(relPath) {
-			return nil
-		}
-
-		// Check .gitignore for file
-		if gitIgnorer != nil && gitIgnorer.MatchesPath(relPath) {
+		if ignorePaths.Excludes(relPath, false) || aitriageIgnore.Excludes(relPath, false) || gitIgnore.Excludes(relPath, false) {
 			return nil
 		}
 

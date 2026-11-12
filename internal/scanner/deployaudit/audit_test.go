@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
 func TestAuditDockerfile(t *testing.T) {
@@ -321,6 +323,99 @@ func TestAuditDeployFilesHonoursProjectScope(t *testing.T) {
 	}
 	if len(findings) != 1 || findings[0].File != filepath.Join(root, "Dockerfile") {
 		t.Fatalf("findings = %+v; want only the project's own Dockerfile", findings)
+	}
+}
+
+// auditedFiles returns the root-relative files the deploy audit reported on.
+func auditedFiles(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	findings, err := AuditDeployFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]bool{}
+	for _, f := range findings {
+		rel, err := filepath.Rel(root, f.File)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[filepath.ToSlash(rel)] = true
+	}
+	return files
+}
+
+const rootDockerfile = "FROM alpine:3.19\nUSER root\n"
+
+// The audit asked InScope, which judges a path as a file, about directories.
+// A directory a negated pattern re-includes was pruned, so its Dockerfile was
+// never audited although every other scanner kept it in scope.
+func TestAuditDeployFilesEntersDirectoriesANegationReincludes(t *testing.T) {
+	cases := map[string]struct {
+		files  map[string]string
+		kept   []string
+		pruned []string
+	}{
+		"ignore.paths": {
+			files: map[string]string{
+				".aitriage.yaml":        "ignore:\n  paths:\n    - \"infra/\"\n    - \"!infra/prod/\"\n",
+				"infra/prod/Dockerfile": rootDockerfile,
+				"infra/dev/Dockerfile":  rootDockerfile,
+				"Dockerfile":            rootDockerfile,
+			},
+			kept:   []string{"infra/prod/Dockerfile", "Dockerfile"},
+			pruned: []string{"infra/dev/Dockerfile"},
+		},
+		".gitignore": {
+			files: map[string]string{
+				".gitignore":             "deploy/*\n!deploy/prod/\n",
+				"deploy/prod/Dockerfile": rootDockerfile,
+				"deploy/dev/Dockerfile":  rootDockerfile,
+			},
+			kept:   []string{"deploy/prod/Dockerfile"},
+			pruned: []string{"deploy/dev/Dockerfile"},
+		},
+		".aitriageignore": {
+			files: map[string]string{
+				".aitriageignore":                 "k8s/\n!k8s/base/\n",
+				"k8s/base/docker-compose.yml":     "services:\n  web:\n    privileged: true\n",
+				"k8s/overlays/docker-compose.yml": "services:\n  web:\n    privileged: true\n",
+			},
+			kept:   []string{"k8s/base/docker-compose.yml"},
+			pruned: []string{"k8s/overlays/docker-compose.yml"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTree(t, root, tc.files)
+			scope := external.NewScopeFilter(root)
+			files := auditedFiles(t, root)
+			for _, rel := range tc.kept {
+				if !scope.InScope(rel) {
+					t.Fatalf("the scope filter dropped %s; the case is wrong", rel)
+				}
+				if !files[rel] {
+					t.Errorf("%s is in scope but was not audited (audited: %v)", rel, files)
+				}
+			}
+			for _, rel := range tc.pruned {
+				if files[rel] {
+					t.Errorf("%s is out of scope but was audited", rel)
+				}
+			}
+		})
+	}
+}
+
+// A project checked out into a directory called vendor or node_modules was
+// skipped whole: the name check also applied to the project directory itself.
+func TestAuditDeployFilesAuditsAProjectNamedLikeAVendoredDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "vendor")
+	writeTree(t, root, map[string]string{"Dockerfile": rootDockerfile, "vendor/lib/Dockerfile": rootDockerfile})
+
+	files := auditedFiles(t, root)
+	if !files["Dockerfile"] || files["vendor/lib/Dockerfile"] {
+		t.Errorf("audited %v; want the project's own Dockerfile only", files)
 	}
 }
 

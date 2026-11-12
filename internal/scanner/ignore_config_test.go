@@ -76,3 +76,35 @@ func TestScanHonoursIgnoreRulesForBuiltInHeuristics(t *testing.T) {
 		t.Errorf("ignored by config = %v; want the entry counted once", report.IgnoredByConfig)
 	}
 }
+
+// Web scans pass exclusions as ScanOptions.ExcludePaths. They follow git's
+// rules like ignore.paths: a pattern with a slash before its last character is
+// anchored at the root, so a nested copy of the same path is still scanned.
+func TestScanExcludePathsAreAnchoredLikeGit(t *testing.T) {
+	root := writeScanFixture(t, map[string]string{
+		"app/legacy/old.py":          "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+		"services/app/legacy/new.py": "api_key = \"AKIAIOSFODNN7EXAMPLE\"\n",
+	})
+
+	report, err := scanner.Scan(context.Background(), root, scanner.ScanOptions{ExcludePaths: []string{"app/legacy/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, r := range report.Results {
+		if r.File == "" {
+			continue
+		}
+		rel := r.File
+		if filepath.IsAbs(rel) {
+			rel, _ = filepath.Rel(root, rel)
+		}
+		found[filepath.ToSlash(rel)] = true
+	}
+	if found["app/legacy/old.py"] {
+		t.Error("app/legacy/old.py is excluded by app/legacy/, but it was scanned")
+	}
+	if !found["services/app/legacy/new.py"] {
+		t.Errorf("services/app/legacy/new.py was dropped by the root-anchored app/legacy/ (files with findings: %v)", found)
+	}
+}

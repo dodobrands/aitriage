@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	gitignore "github.com/sabhiram/go-gitignore"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -87,11 +86,13 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 	}
 
 	if len(opts.ExcludePaths) > 0 {
-		ignored := gitignore.CompileIgnoreLines(opts.ExcludePaths...)
+		// Same git-compatible matcher as ignore.paths and the ignore files, so a
+		// pattern such as app/legacy/ excludes the root-level directory only.
+		excluded := config.NewPathMatcher(opts.ExcludePaths)
 		kept := ws.Files[:0]
 		for _, file := range ws.Files {
 			rel, err := filepath.Rel(projectPath, file.Path)
-			if err != nil || !ignored.MatchesPath(filepath.ToSlash(rel)) {
+			if err != nil || !excluded.Excludes(filepath.ToSlash(rel), false) {
 				kept = append(kept, file)
 			}
 		}

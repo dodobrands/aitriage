@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
 func writeTree(t *testing.T, root string, files map[string]string) {
@@ -219,6 +221,77 @@ func TestCommittedBuildDirectoryIsIndexed(t *testing.T) {
 	writeTree(t, ignored, map[string]string{".gitignore": "build/\n", "build/bundle.js": "x\n", "main.go": "package main\n"})
 	if files := indexedFiles(t, ignored); files["build/bundle.js"] {
 		t.Errorf("files = %v; git-ignored build output must not be scanned", files)
+	}
+}
+
+// The walker pruned directories by asking .gitignore and .aitriageignore about
+// them as if they were files, regardless of negations: deploy/prod/ under
+// "deploy/*" and "!deploy/prod/" was skipped, although git tracks it and the
+// external scanners' scope filter keeps it.
+func TestIgnoreFileNegationReincludesADirectory(t *testing.T) {
+	for _, name := range []string{".gitignore", ".aitriageignore"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTree(t, root, map[string]string{
+				name:                     "deploy/*\n!deploy/prod/\n",
+				"deploy/prod/Dockerfile": "FROM alpine\n",
+				"deploy/dev/Dockerfile":  "FROM alpine\n",
+			})
+			files := indexedFiles(t, root)
+			if !files["deploy/prod/Dockerfile"] || files["deploy/dev/Dockerfile"] {
+				t.Errorf("files = %v; want deploy/prod/Dockerfile and not deploy/dev/Dockerfile", files)
+			}
+		})
+	}
+}
+
+// The built-in engine and the external scanners must agree on what is in
+// scope: a file one of them reports and the other never sees makes results
+// depend on which scanner found the issue.
+func TestWalkerAgreesWithTheExternalScopeFilter(t *testing.T) {
+	files := []string{
+		"main.go", "deploy/prod/Dockerfile", "deploy/dev/Dockerfile", "infra/prod/main.tf", "infra/dev/main.tf",
+		"generated/keep.go", "generated/other.go", "src/generated/client.go", "app/legacy/handler.py",
+		"services/billing/app/legacy/handler.py", "config/settings_local.py", "src/config/settings_local.py",
+		"logs/app.log", "logs/keep.log", "docs/guide.md", "docs/a/examples/e.py", "lib/docs/a/examples/x.py",
+		".vscode/settings.json", ".vscode/launch.json", "coverage/lcov.info", "file1.txt", "file12.txt",
+	}
+	configs := map[string]map[string]string{
+		"gitignore": {
+			".gitignore": "deploy/*\n!deploy/prod/\ncoverage/\n.vscode/*\n!.vscode/settings.json\nconfig/settings_local.py\nfile?.txt\n",
+		},
+		"aitriageignore": {
+			".aitriageignore": "app/legacy/\ndocs/\n!docs/**/examples/\nlogs/\n!keep.log\n",
+		},
+		"ignore.paths": {
+			".aitriage.yaml": "ignore:\n  paths:\n    - \"infra/\"\n    - \"!infra/prod/\"\n    - generated/\n    - \"!generated/keep.go\"\n    - app/legacy/\n",
+		},
+		"all three": {
+			".gitignore":      "deploy/*\n!deploy/prod/\n",
+			".aitriageignore": "generated/\n!**/keep.go\n",
+			".aitriage.yaml":  "ignore:\n  paths:\n    - \"docs/**/examples\"\n    - config/settings_local.py\n",
+		},
+	}
+	for name, ignoreFiles := range configs {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			tree := map[string]string{}
+			for _, file := range files {
+				tree[file] = "x\n"
+			}
+			for file, content := range ignoreFiles {
+				tree[file] = content
+			}
+			writeTree(t, root, tree)
+			captureLegacyWarnings(t)
+			indexed := indexedFiles(t, root)
+			scope := external.NewScopeFilter(root)
+			for file := range tree {
+				if inScope := scope.InScope(file); indexed[file] != inScope {
+					t.Errorf("%s: indexed by the engine = %t, in scope for the external scanners = %t", file, indexed[file], inScope)
+				}
+			}
+		})
 	}
 }
 

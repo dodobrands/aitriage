@@ -130,6 +130,76 @@ func TestFileLevelDirective(t *testing.T) {
 	}
 }
 
+// A directive was recognised anywhere on a line, so prose or a string that
+// merely mentioned the file directive silenced every finding in its file,
+// including gitleaks, Trivy and deploy findings.
+func TestMentionsOfADirectiveAreNotDirectives(t *testing.T) {
+	cases := map[string]string{
+		"readme prose":           "# Project notes\n\nTo skip a generated file, add aitriage-ignore-file.\n\nAWS_KEY = 'AKIA...'\n",
+		"string literal":         "HELP = \"put aitriage-ignore-file\"\nTOKEN = 'ghp_xxx'\n",
+		"comment that refers":    "// see `aitriage-ignore-file`\nmodule example.com/x\n",
+		"comment prose":          "# use aitriage-ignore-file to skip generated code\nTOKEN = 'x'\n",
+		"marker inside a string": "HELP = \" # aitriage-ignore-file\"\nTOKEN = 'x'\n",
+		"raw string":             "const doc = `# aitriage-ignore-file`\nvar token = \"x\"\n",
+		"markdown link":          "See [inline directives](#aitriage-ignore-file).\nAWS_KEY=AKIA\n",
+		"url fragment":           "Docs: https://example.com/inline#aitriage-ignore-file\nAWS_KEY=AKIA\n",
+		"markdown bullet":        "* aitriage-ignore-file silences a whole file\nAWS_KEY=AKIA\n",
+		"glob is not a comment":  "cp src/* /app/\n * aitriage-ignore-file\nAWS_KEY=AKIA\n",
+		"closed block comment":   "/* header */\n * aitriage-ignore-file\nAWS_KEY=AKIA\n",
+	}
+	for name, content := range cases {
+		lines := strings.Count(content, "\n")
+		if Suppressed([]byte(content), lines, "generic-api-key", "gitleaks") {
+			t.Errorf("%s: %q silenced a finding on its last line", name, content)
+		}
+	}
+
+	if Suppressed([]byte(`password = "x"  # see aitriage-ignore: B105`+"\n"), 1, "B105", "bandit") {
+		t.Error("a comment that mentions a line directive silenced the line")
+	}
+}
+
+func TestDirectivesInEveryCommentSyntax(t *testing.T) {
+	for _, line := range []string{
+		`x = 1  # aitriage-ignore: R1`,
+		`x := 1 // aitriage-ignore: R1`,
+		`x = 1; // aitriage-ignore: R1`,
+		`/* aitriage-ignore: R1 */`,
+		`/** aitriage-ignore: R1 */`,
+		`/// aitriage-ignore: R1`,
+		`<!-- aitriage-ignore: R1 -->`,
+		`SELECT 1 -- aitriage-ignore: R1`,
+		`; aitriage-ignore: R1`,
+		`{# aitriage-ignore: R1 #}`,
+		`{{/* aitriage-ignore: R1 */}}`,
+		`{{- /* aitriage-ignore: R1 */ -}}`,
+		`<%# aitriage-ignore: R1 %>`,
+		`x = load()  # noqa: S105  # aitriage-ignore: R1`,
+		`key := "k" //nolint:gosec // aitriage-ignore: R1`,
+		`description: Don't run as root  # aitriage-ignore: R1`,
+		`password = 'x'  # aitriage-ignore: R1`,
+		`fn f<'a>(x: &'a str) {} // aitriage-ignore: R1`,
+	} {
+		got := ParseLine(line)
+		if len(got) != 1 || got[0].Scope != ScopeLine || len(got[0].IDs) != 1 || got[0].IDs[0] != "R1" {
+			t.Errorf("ParseLine(%q) = %+v; want one directive for R1", line, got)
+		}
+	}
+}
+
+// A directive may stand on a line of its own inside a block comment.
+func TestDirectiveOnItsOwnLineInsideABlockComment(t *testing.T) {
+	for name, content := range map[string]string{
+		"doc block": "/**\n * aitriage-ignore-file\n */\npackage x\nvar key = \"AKIA\"\n",
+		"c block":   "/*\n   aitriage-ignore-file: generic-api-key\n*/\nvar key = \"AKIA\"\n",
+		"markup":    "<!--\naitriage-ignore-file\n-->\n<p>AKIA</p>\n",
+	} {
+		if !Suppressed([]byte(content), 5, "generic-api-key", "gitleaks") {
+			t.Errorf("%s: %q did not silence the file", name, content)
+		}
+	}
+}
+
 func TestQualifiedIDsMatchOnlyTheirSource(t *testing.T) {
 	content := []byte("TOKEN = 'abc'  # aitriage-ignore: gitleaks:generic-api-key\n")
 

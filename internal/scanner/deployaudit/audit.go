@@ -30,15 +30,20 @@ func AuditDeployFiles(projectPath string) ([]DeployFinding, error) {
 
 	err := filepath.WalkDir(projectPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor") {
+			// The project directory itself is never skipped, whatever it is
+			// called: a checkout named "vendor" is still the project.
+			if err != nil || path == projectPath {
+				return nil
+			}
+			if d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" {
 				return filepath.SkipDir
 			}
-			if err == nil && d.IsDir() && !inScope(scope, projectPath, path) {
+			if !inScope(scope, projectPath, path, true) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !inScope(scope, projectPath, path) {
+		if !inScope(scope, projectPath, path, false) {
 			return nil
 		}
 
@@ -94,10 +99,18 @@ func AuditDeployFiles(projectPath string) ([]DeployFinding, error) {
 // the root-relative path: where the checkout itself lives (a parent directory
 // called build or dist, as on some CI runners) must not decide what inside it
 // is in scope.
-func inScope(scope *external.ScopeFilter, root, path string) bool {
+//
+// A directory is asked with DirInScope, which prunes it only when nothing below
+// it can be in scope. InScope judges a path as a file: it dropped
+// infra/prod/ under "infra/" and "!infra/prod/", and the Dockerfile the
+// negation re-includes was never audited.
+func inScope(scope *external.ScopeFilter, root, path string, dir bool) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return true
+	}
+	if dir {
+		return scope.DirInScope(rel)
 	}
 	return scope.InScope(rel)
 }
