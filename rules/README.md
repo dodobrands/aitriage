@@ -1,12 +1,14 @@
 # AITriage Rules Library
 
-**181 security rules** across **11 categories** — covering OWASP Top 10:2025, OWASP LLM Top 10:2025, and framework-specific patterns.
+**178 security rules** across **11 categories** — covering OWASP Top 10:2025, OWASP LLM Top 10:2025, and framework-specific patterns.
 
 > The engine loads every `*.yaml` file in this directory tree (embedded at compile
 > time) as its single source of truth. Regex and AST rules run in the AITriage
 > engine; taint-mode rules (`mode: taint`) are compiled into a trusted config and
-> executed by the bundled Semgrep during a full audit. When two entries share an
-> `id`, the engine keeps the first one it loads.
+> executed by the bundled Semgrep during a full audit. Every `id` is unique
+> across the catalog, ignoring case (`TestCatalogRuleIDsAreUnique`): baselines,
+> suppressions, ignore lists and inline `aitriage-ignore` comments are keyed by
+> it, and the engine keeps only the first rule it loads for an `id`.
 >
 > The per-category counts below are verified against the embedded catalog by a
 > test (`TestREADMECountsMatchCatalog`), so they cannot silently drift.
@@ -17,7 +19,7 @@
 
 | Category | Rules | Stacks / Languages |
 |---|---|---|
-| [Universal](./universal/) | 32 | All (JS, TS, Python, Go, C#) |
+| [Universal](./universal/) | 29 | All (JS, TS, Python, Go, C#) |
 | [Python](./python/) | 12 | All Python frameworks |
 | [Next.js / React](./nextjs/) | 28 | TypeScript, JavaScript, JSX/TSX |
 | [FastAPI](./fastapi/) | 20 | Python |

@@ -523,7 +523,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// the stored findings all describe the same set: what is new.
 	baselinedCount := 0
 	if req.UseBaseline {
-		accepted, loadErr := baseline.Load(containerPath)
+		accepted, loadErr := baseline.Load(s.effectiveBaselineDir(containerPath))
 		if loadErr != nil {
 			jsonError(w, fmt.Sprintf("failed to read baseline: %v", loadErr), http.StatusInternalServerError)
 			return

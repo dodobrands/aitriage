@@ -228,14 +228,6 @@ rules:
     pattern: 'Math\.random\s*\(\s*\)'
     suggestion: "HIGH: Math.random() is not cryptographically secure. Use crypto.randomUUID() or crypto.getRandomValues() for tokens, keys, and IDs."
 
-  - id: ENTR-PROTO-POLLUTION
-    name: "Prototype Pollution Risk"
-    stack: universal
-    extensions: [".ts", ".js"]
-    target: all
-    pattern: '(?i)(__proto__|constructor\s*\[|Object\.assign\s*\(\s*\{\},\s*(?:req\.|params|body|query))'
-    suggestion: "CRITICAL: Prototype pollution risk. Validate/sanitize keys and use Object.create(null) for dictionaries."
-
   - id: ENTR-SENSITIVE-LOG
     name: "Sensitive Data in Console/Print"
     stack: universal
@@ -244,18 +236,9 @@ rules:
     pattern: '(?i)(?:console\.log|fmt\.Print|print)\s*\(.*(?:password|token|secret|api_?key|private_?key|bearer)'
     suggestion: "HIGH: Sensitive data appears in console/print output. Mask before logging."
 
-  - id: ENTR-ZOMBIE-CODE
-    name: "Dead Code Markers"
-    stack: universal
-    extensions: [".ts", ".js", ".py", ".go"]
-    target: all
-    pattern: '(?i)(\/\/\s*HACK|\/\/\s*XXX|\/\/\s*DEPRECATED|#\s*HACK|#\s*XXX|#\s*DEPRECATED).*$'
-    suggestion: "LOW: Dead/deprecated code markers found. Clean up before release."
-
-  - id: ENTR-SCAFFOLDING
-    name: "Scaffolding Code Left Behind"
-    stack: universal
-    extensions: [".ts", ".js", ".py", ".go", ".tsx", ".jsx"]
-    target: all
-    pattern: '(?i)(\/\/\s*TODO:?\s*implement|#\s*TODO:?\s*implement|pass\s*#\s*TODO|raise\s+NotImplementedError)'
-    suggestion: "MEDIUM: Unfinished implementation detected. Complete before deploying."
+# Three rules that used to follow here reused the ids ENTR-PROTO-POLLUTION,
+# ENTR-ZOMBIE-CODE and ENTR-SCAFFOLDING. The engine keeps only the first
+# definition of an id, so they were shadowed and never ran in any release.
+# They were removed rather than renamed: enabling never-tested heuristics
+# (one of them CRITICAL and matching defensive `__proto__` checks) would add
+# noise to every scan. Rule ids must be unique (see rules/catalog_test.go).
