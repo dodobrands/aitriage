@@ -121,6 +121,11 @@ func checkFixtureCase(t *testing.T, rule models.Rule, src string, wantFinding, c
 		if r.ID != rule.ID {
 			continue
 		}
+		// The health check tells a code-quality rule from a security rule by
+		// the subcategory its findings carry.
+		if r.Subcategory != rule.Metadata["subcategory"] {
+			t.Errorf("rule %s reported subcategory %q, want the rule's %q", rule.ID, r.Subcategory, rule.Metadata["subcategory"])
+		}
 		rel := ""
 		if r.File != "" {
 			if p, err := filepath.Rel(root, r.File); err == nil {
