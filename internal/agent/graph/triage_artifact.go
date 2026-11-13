@@ -9,16 +9,22 @@ import (
 )
 
 // TriageArtifactSchemaVersion is incremented only for incompatible changes to
-// triage-findings.json. Consumers must reject versions they do not understand.
+// triage-findings.json: a field removed or renamed, or a field whose type or
+// meaning changes, such as the form of an identifier, how paths are written
+// or what one entry stands for. Adding a field does not increment it.
+// Consumers must reject versions they do not understand. An increment breaks
+// the public contract, so it ships only in a major release (see
+// "Compatibility and versioning" in CONTRIBUTING.md).
 //
-// Still 1 after findings gained stable_id, class, the dependency fields and
-// per-origin locations, and the artifact gained the scope counts: every
-// change adds a field and none changes a type. Values did change: paths are
-// project-relative, vuln_id has the CS-<CLASS>-<hex> form, one finding may
-// stand for several detectors, and health_check.breakdown.count_by_class is
-// keyed by canonical class (per-rule counts moved to count_by_rule). The only
-// in-tree consumer that parses the file (hostrun approval) compares vuln_id
-// verbatim and is unaffected.
+// Additions such as stable_id, class, the dependency fields, per-origin
+// locations and the scope counts kept version 1. v1.14.0 also changed
+// meanings without an increment, before this rule was written down: paths
+// became project-relative, vuln_id took the CS-<CLASS>-<hex> form, one
+// finding may stand for several detectors, and
+// health_check.breakdown.count_by_class became keyed by canonical class
+// (per-rule counts moved to count_by_rule). Version 1 means the fields as
+// v1.14.0 writes them. The only in-tree consumer that parses the file
+// (hostrun approval) compares vuln_id verbatim and was unaffected.
 const TriageArtifactSchemaVersion = 1
 
 // TriageFindingsArtifact is the canonical, machine-readable record of an AI
