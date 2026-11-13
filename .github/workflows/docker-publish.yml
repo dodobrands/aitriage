@@ -31,6 +31,10 @@ jobs:
     # GitHub account ID. This repository deliberately has one operator.
     if: github.actor_id == '184216056'
     runs-on: ubuntu-latest
+    # A publish takes about an hour, most of it the emulated arm64 build. A
+    # stuck step stops here instead of at GitHub's six-hour default; the
+    # release workflow waits for the image exactly this long.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4

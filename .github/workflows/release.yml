@@ -210,14 +210,16 @@ jobs:
       # Do not expose a downloadable release while that image is still being
       # built by docker-publish.yml: the documented one-command installation
       # must either work completely or the release must remain unpublished.
+      # The wait lasts as long as docker-publish.yml may run (120 minutes),
+      # so a slow image build never fails the release on its own.
       - name: Wait for matching multi-arch scanner image
-        timeout-minutes: 60
+        timeout-minutes: 120
         env:
           RELEASE_IMAGE: ghcr.io/dodobrands/aitriage:${{ github.ref_name }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 120); do
+          for attempt in $(seq 1 240); do
             if manifest=$(docker buildx imagetools inspect "$RELEASE_IMAGE" --raw 2>/dev/null); then
               platforms=$(printf '%s' "$manifest" | jq -r '.manifests[]?.platform | "\(.os)/\(.architecture)"')
               if printf '%s\n' "$platforms" | grep -qx 'linux/amd64' && \
@@ -234,7 +236,7 @@ jobs:
                 fi
               fi
             fi
-            echo "Waiting for $RELEASE_IMAGE ($attempt/120)..."
+            echo "Waiting for $RELEASE_IMAGE ($attempt/240)..."
             sleep 30
           done
           echo "Timed out waiting for the matching multi-arch scanner image." >&2
