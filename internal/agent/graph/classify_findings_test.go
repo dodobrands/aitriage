@@ -98,7 +98,7 @@ func classifyAll(batch []classificationPromptFinding, disposition string) string
 		if i > 0 {
 			sb.WriteString(",")
 		}
-		fmt.Fprintf(&sb, `{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`, i, finding.FindingID, finding.Fingerprint, disposition)
+		fmt.Fprintf(&sb, `{"finding_index":%d,"finding_id":%q,"disposition":%q,"confidence":"high","rationale":"r"}`, i, finding.FindingID, disposition)
 	}
 	sb.WriteString(`]}`)
 	return sb.String()
@@ -126,7 +126,6 @@ func bindPromptIdentities(body string, batch []classificationPromptFinding) stri
 		FindingDispositions []struct {
 			FindingIndex int                  `json:"finding_index"`
 			FindingID    string               `json:"finding_id"`
-			Fingerprint  string               `json:"fingerprint"`
 			Disposition  string               `json:"disposition"`
 			Confidence   string               `json:"confidence"`
 			Rationale    string               `json:"rationale"`
@@ -143,9 +142,6 @@ func bindPromptIdentities(body string, batch []classificationPromptFinding) stri
 		}
 		if d.FindingID == "" {
 			d.FindingID = batch[d.FindingIndex].FindingID
-		}
-		if d.Fingerprint == "" {
-			d.Fingerprint = batch[d.FindingIndex].Fingerprint
 		}
 	}
 	out, err := json.Marshal(raw)

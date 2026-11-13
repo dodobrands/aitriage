@@ -78,10 +78,31 @@ func TestClassificationPromptNeverDismissesAHardcodedSecret(t *testing.T) {
 	}
 }
 
+// A verdict is bound to its finding by finding_index and finding_id. The
+// prompt must not ask for the fingerprint: models garble long hex strings,
+// and the validator no longer checks one.
+func TestClassificationPromptBindsVerdictsByFindingID(t *testing.T) {
+	prompt := classificationPromptText()
+	if want := "Echo the exact finding_id from the input for every entry"; !strings.Contains(prompt, want) {
+		t.Errorf("classification prompt does not say %q", want)
+	}
+	if strings.Contains(strings.ToLower(prompt), "fingerprint") {
+		t.Error("classification prompt still asks for the fingerprint")
+	}
+}
+
+// The validator checks one line of evidence.observed: the prompt asks for
+// that line.
+func TestClassificationPromptAsksForTheLineThatHoldsTheMitigation(t *testing.T) {
+	if want := "evidence.observed must be literal text from evidence.line: the single line that holds the mitigation (the first line of a block)"; !strings.Contains(classificationPromptText(), want) {
+		t.Errorf("classification prompt does not say %q", want)
+	}
+}
+
 // The evidence contract changed, so verdicts cached under the previous prompt
 // must not be served under this one.
 func TestPromptVersionWasBumpedForTheEvidenceContract(t *testing.T) {
-	for _, previous := range []string{"securecoder-v3", "securecoder-v4", "securecoder-v5", "securecoder-v6"} {
+	for _, previous := range []string{"securecoder-v3", "securecoder-v4", "securecoder-v5", "securecoder-v6", "securecoder-v7"} {
 		if SecureCoderPromptVersion == previous {
 			t.Errorf("the evidence contract changed but SecureCoderPromptVersion is still %q", previous)
 		}

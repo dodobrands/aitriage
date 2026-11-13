@@ -147,7 +147,8 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		// moved within its file is not re-classified.
 		if cached, cachedLine, ok := cache.lookup(verdictCacheKey(f)); ok {
 			cached.Evidence = relocateEvidence(cached.Evidence, cachedLine, f)
-			if cachedVerdictUsable(req, f, cached) {
+			if evidence, usable := cachedVerdictUsable(req, f, cached); usable {
+				cached.Evidence = evidence
 				cached.FindingIndex = i
 				cached.DispositionSource = dispositionSourceCache
 				cached.Fingerprint = fp
@@ -292,15 +293,18 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 
 // cachedVerdictUsable re-checks a cached verdict against the current rules. A
 // cached False Positive is only reused while its evidence still validates and
-// it still satisfies the run's validation policy.
-func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) bool {
+// it still satisfies the run's validation policy. It returns the evidence the
+// reused verdict records: for a False Positive, as validated now, on the line
+// its code is on today.
+func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) (*DispositionEvidence, bool) {
 	if cached.Disposition != "False Positive" {
-		return true
+		return cached.Evidence, true
 	}
-	if err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence); err != nil {
-		return false
+	evidence, err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence)
+	if err != nil || violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence) {
+		return nil, false
 	}
-	return !violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence)
+	return evidence, true
 }
 
 func triageFailedRationale(reason string) string {
@@ -523,7 +527,7 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 // finding it is indexed to: it echoes the finding's identity. A verdict that
 // names another finding says nothing about this one.
 func verdictNamesFinding(finding EnrichedFinding, raw rawDisposition) bool {
-	return raw.FindingID == findingIdentity(finding) && raw.Fingerprint == Fingerprint(finding)
+	return raw.FindingID == findingIdentity(finding)
 }
 
 // retryChunks plans the retry of the findings a request left unclassified.
@@ -544,7 +548,6 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 		promptFindings[i] = classificationPromptFinding{
 			FindingIndex: i,
 			FindingID:    findingIdentity(finding),
-			Fingerprint:  Fingerprint(finding),
 			Finding:      finding,
 		}
 	}
@@ -574,11 +577,12 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 }
 
 // classificationReplyItem is one entry of a classification reply: a
-// rawDisposition as the model writes it.
+// rawDisposition as the model writes it. A fingerprint the model still
+// echoes, as earlier prompts asked, is dropped by the decoder and never
+// checked (see validateLLMDisposition).
 type classificationReplyItem struct {
 	FindingIndex int                  `json:"finding_index"`
 	FindingID    string               `json:"finding_id"`
-	Fingerprint  string               `json:"fingerprint"`
 	Disposition  string               `json:"disposition"`
 	Confidence   string               `json:"confidence"`
 	Rationale    string               `json:"rationale"`

@@ -216,7 +216,7 @@ func TestCodeMitigationEvidenceValidation(t *testing.T) {
 				basis = "code_mitigation"
 			}
 			evidence := &DispositionEvidence{Basis: basis, File: tc.finding.File, Line: tc.evidLine, Observed: tc.observed}
-			err := validateFalsePositiveEvidence(project, tc.finding, evidence)
+			_, err := validateFalsePositiveEvidence(project, tc.finding, evidence)
 			switch {
 			case tc.wantReject == "" && err != nil:
 				t.Fatalf("evidence rejected: %v", err)
@@ -240,11 +240,11 @@ func TestClassificationPromptStatesTheMitigationWindow(t *testing.T) {
 func TestPersonOnlyRejectionIsMarked(t *testing.T) {
 	project := mitigationFixture(t)
 	evidence := &DispositionEvidence{Basis: "code_mitigation", File: "app.py", Line: 11, Observed: "shlex.quote(cmd)"}
-	if err := validateFalsePositiveEvidence(project, mitFinding("app.py", "CRITICAL", 12), evidence); !errors.Is(err, errPersonMustDecide) {
+	if _, err := validateFalsePositiveEvidence(project, mitFinding("app.py", "CRITICAL", 12), evidence); !errors.Is(err, errPersonMustDecide) {
 		t.Fatalf("CRITICAL finding error = %v, want errPersonMustDecide", err)
 	}
 	unrelated := &DispositionEvidence{Basis: "code_mitigation", File: "app.py", Line: 3, Observed: "TOKEN ="}
-	if err := validateFalsePositiveEvidence(project, mitFinding("app.py", "HIGH", 12), unrelated); err == nil || errors.Is(err, errPersonMustDecide) {
+	if _, err := validateFalsePositiveEvidence(project, mitFinding("app.py", "HIGH", 12), unrelated); err == nil || errors.Is(err, errPersonMustDecide) {
 		t.Fatalf("unrelated evidence error = %v, want a plain rejection", err)
 	}
 }
@@ -341,7 +341,7 @@ func TestCachedCodeMitigationIsRevalidated(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cached := FindingDisposition{Disposition: "False Positive", Confidence: "high", Evidence: tc.evidence}
-			if got := cachedVerdictUsable(classifyRequest{projectPath: project}, tc.finding, cached); got != tc.usable {
+			if _, got := cachedVerdictUsable(classifyRequest{projectPath: project}, tc.finding, cached); got != tc.usable {
 				t.Fatalf("cachedVerdictUsable() = %v, want %v", got, tc.usable)
 			}
 		})
@@ -417,7 +417,7 @@ func TestClassifyFindingsRejectsSelfCitingEvalFalsePositive(t *testing.T) {
 func dismissAll(batch []classificationPromptFinding, evidence string) string {
 	var entries []string
 	for i, f := range batch {
-		entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":"False Positive","confidence":"high","rationale":"mitigated","evidence":%s}`, i, f.FindingID, f.Fingerprint, evidence))
+		entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"disposition":"False Positive","confidence":"high","rationale":"mitigated","evidence":%s}`, i, f.FindingID, evidence))
 	}
 	return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`
 }
@@ -486,7 +486,7 @@ func TestFPCriticalRequiresHighConfidencePolicy(t *testing.T) {
 		finding := EnrichedFinding{ID: "R-1", Severity: "CRITICAL", File: "tests/test_auth.py", Line: 3}
 		cached := FindingDisposition{Disposition: "False Positive", Confidence: "medium", Evidence: &DispositionEvidence{Basis: "test_only", File: "tests/test_auth.py", Line: 3}}
 		req := classifyRequest{projectPath: project, policy: validationPolicy{fpCriticalRequiresHighConfidence: true}}
-		if cachedVerdictUsable(req, finding, cached) {
+		if _, usable := cachedVerdictUsable(req, finding, cached); usable {
 			t.Fatal("a cached medium-confidence dismissal of a CRITICAL finding must not be reused under the policy")
 		}
 	})

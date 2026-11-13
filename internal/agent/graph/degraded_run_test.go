@@ -453,8 +453,8 @@ func TestRunMakesUnclassifiedFindingsVisible(t *testing.T) {
 			if item.Finding.ID == "PY-SECRET" {
 				disposition = "False Positive"
 			}
-			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
-				item.FindingIndex, item.FindingID, item.Fingerprint, disposition))
+			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
+				item.FindingIndex, item.FindingID, disposition))
 		}
 		return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`, nil
 	}

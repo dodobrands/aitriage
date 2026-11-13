@@ -731,7 +731,6 @@ var errThreatModelParse = errors.New("parse threat-model JSON")
 type rawDisposition struct {
 	FindingIndex int
 	FindingID    string
-	Fingerprint  string
 	Disposition  string
 	Confidence   string
 	Rationale    string

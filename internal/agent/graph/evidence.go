@@ -14,11 +14,12 @@ import (
 
 // classificationPromptFinding binds a model-visible batch position to a stable
 // finding identity. A model cannot safely reuse an answer from another finding
-// without echoing this identity back.
+// without echoing this identity back. The display id is that identity: it is
+// unique within a run, and models echo it faithfully (see
+// validateLLMDisposition).
 type classificationPromptFinding struct {
 	FindingIndex int             `json:"finding_index"`
 	FindingID    string          `json:"finding_id"`
-	Fingerprint  string          `json:"fingerprint"`
 	Finding      EnrichedFinding `json:"finding"`
 }
 
@@ -66,16 +67,23 @@ func findingIdentity(f EnrichedFinding) string {
 // defaults to Needs Manual Review. A non-empty note means the verdict was
 // accepted in a weaker form, such as a False Positive kept for manual review
 // by policy; the note is recorded in the classification audit.
+//
+// A verdict is bound to its finding by finding_index, which the caller
+// resolves, and finding_id: display ids are unique within a run
+// (assignVulnIDs), so the pair names exactly one finding. The fingerprint is
+// neither asked for nor checked. Models echo a short display id faithfully
+// but often garble a 32-digit hex string (truncated, unrelated digits, the
+// neighbouring finding's), and rejecting those verdicts only bought retries
+// whose answers could differ from the first.
 func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition, policy validationPolicy) (FindingDisposition, string, string) {
 	if raw.FindingID != findingIdentity(finding) {
 		return FindingDisposition{}, "finding_id does not match requested finding", ""
 	}
-	if raw.Fingerprint != Fingerprint(finding) {
-		return FindingDisposition{}, "fingerprint does not match requested finding", ""
-	}
 	confidence := normalizeConfidence(raw.Confidence)
+	evidence := raw.Evidence
 	if raw.Disposition == "False Positive" {
-		if err := validateFalsePositiveEvidence(projectPath, finding, raw.Evidence); err != nil {
+		accepted, err := validateFalsePositiveEvidence(projectPath, finding, raw.Evidence)
+		if err != nil {
 			if !errors.Is(err, errPersonMustDecide) {
 				return FindingDisposition{}, err.Error(), ""
 			}
@@ -88,13 +96,14 @@ func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw raw
 				Evidence:    raw.Evidence,
 			}, "", "false positive kept as Needs Manual Review: " + err.Error()
 		}
+		evidence = accepted
 		if violatesCriticalConfidencePolicy(policy, finding, confidence) {
 			note := fmt.Sprintf("false positive for a CRITICAL finding kept as Needs Manual Review: policy fp_critical_requires_high_confidence requires high confidence, model reported %q", confidence)
 			return FindingDisposition{
 				Disposition: "Needs Manual Review",
 				Rationale:   "Kept for manual review: a CRITICAL finding is only dismissed with high model confidence (policy fp_critical_requires_high_confidence). Model rationale: " + raw.Rationale,
 				Confidence:  confidence,
-				Evidence:    raw.Evidence,
+				Evidence:    evidence,
 			}, "", note
 		}
 	}
@@ -102,7 +111,7 @@ func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw raw
 		Disposition: raw.Disposition,
 		Rationale:   raw.Rationale,
 		Confidence:  confidence,
-		Evidence:    raw.Evidence,
+		Evidence:    evidence,
 	}, "", ""
 }
 
@@ -114,35 +123,41 @@ func violatesCriticalConfidencePolicy(policy validationPolicy, finding EnrichedF
 		normalizeConfidence(confidence) != "high"
 }
 
-func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+// validateFalsePositiveEvidence checks the evidence of a False Positive and
+// returns it as accepted, which is what the disposition records: test_only
+// evidence as given, code_mitigation evidence on the line its text was found
+// on (see validateCodeMitigation).
+func validateFalsePositiveEvidence(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) (*DispositionEvidence, error) {
 	if isHardcodedSecret(finding) {
 		// A committed credential is exposed wherever it sits, a test fixture
 		// included: whether it is real, revoked or a placeholder is for a
 		// person to decide. No evidence basis dismisses it automatically.
-		return fmt.Errorf("a hardcoded secret is never dismissed automatically, whatever the evidence: %w", errPersonMustDecide)
+		return nil, fmt.Errorf("a hardcoded secret is never dismissed automatically, whatever the evidence: %w", errPersonMustDecide)
 	}
 	if evidence == nil {
-		return fmt.Errorf("false positive has no evidence")
+		return nil, fmt.Errorf("false positive has no evidence")
 	}
 	switch evidence.Basis {
 	case "test_only":
+		// The finding's own line, exactly: the evidence says the flagged line
+		// is test code, so it has no other line to drift to.
 		if !isTestPath(finding.File) {
-			return fmt.Errorf("test_only evidence does not reference a test finding")
+			return nil, fmt.Errorf("test_only evidence does not reference a test finding")
 		}
 		if evidence.File == "" {
-			return fmt.Errorf("test_only evidence file is missing")
+			return nil, fmt.Errorf("test_only evidence file is missing")
 		}
 		if _, err := matchingProjectFile(projectPath, finding.File, evidence.File); err != nil {
-			return fmt.Errorf("test_only evidence file is invalid: %w", err)
+			return nil, fmt.Errorf("test_only evidence file is invalid: %w", err)
 		}
 		if evidence.Line > 0 && finding.Line > 0 && evidence.Line != finding.Line {
-			return fmt.Errorf("test_only evidence line does not match finding line")
+			return nil, fmt.Errorf("test_only evidence line does not match finding line")
 		}
-		return nil
+		return evidence, nil
 	case "code_mitigation":
 		return validateCodeMitigation(projectPath, finding, evidence)
 	default:
-		return fmt.Errorf("false positive evidence basis %q is not deterministically verifiable", evidence.Basis)
+		return nil, fmt.Errorf("false positive evidence basis %q is not deterministically verifiable", evidence.Basis)
 	}
 }
 
@@ -163,6 +178,14 @@ const (
 	// minSharedIdentifierLength leaves out one-letter names (i, r, w, x):
 	// they are too common to tie a line to a finding.
 	minSharedIdentifierLength = 2
+	// maxEvidenceLineDrift is how many lines away from evidence.line the
+	// observed text is looked for when that line does not hold it. Models
+	// often quote the right code with a line number a few lines off, and
+	// rejecting those answers sent real false positives to manual review.
+	// Every check runs on the line the text is found on, so the tolerance
+	// accepts nothing the right line number would not; a window this small
+	// keeps the text from being matched in some unrelated part of the file.
+	maxEvidenceLineDrift = 5
 )
 
 // errPersonMustDecide marks code_mitigation evidence for a finding that only a
@@ -181,56 +204,120 @@ var errPersonMustDecide = errors.New("a person must decide")
 // itself, unrelated assignments, the tainted assignment, log calls and checks
 // in other functions. CRITICAL findings and hardcoded secrets are never
 // dismissed by code_mitigation.
-func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) error {
+//
+// The observed text is the first non-blank line of evidence.observed (see
+// firstObservedLine), looked up on evidence.line or, when that line does not
+// hold it, on the nearest line within maxEvidenceLineDrift (see
+// nearestLineWith). Every check then runs on the line the text was found on,
+// and the evidence is returned with that line and text, so the disposition
+// cites the code that was checked.
+func validateCodeMitigation(projectPath string, finding EnrichedFinding, evidence *DispositionEvidence) (*DispositionEvidence, error) {
 	if subject := personOnlyFinding(finding); subject != "" {
-		return fmt.Errorf("code_mitigation evidence is not accepted for %s: %w", subject, errPersonMustDecide)
+		return nil, fmt.Errorf("code_mitigation evidence is not accepted for %s: %w", subject, errPersonMustDecide)
 	}
-	observed := evidence.Observed
+	observed := firstObservedLine(evidence.Observed)
 	if evidence.File == "" || evidence.Line < 1 || len(strings.TrimSpace(observed)) < 4 {
-		return fmt.Errorf("code_mitigation evidence is incomplete")
+		return nil, fmt.Errorf("code_mitigation evidence is incomplete")
 	}
 	if isConfigOrDataFile(finding.File) {
-		return fmt.Errorf("code_mitigation evidence rejected: %s is a configuration or data file, which contains no code that mitigates", filepath.Base(normalizePath(finding.File)))
+		return nil, fmt.Errorf("code_mitigation evidence rejected: %s is a configuration or data file, which contains no code that mitigates", filepath.Base(normalizePath(finding.File)))
 	}
 	path, err := matchingProjectFile(projectPath, finding.File, evidence.File)
 	if err != nil {
-		return fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
-	}
-	if err := checkMitigationPlacement(finding.Line, evidence.Line); err != nil {
-		return err
+		return nil, fmt.Errorf("code_mitigation evidence file is invalid: %w", err)
 	}
 	syntax := regions.SyntaxForPath(path)
 	if !syntax.Known() {
-		return fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
+		return nil, fmt.Errorf("code_mitigation evidence rejected: %s is not a recognised source language, so the cited text cannot be checked for comments and string literals", filepath.Base(path))
 	}
 	source, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
+		return nil, fmt.Errorf("code_mitigation evidence is unreadable: %w", err)
 	}
 	lines := splitSourceLines(source)
 	if finding.Line > len(lines) {
-		return fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
+		return nil, fmt.Errorf("code_mitigation evidence is unreadable: flagged line %d is outside source file", finding.Line)
+	}
+	found := nearestLineWith(lines, evidence.Line, observed)
+	if found == 0 {
+		return nil, fmt.Errorf("code_mitigation observed text is absent from source: it is neither on line %d nor within %d lines of it", evidence.Line, maxEvidenceLineDrift)
+	}
+	accepted := *evidence
+	accepted.Line, accepted.Observed = found, observed
+	if err := checkCitedMitigation(path, source, lines, syntax, finding, &accepted); err != nil {
+		if found != evidence.Line {
+			return nil, fmt.Errorf("%w (the observed text is on line %d, not on the cited line %d)", err, found, evidence.Line)
+		}
+		return nil, err
+	}
+	return &accepted, nil
+}
+
+// checkCitedMitigation runs the checks that tie code_mitigation evidence to
+// its finding on evidence.Line, the line that holds evidence.Observed:
+// placement, code only, shared names and the shape of a mitigation.
+func checkCitedMitigation(path string, source []byte, lines []string, syntax regions.Syntax, finding EnrichedFinding, evidence *DispositionEvidence) error {
+	if err := checkMitigationPlacement(finding.Line, evidence.Line); err != nil {
+		return err
 	}
 	// The evidence line is above the flagged line, so both are scanned.
 	fileRegions := regions.Lines(lines, finding.Line-1+maxStatementLines, syntax)
 	line, kinds := lines[evidence.Line-1], fileRegions[evidence.Line-1]
-	if !strings.Contains(line, observed) {
-		return fmt.Errorf("code_mitigation observed text is absent from source")
-	}
-	starts, where := codeOccurrences(line, kinds, observed)
+	starts, where := codeOccurrences(line, kinds, evidence.Observed)
 	if len(starts) == 0 {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text %s", where)
 	}
-	if !hasCodeTokens(observed) {
+	if !hasCodeTokens(evidence.Observed) {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
 	}
-	cited := citedIdentifiers(line, starts, len(observed))
+	cited := citedIdentifiers(line, starts, len(evidence.Observed))
 	flagged := statementIdentifiers(lines, fileRegions, finding.Line-1)
 	shared := sharedIdentifiers(cited, flagged)
 	if len(shared) == 0 {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
 	}
 	return checkMitigationShape(path, source, lines, fileRegions, finding, evidence, starts, shared)
+}
+
+// firstObservedLine is the part of evidence.observed that is looked up and
+// checked: its first non-blank line, without trailing whitespace. Models
+// quote a guard together with the statement under it (the if line and its
+// raise or return); the first line is the one evidence.line should name, and
+// text spanning several lines is never found on a single source line.
+// Leading whitespace is kept: it matches the line's indentation.
+func firstObservedLine(observed string) string {
+	for _, line := range strings.Split(observed, "\n") {
+		if line = strings.TrimRight(line, " \t\r"); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// nearestLineWith returns the number of the line, counted from 1, that holds
+// text: cited itself when it does, otherwise the nearest line at most
+// maxEvidenceLineDrift lines away, or 0 when no line in that window holds
+// text. Of two lines equally near, the one above wins. Any fixed choice keeps
+// the result reproducible; the line above is chosen because a mitigation runs
+// before the flagged statement, so it is the likelier of the two to be one.
+// The nearest line is taken even when it then fails a check: the search
+// fixes a miscounted line number, it does not look for a line that passes.
+func nearestLineWith(lines []string, cited int, text string) int {
+	holds := func(n int) bool {
+		return n >= 1 && n <= len(lines) && strings.Contains(lines[n-1], text)
+	}
+	if holds(cited) {
+		return cited
+	}
+	for distance := 1; distance <= maxEvidenceLineDrift; distance++ {
+		if holds(cited - distance) {
+			return cited - distance
+		}
+		if holds(cited + distance) {
+			return cited + distance
+		}
+	}
+	return 0
 }
 
 // personOnlyFinding names why code_mitigation evidence can never dismiss a

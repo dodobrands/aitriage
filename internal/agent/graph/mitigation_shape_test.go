@@ -143,7 +143,7 @@ func TestCodeMitigationMustBeAGuardOrReassignmentInTheSameFunction(t *testing.T)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			finding := EnrichedFinding{ID: "R", VulnID: "CS-MISC-001", Type: "core", Severity: tc.severity, File: tc.file, Line: tc.flagged}
-			err := validateFalsePositiveEvidence(project, finding, &DispositionEvidence{Basis: "code_mitigation", File: tc.file, Line: tc.evidLine, Observed: tc.observed})
+			_, err := validateFalsePositiveEvidence(project, finding, &DispositionEvidence{Basis: "code_mitigation", File: tc.file, Line: tc.evidLine, Observed: tc.observed})
 			switch {
 			case tc.wantReject == "" && err != nil:
 				t.Fatalf("evidence rejected: %v", err)
@@ -164,7 +164,7 @@ func TestModelDismissalCitingTheTaintSourceIsRejected(t *testing.T) {
 	project := shapeFixture(t)
 	finding := EnrichedFinding{ID: "B602", Type: "external", Source: "bandit", Severity: "HIGH", File: "handler.py", Line: 5, Message: "[bandit] subprocess call with shell=True", VulnID: "CS-CMDI-ABC123"}
 	raw := rawDisposition{
-		FindingID: finding.VulnID, Fingerprint: Fingerprint(finding), Disposition: "False Positive", Confidence: "high",
+		FindingID: finding.VulnID, Disposition: "False Positive", Confidence: "high",
 		Rationale: "cmd is built from a constant prefix",
 		Evidence:  &DispositionEvidence{Basis: "code_mitigation", File: "handler.py", Line: 4, Observed: "cmd ="},
 	}
@@ -194,16 +194,16 @@ func TestHardcodedSecretIsNeverDismissedAutomatically(t *testing.T) {
 		{"merged finding with a secret detector", EnrichedFinding{ID: "R", Type: "core", Severity: "MEDIUM", File: "tests/fixtures/aws.py", Line: 1, Origins: []FindingOrigin{{Type: "external", Source: "gitleaks", RuleID: "generic-api-key"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := validateFalsePositiveEvidence(project, tc.finding, testOnly(tc.finding.File, 1)); !errors.Is(err, errPersonMustDecide) {
+			if _, err := validateFalsePositiveEvidence(project, tc.finding, testOnly(tc.finding.File, 1)); !errors.Is(err, errPersonMustDecide) {
 				t.Fatalf("test_only error = %v, want the secret kept for a person", err)
 			}
-			if err := validateFalsePositiveEvidence(project, tc.finding, nil); !errors.Is(err, errPersonMustDecide) {
+			if _, err := validateFalsePositiveEvidence(project, tc.finding, nil); !errors.Is(err, errPersonMustDecide) {
 				t.Fatalf("no-evidence error = %v, want the secret kept for a person", err)
 			}
 		})
 	}
 	critical := EnrichedFinding{ID: "PY-EVAL", Type: "core", Source: "aitriage", Severity: "CRITICAL", File: "tests/test_eval.py", Line: 3}
-	if err := validateFalsePositiveEvidence(project, critical, testOnly("tests/test_eval.py", 3)); err != nil {
+	if _, err := validateFalsePositiveEvidence(project, critical, testOnly("tests/test_eval.py", 3)); err != nil {
 		t.Fatalf("CRITICAL test-only finding rejected: %v", err)
 	}
 
