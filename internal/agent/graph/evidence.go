@@ -270,11 +270,11 @@ func checkCitedMitigation(path string, source []byte, lines []string, syntax reg
 	if !hasCodeTokens(evidence.Observed) {
 		return fmt.Errorf("code_mitigation evidence rejected: observed text has no code tokens (prose is not a mitigation)")
 	}
-	cited := citedIdentifiers(line, starts, len(evidence.Observed))
+	cited := citedIdentifiers(line, kinds, starts, len(evidence.Observed))
 	flagged := statementIdentifiers(lines, fileRegions, finding.Line-1)
 	shared := sharedIdentifiers(cited, flagged)
 	if len(shared) == 0 {
-		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d; cite the code that checks or transforms the data it uses", finding.Line)
+		return fmt.Errorf("code_mitigation evidence rejected: observed text shares no identifier with the flagged statement on line %d (a module, package or function name, or a member of something else, does not count); cite the code that checks or transforms the data it uses", finding.Line)
 	}
 	return checkMitigationShape(path, source, lines, fileRegions, finding, evidence, starts, shared)
 }
@@ -355,11 +355,15 @@ func checkMitigationPlacement(findingLine, evidenceLine int) error {
 	}
 }
 
-// sharedIdentifiers returns the names two sets have in common.
+// sharedIdentifiers returns the names both sides use, given as name → used
+// as data on that side (see citedIdentifiers). A name both sides only
+// qualify or call (a module, a package, a receiver, a function) is not
+// shared: it ties a check to the flagged statement no more than two calls
+// of os.path tie two paths.
 func sharedIdentifiers(a, b map[string]bool) map[string]bool {
 	shared := map[string]bool{}
-	for name := range a {
-		if b[name] {
+	for name, data := range a {
+		if otherData, ok := b[name]; ok && (data || otherData) {
 			shared[name] = true
 		}
 	}

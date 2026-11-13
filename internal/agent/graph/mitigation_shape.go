@@ -27,12 +27,15 @@ import (
 //     inside such an if, or an assertion of it; or
 //   - a re-assignment of a shared name through a call that takes it:
 //     x = f(x), or x = x.f(...),
-// and it lies in the same function as the flagged line. Where the repository
-// has a tree-sitter grammar for the language (Python, Go, JavaScript,
-// TypeScript) the syntax tree decides all of this. Elsewhere the line is read
-// as text and the function cannot be checked, so code_mitigation is accepted
-// that way only for MEDIUM and LOW findings; a HIGH finding is left for a
-// person.
+// and it lies in the same function as the flagged line. Unless it encloses
+// the flagged statement, it must also run on every path to it: a check in
+// a branch the flagged statement is outside of (`if legacy:` around the
+// only check of the name) protects nothing on the other paths. Where the
+// repository has a tree-sitter grammar for the language (Python, Go,
+// JavaScript, TypeScript) the syntax tree decides all of this. Elsewhere the
+// line is read as text: neither the function nor the paths to the flagged
+// line can be checked, so code_mitigation is accepted that way only for
+// MEDIUM and LOW findings; a HIGH finding is left for a person.
 
 // mitigationGrammars maps source extensions to the grammar that parses them
 // (see internal/scanner/ast). The JavaScript grammar parses JSX.
@@ -70,6 +73,13 @@ var (
 	// in lower case): Flask's abort, sys.exit, os.Exit, process.exit, panic,
 	// log.Fatal and log.Panic with their f/ln variants.
 	exitCallNames = stringSet("abort", "exit", "_exit", "panic", "panicf", "panicln", "fatal", "fatalf", "fatalln")
+	// statementContainerKinds hold statements that run one after another:
+	// blocks, a module, and the bodies of switch cases (JavaScript's cases
+	// hold their statements directly).
+	statementContainerKinds = stringSet("block", "statement_block", "statement_list", "module", "program", "source_file",
+		"switch_case", "switch_default", "expression_case", "type_case", "default_case", "communication_case")
+	// statementWrapperKinds make a statement of an expression or declaration.
+	statementWrapperKinds = stringSet("expression_statement", "lexical_declaration", "variable_declaration")
 )
 
 // errNoMitigationShape marks a cited line that is neither a guard nor a
@@ -197,11 +207,14 @@ func (m mitigationTree) role(node *tree_sitter.Node, point tree_sitter.Point) er
 		switch {
 		case kind == "assert_statement":
 			if m.mentions(cur) {
-				return nil
+				return m.onEveryPath(cur, "an assertion of "+sortedNames(m.shared))
 			}
 			return fmt.Errorf("an assert that does not check %s", sortedNames(m.shared))
 		case reassignmentNodeKinds[kind]:
-			return m.reassignment(cur)
+			if err := m.reassignment(cur); err != nil {
+				return err
+			}
+			return m.onEveryPath(cur, "a re-assignment of "+sortedNames(m.shared))
 		case exitNodeKinds[kind]:
 			return m.guardedExit(cur)
 		case kind == "expression_statement":
@@ -209,7 +222,7 @@ func (m mitigationTree) role(node *tree_sitter.Node, point tree_sitter.Point) er
 			switch {
 			case call != nil && callNodeKinds[call.Kind()] && m.isAssertCall(call):
 				if m.mentions(call.ChildByFieldName("arguments")) {
-					return nil
+					return m.onEveryPath(cur, "an assertion of "+sortedNames(m.shared))
 				}
 				return fmt.Errorf("an assertion that does not check %s", sortedNames(m.shared))
 			case call != nil && callNodeKinds[call.Kind()] && m.isExitCall(call):
@@ -224,7 +237,7 @@ func (m mitigationTree) role(node *tree_sitter.Node, point tree_sitter.Point) er
 }
 
 // guard accepts an if or elif whose condition checks a shared name and that
-// either encloses the flagged statement or exits early.
+// either encloses the flagged statement or exits early on every path to it.
 func (m mitigationTree) guard(conditional *tree_sitter.Node) error {
 	if !m.mentions(conditional.ChildByFieldName("condition")) && !m.mentions(conditional.ChildByFieldName("initializer")) {
 		return fmt.Errorf("a condition that does not check %s", sortedNames(m.shared))
@@ -233,14 +246,89 @@ func (m mitigationTree) guard(conditional *tree_sitter.Node) error {
 	if consequence == nil {
 		return errNoMitigationShape
 	}
-	if containsPoint(consequence, m.flagged) || m.exitsEarly(consequence) {
+	if containsPoint(consequence, m.flagged) {
 		return nil
+	}
+	if m.exitsEarly(consequence) {
+		return m.onEveryPath(conditional, "a check of "+sortedNames(m.shared))
 	}
 	return fmt.Errorf("a check of %s that neither exits early (return, raise, throw, abort) nor encloses the flagged line %d", sortedNames(m.shared), m.flaggedLine)
 }
 
+// onEveryPath requires a mitigation that does not enclose the flagged
+// statement to run on every path to it: its statement must lie in the
+// flagged statement's block or in a block around it, so it runs before the
+// flagged statement whichever branches are taken. A check in a branch the
+// flagged statement is outside of, in a loop body the flagged statement
+// follows, or in one case of a switch protects nothing on the other paths.
+// An elif or else-if runs only when the branches before it were not taken,
+// so it counts only when each of them exits early as well. what describes
+// the cited construct for the rejection.
+func (m mitigationTree) onEveryPath(statement *tree_sitter.Node, what string) error {
+	for cur := statement; ; {
+		parent := cur.Parent()
+		switch {
+		case parent == nil:
+			return fmt.Errorf("%s that is not on every path to the flagged line %d", what, m.flaggedLine)
+		case statementContainerKinds[parent.Kind()]:
+			if containsPoint(parent, m.flagged) {
+				return nil
+			}
+			return fmt.Errorf("%s inside a branch, loop body or case that the flagged line %d is outside of, so not on every path to it", what, m.flaggedLine)
+		case statementWrapperKinds[parent.Kind()]:
+			cur = parent
+		default:
+			head, err := m.chainHead(cur, parent, what)
+			if err != nil {
+				return err
+			}
+			if head == nil {
+				return fmt.Errorf("%s that is the body of another if, loop or statement, so not on every path to the flagged line %d", what, m.flaggedLine)
+			}
+			cur = head
+		}
+	}
+}
+
+// chainHead returns the if statement whose else branch cur is (a Python
+// elif clause, an else if in JavaScript, TypeScript or Go) once every branch
+// before cur is shown to exit early, and nil when cur is no such branch.
+func (m mitigationTree) chainHead(cur, parent *tree_sitter.Node, what string) (*tree_sitter.Node, error) {
+	head := parent
+	var earlier []*tree_sitter.Node
+	switch {
+	case cur.Kind() == "elif_clause" && parent.Kind() == "if_statement":
+		earlier = append(earlier, parent.ChildByFieldName("consequence"))
+		for i := uint(0); i < parent.NamedChildCount(); i++ {
+			child := parent.NamedChild(i)
+			if child == nil || sameNode(child, cur) {
+				break
+			}
+			if child.Kind() == "elif_clause" {
+				earlier = append(earlier, child.ChildByFieldName("consequence"))
+			}
+		}
+	case cur.Kind() == "if_statement" && parent.Kind() == "else_clause":
+		head = parent.Parent()
+		if head == nil || head.Kind() != "if_statement" {
+			return nil, nil
+		}
+		earlier = append(earlier, head.ChildByFieldName("consequence"))
+	case cur.Kind() == "if_statement" && parent.Kind() == "if_statement" && isField(parent, "alternative", cur):
+		earlier = append(earlier, parent.ChildByFieldName("consequence"))
+	default:
+		return nil, nil
+	}
+	for _, branch := range earlier {
+		if branch == nil || !m.exitsEarly(branch) {
+			return nil, fmt.Errorf("%s in an elif or else-if that runs only when an earlier branch, one that does not exit early, was not taken, so not on every path to the flagged line %d", what, m.flaggedLine)
+		}
+	}
+	return head, nil
+}
+
 // guardedExit accepts an early exit that is the body of an if or elif
-// checking a shared name.
+// checking a shared name, on every path to the flagged statement.
 func (m mitigationTree) guardedExit(exit *tree_sitter.Node) error {
 	for cur := exit.Parent(); cur != nil; cur = cur.Parent() {
 		kind := cur.Kind()
@@ -253,7 +341,7 @@ func (m mitigationTree) guardedExit(exit *tree_sitter.Node) error {
 				break
 			}
 			if m.mentions(cur.ChildByFieldName("condition")) || m.mentions(cur.ChildByFieldName("initializer")) {
-				return nil
+				return m.onEveryPath(cur, "an early exit under a check of "+sortedNames(m.shared))
 			}
 			return fmt.Errorf("an early exit under a condition that does not check %s", sortedNames(m.shared))
 		}
@@ -362,7 +450,9 @@ func (m mitigationTree) isAssertCall(call *tree_sitter.Node) bool {
 }
 
 // mentions reports whether a subtree names a shared identifier outside nested
-// functions.
+// functions, as data or as the head of an access path (a check of
+// user.is_admin is a check of user). A called function's name does not count:
+// calling handler() does not check handler.
 func (m mitigationTree) mentions(n *tree_sitter.Node) bool {
 	if n == nil {
 		return false
@@ -372,7 +462,7 @@ func (m mitigationTree) mentions(n *tree_sitter.Node) bool {
 		if found {
 			return false
 		}
-		if strings.HasSuffix(child.Kind(), "identifier") && m.shared[strings.TrimLeft(m.text(child), "$")] {
+		if key, role, ok := m.nameAt(child); ok && role != nameCallee && m.shared[key] {
 			found = true
 			return false
 		}
@@ -381,8 +471,89 @@ func (m mitigationTree) mentions(n *tree_sitter.Node) bool {
 	return found
 }
 
+// nameAt is the syntax-tree counterpart of nameAt in source_regions.go: what
+// an identifier node names and does. A member at the end of an access path
+// stands for the whole path (self.filename); one inside a path or a call
+// (path and join in os.path.join(...)) names nothing.
+func (m mitigationTree) nameAt(n *tree_sitter.Node) (key string, role nameRole, ok bool) {
+	if !strings.HasSuffix(n.Kind(), "identifier") {
+		return "", nameData, false
+	}
+	parent := n.Parent()
+	if parent == nil {
+		return strings.TrimLeft(m.text(n), "$"), nameData, true
+	}
+	if memberOf(parent, n) {
+		if qualifiesOrCalls(parent) {
+			return "", nameData, false
+		}
+		path := accessPathText(m.text(parent))
+		if !accessPathPattern.MatchString(path) {
+			return "", nameData, false
+		}
+		return path, nameData, true
+	}
+	key = strings.TrimLeft(m.text(n), "$")
+	switch {
+	case memberAccessKinds[parent.Kind()] && (isField(parent, "object", n) || isField(parent, "operand", n)):
+		return key, nameQualifier, true
+	case calls(parent, n):
+		return key, nameCallee, true
+	}
+	return key, nameData, true
+}
+
+var (
+	// memberAccessKinds access a member: Python attributes, JavaScript and
+	// TypeScript member expressions, Go selectors.
+	memberAccessKinds = stringSet("attribute", "member_expression", "selector_expression")
+	// accessPathPattern matches an access path written with dots.
+	accessPathPattern = regexp.MustCompile(`^[A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)+$`)
+	// accessOperators are written as dots in an access path.
+	accessOperators = strings.NewReplacer("?.", ".", "->", ".", "::", ".")
+)
+
+// memberOf reports whether n is the member a member access names: the
+// attribute, property or field, not the object it belongs to.
+func memberOf(access, n *tree_sitter.Node) bool {
+	return memberAccessKinds[access.Kind()] &&
+		(isField(access, "attribute", n) || isField(access, "property", n) || isField(access, "field", n))
+}
+
+// qualifiesOrCalls reports whether a member access is itself qualified or
+// called: os.path in os.path.join, os.path.join in os.path.join(...).
+func qualifiesOrCalls(access *tree_sitter.Node) bool {
+	outer := access.Parent()
+	if outer == nil {
+		return false
+	}
+	return (memberAccessKinds[outer.Kind()] && (isField(outer, "object", access) || isField(outer, "operand", access))) || calls(outer, access)
+}
+
+// calls reports whether n is what a call or new expression calls.
+func calls(call, n *tree_sitter.Node) bool {
+	return (callNodeKinds[call.Kind()] && isField(call, "function", n)) ||
+		(call.Kind() == "new_expression" && isField(call, "constructor", n))
+}
+
+func isField(parent *tree_sitter.Node, field string, n *tree_sitter.Node) bool {
+	child := parent.ChildByFieldName(field)
+	return child != nil && sameNode(child, n)
+}
+
+// accessPathText writes an access path as source_regions.go's memberPath
+// does: no blanks, every access operator a dot, no $ in front of a step.
+func accessPathText(text string) string {
+	steps := strings.Split(accessOperators.Replace(strings.Join(strings.Fields(text), "")), ".")
+	for i, step := range steps {
+		steps[i] = strings.TrimLeft(step, "$")
+	}
+	return strings.Join(steps, ".")
+}
+
 // containsText reports whether a subtree has a node whose text is exactly
-// text, outside nested functions.
+// text, outside nested functions. A member is not the variable it is named
+// like: self.cmd does not contain cmd.
 func (m mitigationTree) containsText(n *tree_sitter.Node, text string) bool {
 	if n == nil || text == "" {
 		return false
@@ -391,6 +562,9 @@ func (m mitigationTree) containsText(n *tree_sitter.Node, text string) bool {
 	walkOutsideFunctions(n, func(child *tree_sitter.Node) bool {
 		if found {
 			return false
+		}
+		if parent := child.Parent(); parent != nil && memberOf(parent, child) {
+			return true
 		}
 		if m.text(child) == text {
 			found = true
@@ -543,14 +717,17 @@ var (
 
 // textMitigationCheck is the shape check for languages without a grammar:
 // the code of the cited line opens a conditional, asserts, or exits under a
-// condition, naming a shared identifier, or re-assigns a shared name through
-// a call that takes it.
+// condition, naming a shared identifier (not as a called function), or
+// re-assigns a shared name through a call that takes it. One line of text
+// cannot show whether that line runs on every path to the flagged statement:
+// a check in a branch the flagged statement is outside of passes here. That
+// is one reason this check is used only for MEDIUM and LOW findings.
 func textMitigationCheck(line string, kinds []regions.Kind, shared map[string]bool) error {
 	code := codeOnly(line, kinds)
 	names := map[string]bool{}
 	for _, span := range identifierSpans(code) {
-		if name := strings.TrimLeft(code[span[0]:span[1]], "$"); shared[name] {
-			names[name] = true
+		if key, role, ok := nameAt(code, span); ok && role != nameCallee && shared[key] {
+			names[key] = true
 		}
 	}
 	if len(names) > 0 && (textGuardPattern.MatchString(code) || textAssertPattern.MatchString(code) || textExitModifierPattern.MatchString(code)) {
@@ -566,9 +743,9 @@ func textMitigationCheck(line string, kinds []regions.Kind, shared map[string]bo
 }
 
 // textPassesThroughCall reports whether value calls something with name
-// among its arguments (f(x)) or as its receiver (x.f(), $x->f()).
+// among its arguments (f(x)) or as its receiver (x.f(), $x->f()). A member
+// named like it is another value: f($this->x) does not pass x.
 func textPassesThroughCall(value, name string) bool {
-	word := regexp.MustCompile(`(?:^|[^\w$])\$?` + regexp.QuoteMeta(name) + `\b`)
 	receiver := regexp.MustCompile(`^\$?` + regexp.QuoteMeta(name) + `\s*(?:\.|->)\s*[A-Za-z_]\w*\s*\(`)
 	if receiver.MatchString(value) {
 		return true
@@ -586,11 +763,22 @@ func textPassesThroughCall(value, name string) bool {
 				depth--
 			}
 			if depth == 0 {
-				if word.MatchString(value[open+1 : end]) {
+				if usesVariable(value[open+1:end], name) {
 					return true
 				}
 				break
 			}
+		}
+	}
+	return false
+}
+
+// usesVariable reports whether code uses the variable name itself, not a
+// member named like it.
+func usesVariable(code, name string) bool {
+	for _, span := range identifierSpans(code) {
+		if strings.TrimLeft(code[span[0]:span[1]], "$") == name && accessBefore(code, span[0]) < 0 {
+			return true
 		}
 	}
 	return false
