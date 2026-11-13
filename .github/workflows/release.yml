@@ -249,3 +249,17 @@ jobs:
             scripts/install.sh
             scripts/install.ps1
           generate_release_notes: true
+
+  # Moves the v1 git tag and the :v1 image to this release, so
+  # dodobrands/aitriage@v1 runs the newest stable release. Pre-releases
+  # (v1.15.0-rc.1) are left alone.
+  promote-major:
+    name: Promote major tag
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/promote-major.yml
+    with:
+      tag: ${{ github.ref_name }}

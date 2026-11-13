@@ -4,8 +4,9 @@ name: Publish Docker Image (GHCR)
 # GitHub Container Registry. The consumer-facing Docker Action (action.yml)
 # then pulls a pre-built image instead of rebuilding the Dockerfile on every
 # run, cutting Action runtime from ~15 min to a few seconds. The Action and
-# development CLI builds use the :v1 tag, which this workflow never moves (see
-# the metadata step); released CLIs use the exact v<version> tag pushed here.
+# development CLI builds use the :v1 tag. This workflow never moves it:
+# promote-major.yml does, together with the v1 git tag, once the release is
+# published. Released CLIs use the exact v<version> tag pushed here.
 
 on:
   push:
@@ -55,7 +56,8 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # The Action's :v1 channel is advanced only by an explicit owner decision.
+            # :v1 is not set here: promote-major.yml moves it with the v1 git tag
+            # after the release is published.
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-,enable=${{ github.event_name == 'workflow_dispatch' }}
             type=semver,pattern=v{{version}}
