@@ -298,7 +298,8 @@ func generateAitrageConfig(stacks []detectedStack) string {
 	sb.WriteString("# Verdicts differ between models, and so does fail_on: confirmed: pin one model.\n")
 	sb.WriteString("llm:\n")
 	sb.WriteString("  provider: \"\"  # auto-detected from env\n")
-	sb.WriteString("  model: \"\"\n\n")
+	sb.WriteString("  model: \"\"\n")
+	sb.WriteString("  # temperature: 0  # 0 to 2, or default to send none; 0 keeps verdicts repeatable\n\n")
 
 	// CI section
 	sb.WriteString("# CI/CD settings\n")

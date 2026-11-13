@@ -69,6 +69,10 @@ type LLMConfig struct {
 	Timeout         int    `yaml:"timeout"`
 	DisableThinking bool   `yaml:"disable_thinking"` // Send thinking:{type:disabled} for reasoning models
 	BatchSize       int    `yaml:"batch_size,omitempty"`
+	// Temperature is the sampling temperature: a number from 0 to 2, or
+	// "default" to send none. Empty means the AITriage default, 0. The LLM
+	// client validates it and leaves it out for models that take none.
+	Temperature string `yaml:"temperature,omitempty"`
 }
 
 type CustomRule struct {
@@ -182,6 +186,11 @@ func applyEnvLLMConfig(llm *LLMConfig) {
 	// Sends {"thinking":{"type":"disabled"}} in the request body.
 	if v := strings.TrimSpace(os.Getenv("AITRIAGE_LLM_DISABLE_THINKING")); v != "" {
 		llm.DisableThinking = v == "1" || strings.EqualFold(v, "true")
+	}
+	// Sampling temperature, checked by the LLM client: a number from 0 to 2,
+	// or "default" to send none.
+	if v := strings.TrimSpace(os.Getenv("AITRIAGE_LLM_TEMPERATURE")); v != "" {
+		llm.Temperature = v
 	}
 	// Request timeout (seconds). Prevents hung reasoning calls from blocking forever.
 	if v := strings.TrimSpace(os.Getenv("AITRIAGE_LLM_TIMEOUT")); v != "" {

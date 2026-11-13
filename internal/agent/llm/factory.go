@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -28,9 +30,21 @@ Or add to .aitriage.yaml:
 
 // openAIClient wraps the official openai-go SDK.
 type openAIClient struct {
-	client openai.Client
-	cfg    Config
+	client      openai.Client
+	cfg         Config
+	temperature *temperatureControl
 }
+
+// openAIModel returns the model an OpenAI-compatible request names.
+func openAIModel(configured string) string {
+	if configured == "" {
+		return string(openai.ChatModelGPT4o)
+	}
+	return configured
+}
+
+// EffectiveTemperature implements TemperatureReporter.
+func (c *openAIClient) EffectiveTemperature() string { return c.temperature.effective() }
 
 func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var oaiMessages []openai.ChatCompletionMessageParamUnion
@@ -45,10 +59,7 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 		}
 	}
 
-	model := c.cfg.Model
-	if model == "" {
-		model = string(openai.ChatModelGPT4o)
-	}
+	model := openAIModel(c.cfg.Model)
 
 	// Build per-request options for reasoning-model control.
 	var reqOpts []openai_option.RequestOption
@@ -59,10 +70,19 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 		reqOpts = append(reqOpts, openai_option.WithJSONSet("thinking", map[string]string{"type": "disabled"}))
 	}
 
-	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Messages: oaiMessages,
 		Model:    openai.ChatModel(model),
-	}, reqOpts...)
+	}
+	sent := params
+	temperature := c.temperature.next()
+	if temperature != nil {
+		sent.Temperature = openai.Float(*temperature)
+	}
+	completion, err := c.client.Chat.Completions.New(ctx, sent, reqOpts...)
+	if err != nil && temperature != nil && c.temperature.refused(err) {
+		completion, err = c.client.Chat.Completions.New(ctx, params, reqOpts...)
+	}
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("openai chat error: %w", err)
 	}
@@ -78,9 +98,31 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 
 // anthropicClientWrapper wraps the official anthropic-sdk-go SDK.
 type anthropicClientWrapper struct {
-	client anthropic.Client
-	cfg    Config
+	client      anthropic.Client
+	cfg         Config
+	temperature *temperatureControl
 }
+
+// newAnthropicClient builds the Anthropic client from cfg; opts carry the
+// credentials and transport settings.
+func newAnthropicClient(cfg Config, log io.Writer, opts ...option.RequestOption) *anthropicClientWrapper {
+	return &anthropicClientWrapper{
+		client:      anthropic.NewClient(opts...),
+		cfg:         cfg,
+		temperature: newTemperatureControl(cfg, anthropicModel(cfg.Model), log),
+	}
+}
+
+// anthropicModel returns the model an Anthropic request names.
+func anthropicModel(configured string) string {
+	if configured == "" {
+		return anthropic.ModelClaudeSonnet4_5
+	}
+	return configured
+}
+
+// EffectiveTemperature implements TemperatureReporter.
+func (c *anthropicClientWrapper) EffectiveTemperature() string { return c.temperature.effective() }
 
 func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var systemBlocks []anthropic.TextBlockParam
@@ -102,10 +144,7 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		}
 	}
 
-	model := c.cfg.Model
-	if model == "" {
-		model = anthropic.ModelClaudeSonnet4_5
-	}
+	model := anthropicModel(c.cfg.Model)
 
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
@@ -117,7 +156,12 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		params.System = systemBlocks
 	}
 
-	message, err := c.client.Messages.New(ctx, params)
+	sent := params
+	withTemperature := setAnthropicTemperature(&sent, c.temperature.next())
+	message, err := c.client.Messages.New(ctx, sent)
+	if err != nil && withTemperature && c.temperature.refused(err) {
+		message, err = c.client.Messages.New(ctx, params)
+	}
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("anthropic chat error: %w", err)
 	}
@@ -175,6 +219,17 @@ func defaultedTimeout(seconds int) int {
 // All clients are automatically wrapped with RetryClient (3 retries,
 // exponential backoff) to handle transient 429/5xx/network errors.
 func NewClient(cfg Config) (Client, error) {
+	inner, err := newProviderClient(cfg, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	// Wrap with retry logic: 3 retries with exponential backoff.
+	return NewRetryClient(inner, 3), nil
+}
+
+// newProviderClient builds the provider client NewClient wraps. Notices about
+// the temperature go to log.
+func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 	var inner Client
 	var err error
 
@@ -189,10 +244,7 @@ func NewClient(cfg Config) (Client, error) {
 		if cfg.Timeout > 0 {
 			opts = append(opts, option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
-		inner = &anthropicClientWrapper{
-			client: anthropic.NewClient(opts...),
-			cfg:    cfg,
-		}
+		inner = newAnthropicClient(cfg, log, opts...)
 
 	case "gemini":
 		// Gemini uses the OpenAI-compatible API.
@@ -216,8 +268,9 @@ func NewClient(cfg Config) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client: openai.NewClient(opts...),
-			cfg:    Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
+			client:      openai.NewClient(opts...),
+			cfg:         Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
+			temperature: newTemperatureControl(cfg, model, log),
 		}
 
 	case "openai", "ollama", "groq":
@@ -235,8 +288,9 @@ func NewClient(cfg Config) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client: openai.NewClient(opts...),
-			cfg:    cfg,
+			client:      openai.NewClient(opts...),
+			cfg:         cfg,
+			temperature: newTemperatureControl(cfg, openAIModel(cfg.Model), log),
 		}
 
 	case "":
@@ -249,7 +303,5 @@ func NewClient(cfg Config) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Wrap with retry logic: 3 retries with exponential backoff.
-	return NewRetryClient(inner, 3), nil
+	return inner, nil
 }

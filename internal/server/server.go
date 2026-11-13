@@ -82,11 +82,12 @@ func NewServer(hostPrefix string, db *sql.DB) *Server {
 	cfg := config.LoadConfig(".")
 	if cfg.LLM.APIKey != "" {
 		client, llmErr := llm.NewClient(llm.Config{
-			Provider: cfg.LLM.Provider,
-			Model:    cfg.LLM.Model,
-			APIKey:   cfg.LLM.APIKey,
-			BaseURL:  cfg.LLM.BaseURL,
-			Timeout:  cfg.LLM.Timeout,
+			Provider:    cfg.LLM.Provider,
+			Model:       cfg.LLM.Model,
+			APIKey:      cfg.LLM.APIKey,
+			BaseURL:     cfg.LLM.BaseURL,
+			Timeout:     cfg.LLM.Timeout,
+			Temperature: cfg.LLM.Temperature,
 		})
 		if llmErr == nil {
 			llmCl = client
@@ -585,11 +586,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	// Initialize LLM if config is available
 	if rich.Report.Config != nil {
 		s.initializeLLMClient(llm.Config{
-			Provider: rich.Report.Config.LLM.Provider,
-			Model:    rich.Report.Config.LLM.Model,
-			APIKey:   rich.Report.Config.LLM.APIKey,
-			BaseURL:  rich.Report.Config.LLM.BaseURL,
-			Timeout:  rich.Report.Config.LLM.Timeout,
+			Provider:    rich.Report.Config.LLM.Provider,
+			Model:       rich.Report.Config.LLM.Model,
+			APIKey:      rich.Report.Config.LLM.APIKey,
+			BaseURL:     rich.Report.Config.LLM.BaseURL,
+			Timeout:     rich.Report.Config.LLM.Timeout,
+			Temperature: rich.Report.Config.LLM.Temperature,
 		})
 	}
 

@@ -201,7 +201,12 @@ func RunState(ctx context.Context, state *graph.AgentState, client llm.Client) (
 		return nil, fmt.Errorf("pipeline: nil llm client")
 	}
 
-	if err := graph.Run(ctx, state, client); err != nil {
+	// The temperature joins the verdict cache key before the run and is
+	// recorded again after it, in case the endpoint refused it mid-run.
+	state.RecordLLMTemperature(client)
+	err := graph.Run(ctx, state, client)
+	state.RecordLLMTemperature(client)
+	if err != nil {
 		return nil, err
 	}
 

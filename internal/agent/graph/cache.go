@@ -51,6 +51,7 @@ type verdictCacheKeyContext struct {
 	Model           string   `json:"model"`
 	BaseURLHash     string   `json:"base_url_hash"`
 	DisableThinking bool     `json:"disable_thinking,omitempty"`
+	Temperature     string   `json:"temperature,omitempty"` // what the client sends when the run starts
 	AITriageVersion string   `json:"aitriage_version"`
 	PromptVersion   string   `json:"prompt_version"`
 	RulesDigest     string   `json:"rules_digest"`
@@ -92,6 +93,7 @@ func withVerdictCacheLLMIdentity(state *AgentState) verdictCacheOption {
 			ctx.BaseURLHash = hashCacheField(v)
 		}
 		ctx.DisableThinking = state.LLMDisableThinking
+		ctx.Temperature = strings.TrimSpace(state.LLMTemperature)
 		ctx.Language = prompts.NormalizeLanguage(state.Language)
 	}
 }

@@ -70,6 +70,9 @@ type LLMUsageArtifact struct {
 	Total                llm.Usage            `json:"total"`
 	Stages               map[string]llm.Usage `json:"stages,omitempty"`
 	CacheTelemetryStatus string               `json:"cache_telemetry_status"`
+	// Temperature is the sampling temperature the requests carried, such as
+	// "0", or "provider default" when they carried none.
+	Temperature string `json:"temperature,omitempty"`
 }
 
 // TriagedFinding pairs one original scanner finding with its one validated
@@ -174,6 +177,18 @@ func buildClassificationStats(state *AgentState) ClassificationStats {
 	return stats
 }
 
+// RecordLLMTemperature notes the temperature client sends, for the verdict
+// cache key and llm_usage in triage-findings.json. Callers of Run record it
+// before the run and again after it: an endpoint that refuses the temperature
+// makes the client drop it mid-run, and the record must show what the
+// requests carried, while the cache key keeps the starting value, which is
+// the same on every run against that endpoint.
+func (s *AgentState) RecordLLMTemperature(client llm.Client) {
+	if s != nil {
+		s.LLMTemperature = llm.EffectiveTemperature(client)
+	}
+}
+
 func buildLLMUsageArtifact(state *AgentState) LLMUsageArtifact {
 	stages := make(map[string]llm.Usage, len(state.StageUsage))
 	for name, usage := range state.StageUsage {
@@ -195,5 +210,6 @@ func buildLLMUsageArtifact(state *AgentState) LLMUsageArtifact {
 		Total:                state.TotalUsage,
 		Stages:               stages,
 		CacheTelemetryStatus: status,
+		Temperature:          state.LLMTemperature,
 	}
 }

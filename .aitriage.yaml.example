@@ -20,6 +20,12 @@ llm:
   # Weaker models drop items from long requests; such batches are retried in halves.
   # batch_size: 40
 
+  # Sampling temperature, 0 to 2 (default 0, so the same finding gets the same
+  # verdict on every run), or "default" to send none and keep the provider's own.
+  # Models that take no temperature get none: OpenAI o-series and GPT-5, Claude
+  # models after Opus 4.6. AITRIAGE_LLM_TEMPERATURE and --temperature win.
+  # temperature: 0
+
 # ─── Ignore Rules ─────────────────────────────────────────────────────────────
 ignore:
   # Rule IDs dropped from every source: built-in rules and heuristics, Semgrep,
