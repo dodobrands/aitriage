@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,13 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		return ErrNoLLMClient
 	}
 
+	// With no model configured, say which default judges the findings, and
+	// warn when that default is about to change; the summary repeats the
+	// warning.
+	if warning := llm.PrintDefaultModelNotices(os.Stderr, llmClient); warning != "" && !slices.Contains(state.DeprecationWarnings, warning) {
+		state.DeprecationWarnings = append(state.DeprecationWarnings, warning)
+	}
+
 	// Step 0: Gather repository context (reads files from disk, no LLM)
 	fmt.Fprintf(os.Stderr, "📂 Gathering Repository Context...\n")
 	reportRunwayProgress(state, 1, "preparing_context")
@@ -64,6 +72,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.TriageFailureReason = incomplete.Reason
 		state.TriageFailureStage = incomplete.Stage
 		state.TriageFailureCause = incomplete.Cause
+		state.TriageDeclined = incomplete.Declined
 		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
 			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
 	} else {
@@ -1194,6 +1203,9 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		if failure.Status == stageStatusDegraded {
 			_, _ = fmt.Fprintf(sb, "> **Note:** %s.\n\n", failure.Reason)
 		}
+	}
+	for _, warning := range state.DeprecationWarnings {
+		_, _ = fmt.Fprintf(sb, "> **Warning:** %s\n\n", warning)
 	}
 
 	verdict := "✅ PASSED"

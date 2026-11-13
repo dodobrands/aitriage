@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,8 +13,11 @@ const (
 	anthropicReplyTokens = 8192
 	// anthropicThinkingTokens is the max_tokens of a request to a model that
 	// thinks before it answers. Thinking counts toward max_tokens even when
-	// its text is not returned, so the reply keeps its 8192 and thinking gets
-	// about as much again, which still suits a request that is not streamed.
+	// its text is not returned, and thinking and reply share the limit: the
+	// model decides how long it thinks, so long thinking leaves the reply
+	// less than 8192 tokens, or none. Twice the old limit still suits a
+	// request that is not streamed; a reply that runs into it is no answer
+	// (ErrTruncated), never a cut-off one.
 	anthropicThinkingTokens = 16000
 )
 
@@ -53,29 +55,36 @@ func anthropicThinksByDefault(model string) bool {
 	return false
 }
 
+// stopReasonContextWindowExceeded is the stop_reason of a reply that ran into
+// the model's context window, which cuts the answer off like max_tokens.
+const stopReasonContextWindowExceeded anthropic.StopReason = "model_context_window_exceeded"
+
 // anthropicAnswer returns the answer a reply carries: the text of its text
 // blocks, in order. A model that thinks by default puts thinking blocks
 // before the text; they are not the answer (their text is even empty unless
 // a request asks for summaries), so they are skipped, as is any other kind
-// of block. A declined request is a *RefusalError whatever content came with
-// it, partial text included, and a reply with blocks but no text, such as
-// thinking that ran into max_tokens, matches ErrNoAnswer.
+// of block. A reply without a complete answer is an error that matches
+// ErrNoAnswer: a declined request is a *RefusalError whatever content came
+// with it, partial text included; a reply cut off at the token limit matches
+// ErrTruncated, since its text is an unfinished answer; and a reply with no
+// blocks, or whose text is empty or only whitespace, carries nothing to use.
+// An empty answer must never reach a caller: a conversation would send it
+// back as an empty assistant turn, which the API rejects.
 func anthropicAnswer(message *anthropic.Message, model string) (string, error) {
-	if message.StopReason == anthropic.StopReasonRefusal {
+	switch message.StopReason {
+	case anthropic.StopReasonRefusal:
 		return "", fmt.Errorf("anthropic chat error: %w", &RefusalError{Model: model, Category: string(message.StopDetails.Category)})
-	}
-	if len(message.Content) == 0 {
-		return "", errors.New("empty response from anthropic")
+	case anthropic.StopReasonMaxTokens, stopReasonContextWindowExceeded:
+		return "", fmt.Errorf("anthropic chat error: %s stopped before it finished its answer (stop_reason %s, max_tokens %d): %w",
+			model, message.StopReason, anthropicMaxTokens(model), ErrTruncated)
 	}
 	var text strings.Builder
-	found := false
 	for _, block := range message.Content {
 		if block.Type == "text" {
 			text.WriteString(block.Text)
-			found = true
 		}
 	}
-	if !found {
+	if strings.TrimSpace(text.String()) == "" {
 		stop := string(message.StopReason)
 		if stop == "" {
 			stop = "none"

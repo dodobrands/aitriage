@@ -60,6 +60,13 @@ func (r *RetryClient) EffectiveTemperature() string { return EffectiveTemperatur
 // RequestModel reports the provider and model of the wrapped client.
 func (r *RetryClient) RequestModel() (provider, model string) { return RequestModel(r.inner) }
 
+// UsesDefaultModel reports whether the wrapped client names the provider's
+// default model.
+func (r *RetryClient) UsesDefaultModel() bool {
+	d, ok := r.inner.(DefaultModelReporter)
+	return ok && d.UsesDefaultModel()
+}
+
 // retryDelay returns an exponential backoff duration with jitter.
 // Base delay: 1s, factor: 2x. Max delay capped at 30s.
 func retryDelay(attempt int) time.Duration {

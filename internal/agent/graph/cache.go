@@ -78,17 +78,21 @@ type verdictCacheKeyContext struct {
 type verdictCacheOption func(*verdictCacheKeyContext)
 
 // withVerdictCacheLLMIdentity pins the cache namespace to the provider/model
-// that actually serves the run. Env vars stay as fallback for callers that do
+// that actually serves the run: the ones the requests name, which the client
+// reported before the run (RecordLLMSettings), else the configured ones. With
+// no model configured, the configured identity would read "default" whatever
+// default the client applies, and verdicts of one default model would be
+// served as those of the next. Env vars stay as fallback for callers that do
 // not resolve an identity (empty fields never override).
 func withVerdictCacheLLMIdentity(state *AgentState) verdictCacheOption {
 	return func(ctx *verdictCacheKeyContext) {
 		if state == nil {
 			return
 		}
-		if v := strings.TrimSpace(state.LLMProvider); v != "" {
+		if v := strings.TrimSpace(firstNonEmpty(state.LLMRequestProvider, state.LLMProvider)); v != "" {
 			ctx.Provider = v
 		}
-		if v := strings.TrimSpace(state.LLMModel); v != "" {
+		if v := strings.TrimSpace(firstNonEmpty(state.LLMRequestModel, state.LLMModel)); v != "" {
 			ctx.Model = v
 		}
 		if v := strings.TrimSpace(state.LLMBaseURL); v != "" {

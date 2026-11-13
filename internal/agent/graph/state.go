@@ -38,8 +38,9 @@ type AgentState struct {
 	// LLMTemperature is the temperature the client sends ("0", or "provider
 	// default" when it sends none). LLMRequestProvider and LLMRequestModel
 	// are the provider and model its requests name, the model after defaults;
-	// they go to the run record only, never into a cache key.
-	// RecordLLMSettings sets all three from the client.
+	// the run record and the verdict cache key take them over the configured
+	// identity, so verdicts of one default model are never served as those
+	// of another. RecordLLMSettings sets all three from the client.
 	LLMProvider        string
 	LLMModel           string
 	LLMBaseURL         string
@@ -97,11 +98,18 @@ type AgentState struct {
 	TriageFailureStage  string // "threat_model" | "classification"
 	// TriageFailureCause is TriageFailureCauseProvider (the provider failed)
 	// or TriageFailureCauseNoVerdict (no reply carried a verdict for some
-	// findings after every retry).
+	// findings after every retry, or the model declined them).
 	TriageFailureCause string
+	// TriageDeclined counts the findings without a verdict that the model
+	// declined to classify (stop_reason refusal) when sent on their own.
+	TriageDeclined int
 	// StageFailures lists LLM stages that degraded or fell back to a
 	// deterministic rendering instead of failing the run.
 	StageFailures []StageFailure
+	// DeprecationWarnings are warnings about a setting the run relies on
+	// that a later release changes, such as a default model; they are
+	// printed when the run starts and repeated in the summary.
+	DeprecationWarnings []string
 
 	// Suppressions summarises the project decisions (.aitriage-suppressions.json
 	// and the audit log) applied before triage. Suppressed findings are never
@@ -312,10 +320,10 @@ type FindingDisposition struct {
 	// this finding verdicts of its own and validation rejected each of them,
 	// or the finding was over the LLM budget) | "triage-failed" (the provider
 	// failed, or no reply carried a verdict for the finding after retries:
-	// left out, malformed or empty) | "suppressed" (a recorded project
-	// decision) | "network-probe" (describes the scanning host, never scored).
-	// It is decided per finding, never by what other findings of the same
-	// request got.
+	// left out, malformed or empty, or declined by the model when sent on its
+	// own) | "suppressed" (a recorded project decision) | "network-probe"
+	// (describes the scanning host, never scored). It is decided per finding,
+	// never by what other findings of the same request got.
 	DispositionSource string `json:"disposition_source,omitempty"`
 	// Fingerprint is the stable content hash used for dedup/caching.
 	Fingerprint string `json:"fingerprint,omitempty"`

@@ -24,7 +24,7 @@ func TestRecordLLMSettings(t *testing.T) {
 		t.Fatalf("recorded %q %q %q, want the client's gemini, gemini-2.5-flash, 0.4", state.LLMRequestProvider, state.LLMRequestModel, state.LLMTemperature)
 	}
 	if state.LLMProvider != "gemini" || state.LLMModel != "" {
-		t.Fatalf("the cache-key identity changed to %q %q", state.LLMProvider, state.LLMModel)
+		t.Fatalf("the configured identity changed to %q %q", state.LLMProvider, state.LLMModel)
 	}
 	// A client that sets no temperature and does not know its model, such as
 	// a host agent, leaves the provider default and the configured identity.

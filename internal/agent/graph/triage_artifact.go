@@ -188,14 +188,15 @@ func buildClassificationStats(state *AgentState) ClassificationStats {
 	return stats
 }
 
-// RecordLLMSettings notes what client's requests carry: the temperature, for
-// the verdict cache key and llm_usage in triage-findings.json, and the
-// provider and model, for llm_usage only. Callers of Run record them before
-// the run and again after it: an endpoint that refuses the temperature makes
-// the client drop it mid-run, and the record must show what the requests
-// carried, while the cache key keeps the starting value, which is the same on
-// every run against that endpoint. A client that does not know its model, such
-// as a host agent, leaves the configured identity in the record.
+// RecordLLMSettings notes what client's requests carry, for the verdict cache
+// key and llm_usage in triage-findings.json: the temperature, and the
+// provider and model after the client's defaults. Callers of Run record them
+// before the run and again after it: an endpoint that refuses the temperature
+// makes the client drop it mid-run, and the record must show what the
+// requests carried, while the cache key keeps the starting value, which is
+// the same on every run against that endpoint. A client that does not know
+// its model, such as a host agent, leaves the configured identity in the
+// record and the key.
 func (s *AgentState) RecordLLMSettings(client llm.Client) {
 	if s == nil {
 		return
