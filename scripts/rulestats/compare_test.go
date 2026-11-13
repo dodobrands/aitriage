@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,14 +133,15 @@ func TestCompareNeedsAnArtifactOnEachSide(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []struct{ before, want string }{
-		{filepath.Join(dir, "empty"), "old set: no triage-findings.json found"},
-		{filepath.Join(dir, "absent"), "no such file or directory"},
-	} {
-		err := run(&bytes.Buffer{}, options{format: "md", compare: true}, []string{c.before, filepath.Join(dir, "new")})
-		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("old set %s: err = %v, want %q", filepath.Base(c.before), err, c.want)
-		}
+	err := run(&bytes.Buffer{}, options{format: "md", compare: true}, []string{filepath.Join(dir, "empty"), filepath.Join(dir, "new")})
+	if want := "old set: no triage-findings.json found"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("old set empty: err = %v, want %q", err, want)
+	}
+	// The operating system words a missing path differently (Windows: "The
+	// system cannot find the file specified"), so match the error, not its text.
+	err = run(&bytes.Buffer{}, options{format: "md", compare: true}, []string{filepath.Join(dir, "absent"), filepath.Join(dir, "new")})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("old set absent: err = %v, want a not-exist error", err)
 	}
 }
 
