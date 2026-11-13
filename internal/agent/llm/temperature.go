@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -267,14 +268,28 @@ func geminiTakesNoTemperature(model string) bool {
 	return err == nil && major >= 3
 }
 
-// baseModelName lowercases a model name and drops a gateway prefix such as
-// "openai/", so the rules hold however the model is reached.
+// bedrockAnthropicPrefix matches how Amazon Bedrock starts the name of a Claude
+// model: "anthropic.", after the region of an inference profile if there is
+// one ("us.", "eu.", "global.", "us-gov.").
+var bedrockAnthropicPrefix = regexp.MustCompile(`^(?:[a-z0-9-]+\.)?anthropic\.`)
+
+// bedrockVersionSuffix matches the version Amazon Bedrock ends a model name
+// with: "-v1:0".
+var bedrockVersionSuffix = regexp.MustCompile(`-v\d+:\d+$`)
+
+// baseModelName lowercases a model name and drops what the route to the model
+// adds to it, so the rules hold however the model is reached: a gateway
+// prefix such as "openai/" or "bedrock/", and Amazon Bedrock's "anthropic."
+// with its region and version ("us.anthropic.claude-sonnet-5-5-v1:0" is
+// claude-sonnet-5-5). A Vertex AI date ("claude-sonnet-4-5@20250929") stays:
+// the family checks stop at the "@".
 func baseModelName(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if i := strings.LastIndexByte(m, '/'); i >= 0 {
 		m = m[i+1:]
 	}
-	return m
+	m = bedrockAnthropicPrefix.ReplaceAllString(m, "")
+	return bedrockVersionSuffix.ReplaceAllString(m, "")
 }
 
 // anthropicTakesTemperature reports whether a Claude model accepts a

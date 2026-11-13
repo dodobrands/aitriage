@@ -401,6 +401,52 @@ func TestR1StyleReasoningModelsGetNoTemperature(t *testing.T) {
 	}
 }
 
+// Amazon Bedrock names a Claude model with "anthropic.", the region of an
+// inference profile and a version; reached by that name, also behind a
+// gateway prefix, a model follows the rules of its family: Claude 5 takes no
+// temperature and thinks by default, Claude 4.x keeps its temperature and
+// max_tokens. Vertex AI's dated names keep working.
+func TestBedrockClaudeNamesFollowTheirFamily(t *testing.T) {
+	for _, tc := range []struct {
+		model       string
+		temperature bool // takes a temperature
+		thinks      bool // thinks by default, so max_tokens is 16000
+	}{
+		{"anthropic.claude-sonnet-5-5", false, true},
+		{"us.anthropic.claude-sonnet-5-5-v1:0", false, true},
+		{"global.anthropic.claude-sonnet-5-5", false, true},
+		{"bedrock/global.anthropic.claude-sonnet-5-5", false, true},
+		{"eu.anthropic.claude-opus-5-5-v1:0", false, true},
+		{"anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"global.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-20250514-v1:0", true, false},
+		{"apac.anthropic.claude-haiku-4-5-20251001-v1:0", true, false},
+		{"anthropic.claude-opus-4-6-v1", true, false},
+		{"us-gov.anthropic.claude-3-7-sonnet-20250219-v1:0", true, false},
+		{"anthropic.claude-opus-4-v1:0", true, false},
+		{"global.anthropic.claude-opus-4-7", false, false},
+		{"claude-sonnet-4-5@20250929", true, false},
+		{"claude-opus-4@20250514", true, false},
+		{"claude-3-5-sonnet-v2@20241022", true, false},
+	} {
+		if got := anthropicTakesTemperature(tc.model); got != tc.temperature {
+			t.Errorf("anthropicTakesTemperature(%s) = %v, want %v", tc.model, got, tc.temperature)
+		}
+		if got := temperatureUnsupported("openai", tc.model, 0) == ""; got != tc.temperature {
+			t.Errorf("behind a gateway %s takes a temperature: %v, want %v", tc.model, got, tc.temperature)
+		}
+		wantTokens := int64(anthropicReplyTokens)
+		if tc.thinks {
+			wantTokens = anthropicThinkingTokens
+		}
+		if got := anthropicThinksByDefault(tc.model); got != tc.thinks || anthropicMaxTokens(tc.model) != wantTokens {
+			t.Errorf("%s thinks by default: %v, max_tokens %d; want %v, %d", tc.model, got, anthropicMaxTokens(tc.model), tc.thinks, wantTokens)
+		}
+	}
+}
+
 // Clients name the provider and the model their requests carry, the model
 // after the client's own defaults.
 func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
@@ -476,6 +522,8 @@ func TestAnthropicRequestsCarryTheTemperature(t *testing.T) {
 		{model: "claude-sonnet-4-5", setting: "default", want: absent},
 		{model: "claude-opus-4-7", want: absent},
 		{model: "claude-opus-4-7", setting: "0.2", want: absent, warns: true},
+		{model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", want: "0"},
+		{model: "global.anthropic.claude-sonnet-5-5", want: absent},
 	} {
 		f := answering(t, anthropicReply)
 		var log bytes.Buffer
@@ -497,6 +545,8 @@ func TestClaudeBehindAGatewayFollowsClaudeRules(t *testing.T) {
 	for _, tc := range []struct{ model, want string }{
 		{model: "anthropic/claude-sonnet-4.5", want: "0"},
 		{model: "anthropic/claude-opus-4.7", want: absent},
+		{model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", want: "0"},
+		{model: "bedrock/global.anthropic.claude-sonnet-5-5", want: absent},
 	} {
 		f := answering(t, openAIReply)
 		c := openAICompatible(t, Config{Provider: "openai", Model: tc.model}, f, io.Discard)
