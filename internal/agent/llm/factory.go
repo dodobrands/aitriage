@@ -106,15 +106,20 @@ type anthropicClientWrapper struct {
 	client      anthropic.Client
 	cfg         Config
 	temperature *temperatureControl
+	log         io.Writer // a declined request is reported here
 }
 
 // newAnthropicClient builds the Anthropic client from cfg; opts carry the
 // credentials and transport settings.
 func newAnthropicClient(cfg Config, log io.Writer, opts ...option.RequestOption) *anthropicClientWrapper {
+	if log == nil {
+		log = io.Discard
+	}
 	return &anthropicClientWrapper{
 		client:      anthropic.NewClient(opts...),
 		cfg:         cfg,
 		temperature: newTemperatureControl(cfg, anthropicModel(cfg.Model), log),
+		log:         log,
 	}
 }
 
@@ -156,9 +161,15 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 
 	model := anthropicModel(c.cfg.Model)
 
+	// No thinking parameter: each model runs its own default, adaptive
+	// thinking on the Claude 5 generation (see anthropicAnswer), so a model
+	// set in llm.model gets the same request as the default. Turning thinking
+	// off would take {"type": "between_tools"}, which claude-sonnet-5-5 alone
+	// accepts: any other model, or the same model under a gateway's name for
+	// it, would answer 400.
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
-		MaxTokens: 8192,
+		MaxTokens: anthropicMaxTokens(model),
 		Messages:  anthropicMessages,
 	}
 
@@ -176,13 +187,16 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		return "", Usage{}, fmt.Errorf("anthropic chat error: %w", err)
 	}
 
-	if len(message.Content) == 0 {
-		return "", Usage{}, fmt.Errorf("empty response from anthropic")
-	}
-
 	usage := usageFromAnthropic(message.Usage)
-
-	return message.Content[0].Text, usage, nil
+	answer, err := anthropicAnswer(message, model)
+	if err != nil {
+		var refusal *RefusalError
+		if errors.As(err, &refusal) {
+			_, _ = fmt.Fprintf(c.log, "   ⚠️ %v; the request counts as failed\n", refusal)
+		}
+		return "", usage, err
+	}
+	return answer, usage, nil
 }
 
 func usageFromOpenAI(u openai.CompletionUsage) Usage {

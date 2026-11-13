@@ -560,6 +560,12 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 	}
 
 	response, u, err := llmClient.Chat(ctx, messages)
+	if errors.Is(err, llm.ErrNoAnswer) {
+		// The provider answered without an answer, such as a request the
+		// model declined: a reply that classifies nothing, retried in smaller
+		// requests like one that cannot be parsed, not a provider failure.
+		return nil, "", u, fmt.Errorf("%w: %w", errThreatModelParse, err)
+	}
 	if err != nil {
 		return nil, "", u, fmt.Errorf("classification LLM call failed: %w", err)
 	}
