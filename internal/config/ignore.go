@@ -667,20 +667,14 @@ func ParseRuleRef(entry string) RuleRef {
 }
 
 // Matches compares rule ids whole and case-insensitively. A qualified reference
-// also requires the finding to answer to its source.
+// also requires the finding to answer to its source. A Trivy check matches
+// under every spelling Trivy has used for it, so "KSV012", "KSV-0012" and
+// "AVD-KSV-0012" name one check (see NormalizeTrivyCheckID).
 func (r RuleRef) Matches(ruleID string, sources ...string) bool {
-	if r.ID == "" || !strings.EqualFold(r.ID, strings.TrimSpace(ruleID)) {
+	if r.ID == "" || !sameRuleID(r.ID, ruleID, sources) {
 		return false
 	}
-	if r.Source == "" {
-		return true
-	}
-	for _, source := range sources {
-		if strings.EqualFold(r.Source, strings.TrimSpace(source)) {
-			return true
-		}
-	}
-	return false
+	return r.Source == "" || answersTo(sources, r.Source)
 }
 
 // RuleMatcher applies ignore.rules to findings from any source.

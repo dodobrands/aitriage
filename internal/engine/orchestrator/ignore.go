@@ -9,6 +9,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/dodobrands/aitriage/internal/config"
 	"github.com/dodobrands/aitriage/internal/engine/suppression"
+	"github.com/dodobrands/aitriage/internal/scanner/deployaudit"
 	"github.com/dodobrands/aitriage/internal/scanner/external"
 )
 
@@ -88,11 +89,17 @@ func applyProjectSuppressions(result *llm.RichScanResult) {
 
 	keptDeploy := result.Deploy[:0]
 	for _, finding := range result.Deploy {
-		if entry, ok := rules.Match(finding.Issue, config.DeployRuleSources...); ok {
+		// A finding whose issue was split from another one still answers to
+		// the id it had before (see deployaudit.PreviousIssue).
+		ids := []string{finding.Issue}
+		if previous := deployaudit.PreviousIssue(finding.Issue); previous != "" {
+			ids = append(ids, previous)
+		}
+		if entry, ok := matchAny(rules, ids, config.DeployRuleSources...); ok {
 			ignored[entry]++
 			continue
 		}
-		if files.suppressed(finding.File, finding.Line, finding.Issue, config.DeployRuleSources...) {
+		if files.suppressedAny(finding.File, finding.Line, ids, config.DeployRuleSources...) {
 			inline["deploy:"+finding.Issue]++
 			continue
 		}
@@ -153,6 +160,28 @@ const maxInlineScanBytes = 10 << 20
 type sourceFiles struct {
 	root  string
 	cache map[string][]byte
+}
+
+// matchAny returns the ignore.rules entry that silences a finding reported
+// under any of ids.
+func matchAny(rules *config.RuleMatcher, ids []string, sources ...string) (string, bool) {
+	for _, id := range ids {
+		if entry, ok := rules.Match(id, sources...); ok {
+			return entry, true
+		}
+	}
+	return "", false
+}
+
+// suppressedAny reports whether an inline directive silences a finding
+// reported under any of ids.
+func (s *sourceFiles) suppressedAny(file string, line int, ids []string, sources ...string) bool {
+	for _, id := range ids {
+		if s.suppressed(file, line, id, sources...) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *sourceFiles) suppressed(file string, line int, ruleID string, sources ...string) bool {
