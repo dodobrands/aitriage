@@ -1,6 +1,10 @@
 package healthcheck
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // One scanner report is IaC only with the scanner's own marker, and code
 // quality only by its rule's subcategory or a listed check of a known
@@ -147,5 +151,79 @@ func TestQualityFindingsPolicyValues(t *testing.T) {
 	}
 	if got := NormalizePolicy(Policy{}).QualityFindings; got != QualityFindingsReport {
 		t.Errorf("default quality_findings = %q, want report", got)
+	}
+}
+
+// NeedsReviewPenalty is the share of the penalty unreviewed findings cause.
+func TestEvaluateAttributesThePenaltyToUnreviewedFindings(t *testing.T) {
+	res := Evaluate(Input{Findings: []Finding{
+		{Source: "semgrep", Class: "a", Severity: "MEDIUM", File: "a.py", Line: 1, NeedsReview: true},
+		{Source: "semgrep", Class: "b", Severity: "MEDIUM", File: "b.py", Line: 1},
+	}})
+	bd := res.Breakdown
+	if bd.Penalty == 0 || 2*bd.NeedsReviewPenalty < bd.Penalty-1 || 2*bd.NeedsReviewPenalty > bd.Penalty+1 {
+		t.Fatalf("penalty %d, unreviewed share %d; want about half", bd.Penalty, bd.NeedsReviewPenalty)
+	}
+	if clean := Evaluate(Input{}); clean.Breakdown.NeedsReviewPenalty != 0 {
+		t.Fatalf("clean project: unreviewed share %d, want 0", clean.Breakdown.NeedsReviewPenalty)
+	}
+}
+
+func unreviewedFindings(n int, severity string) Input {
+	in := Input{}
+	for i := 0; i < n; i++ {
+		in.Findings = append(in.Findings, Finding{Source: "semgrep", Class: fmt.Sprintf("rule-%d", i), Severity: severity, File: "app.py", Line: i + 1, NeedsReview: true})
+	}
+	return in
+}
+
+// A gate that passes next to a low score says why: unreviewed findings count
+// in full, but the gate does not block on them.
+func TestUnreviewedScoreNote(t *testing.T) {
+	confirmed := Assess(unreviewedFindings(3, "HIGH"), Policy{FailOn: FailOnConfirmed, ConfirmedMinSeverity: SeverityMedium})
+	want := fmt.Sprintf("Score %d/100: 3 finding(s) await review and count in full (all %d penalty points), but `fail_on: confirmed` blocks only confirmed findings at or above MEDIUM.",
+		confirmed.Score, confirmed.Breakdown.Penalty)
+	if got := UnreviewedScoreNote(confirmed); got != want {
+		t.Fatalf("note = %q\nwant   %q", got, want)
+	}
+	// A confirmed LOW finding below the floor: the unreviewed ones still
+	// cause most of the penalty, and the note says how much.
+	mixed := unreviewedFindings(3, "HIGH")
+	mixed.Findings = append(mixed.Findings, Finding{Source: "semgrep", Class: "confirmed", Severity: "LOW", File: "lib.py", Line: 1})
+	partly := Assess(mixed, Policy{FailOn: FailOnConfirmed, ConfirmedMinSeverity: SeverityMedium})
+	wantShare := fmt.Sprintf("(%d of the %d penalty points)", partly.Breakdown.NeedsReviewPenalty, partly.Breakdown.Penalty)
+	if got := UnreviewedScoreNote(partly); partly.Breakdown.NeedsReviewPenalty >= partly.Breakdown.Penalty || !strings.Contains(got, wantShare) {
+		t.Fatalf("note = %q, want the share %s", got, wantShare)
+	}
+
+	lowFloor := Assess(unreviewedFindings(2, "MEDIUM"), Policy{FailOn: FailOnConfirmed})
+	if got := UnreviewedScoreNote(lowFloor); !strings.Contains(got, "but `fail_on: confirmed` blocks only confirmed findings.") {
+		t.Fatalf("note = %q, want the confirmed gate without a floor", got)
+	}
+	critical := Assess(unreviewedFindings(4, "MEDIUM"), Policy{FailOn: FailOnCritical, MinimumScore: 10, Profile: PolicyStandard, MaxMedium: -1})
+	wantCritical := fmt.Sprintf("but `fail_on: critical` blocks only CRITICAL and HIGH findings, and %d meets `minimum_score: 10`.", critical.Score)
+	if got := UnreviewedScoreNote(critical); !critical.Verdict.Passed || !strings.Contains(got, wantCritical) {
+		t.Fatalf("verdict %+v, note = %q, want %q", critical.Verdict, got, wantCritical)
+	}
+	never := Assess(unreviewedFindings(1, "CRITICAL"), Policy{FailOn: FailOnNever})
+	if got := UnreviewedScoreNote(never); !strings.Contains(got, "but `fail_on: never` never blocks.") {
+		t.Fatalf("note = %q, want the disabled gate named", got)
+	}
+
+	// Nothing to explain: the gate failed, nothing awaits review, or
+	// confirmed findings cause most of the penalty.
+	failed := Assess(unreviewedFindings(2, "HIGH"), Policy{FailOn: FailOnCritical})
+	if got := UnreviewedScoreNote(failed); got != "" {
+		t.Errorf("failed gate: note = %q, want none", got)
+	}
+	if got := UnreviewedScoreNote(Assess(Input{}, Policy{FailOn: FailOnConfirmed})); got != "" {
+		t.Errorf("clean project: note = %q, want none", got)
+	}
+	mostlyConfirmed := Input{Findings: []Finding{
+		{Source: "semgrep", Class: "a", Severity: "HIGH", File: "a.py", Line: 1},
+		{Source: "semgrep", Class: "b", Severity: "LOW", File: "b.py", Line: 1, NeedsReview: true},
+	}}
+	if got := UnreviewedScoreNote(Assess(mostlyConfirmed, Policy{FailOn: FailOnNever})); got != "" {
+		t.Errorf("confirmed findings drive the penalty: note = %q, want none", got)
 	}
 }

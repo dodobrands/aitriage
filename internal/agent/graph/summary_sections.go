@@ -222,13 +222,17 @@ func qualityReportOnlyLine(bd healthcheck.Breakdown) string {
 }
 
 // scoreLines are the deterministic notes printed under the finding counts:
-// what the policy reported without scoring or gating.
+// what the policy reported without gating, and why a passing gate sits next
+// to a low score.
 func scoreLines(hc healthcheck.Result) []string {
 	var lines []string
 	for _, line := range []string{iacReportOnlyLine(hc.Breakdown), qualityReportOnlyLine(hc.Breakdown)} {
 		if line != "" {
 			lines = append(lines, line)
 		}
+	}
+	if note := healthcheck.UnreviewedScoreNote(hc); note != "" {
+		lines = append(lines, "_"+note+"_")
 	}
 	return lines
 }
@@ -241,6 +245,9 @@ func scoreBullets(hc healthcheck.Result) string {
 	}
 	if n := hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality]; n > 0 {
 		_, _ = fmt.Fprintf(&sb, "- **Code-quality findings**: %d reported, not gating and not scored (`quality_findings: report`)\n", n)
+	}
+	if note := healthcheck.UnreviewedScoreNote(hc); note != "" {
+		_, _ = fmt.Fprintf(&sb, "- **Score note**: %s\n", note)
 	}
 	return sb.String()
 }

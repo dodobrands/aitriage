@@ -238,6 +238,47 @@ func TestReportOnlyLinesCountEachKind(t *testing.T) {
 	}
 }
 
+// A gate that passes next to a low score says why in the summary and the
+// report, without the model: unreviewed findings count in full, and the gate
+// blocks only confirmed findings from the configured severity.
+func TestSummaryExplainsALowScoreUnderAPassingGate(t *testing.T) {
+	root := writeProjectFiles(t, map[string]string{"app/handlers.py": strings.Repeat("# filler\n", 60)})
+	state := &AgentState{ProjectPath: root, Policy: healthcheck.Policy{FailOn: healthcheck.FailOnConfirmed, ConfirmedMinSeverity: healthcheck.SeverityMedium}}
+	for i, severity := range []string{"HIGH", "HIGH", "MEDIUM"} {
+		state.ExternalFindings = append(state.ExternalFindings, external.UnifiedFinding{
+			Source: "semgrep", RuleID: "example.rules.check-" + string(rune('a'+i)), Severity: severity, File: "app/handlers.py", Line: 10 * (i + 1), Message: "example finding",
+		})
+	}
+	enrichFindings(state)
+	state.FindingDispositions = allDispositions(state, "Needs Manual Review")
+	computeHealthCheck(state)
+	if err := generateSummary(state); err != nil {
+		t.Fatal(err)
+	}
+	hc := state.HealthCheck
+	note := healthcheck.UnreviewedScoreNote(hc)
+	if !hc.Verdict.Passed || hc.Score >= 100 || note == "" {
+		t.Fatalf("score %d, verdict %+v, note %q; want a passing gate, a lower score and a note", hc.Score, hc.Verdict, note)
+	}
+	if !strings.Contains(note, "3 finding(s) await review and count in full") || !strings.Contains(note, "`fail_on: confirmed` blocks only confirmed findings at or above MEDIUM") {
+		t.Fatalf("note = %q, want the unreviewed count and the gate's floor", note)
+	}
+	if !strings.Contains(state.SummaryMarkdown, "_"+note+"_") {
+		t.Fatalf("summary lacks the note:\n%s", state.SummaryMarkdown)
+	}
+	if report := deterministicGateSection(state); !strings.Contains(report, "- **Score note**: "+note) {
+		t.Fatalf("report lacks the note:\n%s", report)
+	}
+
+	// Once the findings are confirmed the gate blocks, and there is nothing
+	// left to explain.
+	state.FindingDispositions = allDispositions(state, "True Positive")
+	computeHealthCheck(state)
+	if state.HealthCheck.Verdict.Passed || healthcheck.UnreviewedScoreNote(state.HealthCheck) != "" {
+		t.Fatalf("verdict %+v, note %q; want a failed gate and no note", state.HealthCheck.Verdict, healthcheck.UnreviewedScoreNote(state.HealthCheck))
+	}
+}
+
 // quality_findings changes the score and gate a cached report narrates, so
 // a run under block never reuses entries stored under report.
 func TestVerdictCacheNamespaceSeparatesReportOnlySettings(t *testing.T) {

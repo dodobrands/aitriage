@@ -537,3 +537,43 @@ func unclassifiedClause(bd Breakdown) string {
 	}
 	return fmt.Sprintf(" (%d of them were never classified by the model)", bd.UnclassifiedFindings)
 }
+
+// UnreviewedScoreNote explains a low score next to a gate that passed:
+// unreviewed findings count in full toward the score, while the gate may not
+// block on them at all. It returns "" unless the gate passed and unreviewed
+// findings cause more than half of the penalty.
+func UnreviewedScoreNote(res Result) string {
+	bd := res.Breakdown
+	if !res.Verdict.Passed || bd.NeedsReviewFindings == 0 || bd.Penalty == 0 || 2*bd.NeedsReviewPenalty <= bd.Penalty {
+		return ""
+	}
+	share := fmt.Sprintf("%d of the %d penalty points", bd.NeedsReviewPenalty, bd.Penalty)
+	if bd.NeedsReviewPenalty >= bd.Penalty {
+		share = fmt.Sprintf("all %d penalty points", bd.Penalty)
+	}
+	return fmt.Sprintf("Score %d/100: %d finding(s) await review and count in full (%s), but %s.",
+		res.Score, bd.NeedsReviewFindings, share, passingGateScope(res.Policy, res.Score))
+}
+
+// passingGateScope says what a gate that passed blocks on.
+func passingGateScope(policy Policy, score int) string {
+	policy = normalizePolicy(policy)
+	var scope string
+	switch policy.FailOn {
+	case FailOnNever:
+		return "`fail_on: never` never blocks"
+	case FailOnConfirmed:
+		scope = "`fail_on: confirmed` blocks only confirmed findings"
+		if floor := NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity); floor != SeverityLow {
+			scope += " at or above " + floor
+		}
+	case FailOnCritical:
+		scope = "`fail_on: critical` blocks only CRITICAL and HIGH findings"
+	default:
+		scope = fmt.Sprintf("`fail_on: %s` passed", policy.FailOn)
+	}
+	if policy.MinimumScore > 0 {
+		scope += fmt.Sprintf(", and %d meets `minimum_score: %d`", score, policy.MinimumScore)
+	}
+	return scope
+}

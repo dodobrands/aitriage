@@ -519,6 +519,9 @@ func writeGitHubActionsSummary(report scanner.ScanReport) {
 	if n := hb.ReportOnlyByKind[healthcheck.ReportOnlyQuality]; n > 0 {
 		_, _ = fmt.Fprintf(f, "_%d code-quality finding(s) reported, not scored and not gating (set `quality_findings: block` to enforce)._\n\n", n)
 	}
+	if note := healthcheck.UnreviewedScoreNote(report.HealthCheck); note != "" {
+		_, _ = fmt.Fprintf(f, "_%s_\n\n", note)
+	}
 	if len(report.HealthCheck.Verdict.BlockingReasons) > 0 {
 		_, _ = f.WriteString("### Blocking Reasons\n\n")
 		for _, reason := range report.HealthCheck.Verdict.BlockingReasons {

@@ -100,6 +100,10 @@ type Breakdown struct {
 	// wonder why a gate failed with nothing proven.
 	ConfirmedFindings   int `json:"confirmed_findings"`
 	NeedsReviewFindings int `json:"needs_review_findings"`
+	// NeedsReviewPenalty is the part of Penalty the unreviewed findings
+	// cause. They count in full until someone confirms or dismisses them, so
+	// a gate that blocks only on confirmed findings can pass with a low score.
+	NeedsReviewPenalty int `json:"needs_review_penalty,omitempty"`
 	// UnclassifiedFindings is the subset of NeedsReviewFindings that never got
 	// a model verdict.
 	UnclassifiedFindings int `json:"unclassified_findings"`
@@ -372,7 +376,7 @@ func Evaluate(in Input) Result {
 	}
 
 	// 2. Accumulate weighted penalties, skipping ignored (FP / audit-ignored).
-	var rawWeight float64
+	var rawWeight, rawNeedsReview float64
 	rawBySource := map[string]float64{}
 	hasCritical := false
 	for _, f := range deduped {
@@ -412,6 +416,9 @@ func Evaluate(in Input) Result {
 
 		w := effectiveWeight(f)
 		rawWeight += w
+		if f.NeedsReview {
+			rawNeedsReview += w
+		}
 		src := strings.ToLower(strings.TrimSpace(f.Source))
 		if src == "" {
 			src = "unknown"
@@ -464,6 +471,7 @@ func Evaluate(in Input) Result {
 		for src, w := range rawBySource {
 			bd.PenaltyBySource[src] = int(math.Round(penalty * (w / rawWeight)))
 		}
+		bd.NeedsReviewPenalty = int(math.Round(penalty * (rawNeedsReview / rawWeight)))
 	}
 
 	res := Result{
