@@ -90,9 +90,9 @@ type Policy struct {
 	// such findings Finding.ReportOnly.
 	IaCFindings string `json:"iac_findings,omitempty"`
 	// QualityFindings is QualityFindingsBlock (the default) or
-	// QualityFindingsReport. It applies to findings every report of which is
-	// a code-quality finding (see ReportOnlyKind); a finding a security rule
-	// also reported gates as before.
+	// QualityFindingsReport. It applies to LOW and INFO findings every report
+	// of which is a code-quality finding (see ReportOnlyKind); a finding a
+	// security rule also reported gates as before.
 	QualityFindings string `json:"quality_findings,omitempty"`
 }
 

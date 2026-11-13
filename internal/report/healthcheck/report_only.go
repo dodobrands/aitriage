@@ -74,13 +74,41 @@ func OriginKind(o Origin) string {
 	return ""
 }
 
-// ReportOnlyKind returns the kind under which policy reports a finding
-// without scoring or gating it, or "" when the finding is scored and gated
-// like any other. origins are the scanner reports behind the finding. Every
-// one of them must be of the same report-only kind, and the policy must
-// report that kind: a finding another detector also reported, such as
-// DOCKER-NO-USER merged with Trivy's DS-0002, gates as it always did.
-func ReportOnlyKind(policy Policy, origins []Origin) string {
+// ReportOnlyKind returns the kind under which policy reports f without
+// scoring or gating it, or "" when f is scored and gated like any other
+// finding. All of these must hold:
+//
+//   - Every scanner report behind f (its Origins) is of the same report-only
+//     kind, and the policy reports that kind: a finding another detector
+//     also reported, such as DOCKER-NO-USER merged with Trivy's DS-0002,
+//     gates as it always did.
+//   - A code-quality finding is LOW or INFO. A rule pack can label any rule
+//     quality; a more severe finding is scored and gated whatever its label.
+func ReportOnlyKind(policy Policy, f Finding) string {
+	return reportOnlyKind(normalizePolicy(policy), f)
+}
+
+// reportOnlyKind is ReportOnlyKind under a normalized policy.
+func reportOnlyKind(policy Policy, f Finding) string {
+	kind := originsKind(originsOf(f))
+	switch kind {
+	case ReportOnlyIaC:
+		if policy.IaCFindings != IaCFindingsReport {
+			return ""
+		}
+	case ReportOnlyQuality:
+		if policy.QualityFindings != QualityFindingsReport || !qualitySeverity(f.Severity) {
+			return ""
+		}
+	default:
+		return ""
+	}
+	return kind
+}
+
+// originsKind returns the report-only kind every one of origins belongs to,
+// or "" when they are of different kinds or there are none.
+func originsKind(origins []Origin) string {
 	if len(origins) == 0 {
 		return ""
 	}
@@ -90,17 +118,19 @@ func ReportOnlyKind(policy Policy, origins []Origin) string {
 			return ""
 		}
 	}
-	switch kind {
-	case ReportOnlyIaC:
-		if NormalizeIaCFindings(policy.IaCFindings) == IaCFindingsReport {
-			return kind
-		}
-	case ReportOnlyQuality:
-		if NormalizeQualityFindings(policy.QualityFindings) == QualityFindingsReport {
-			return kind
-		}
+	return kind
+}
+
+// qualitySeverity reports whether a finding is mild enough to be reported
+// as code quality: LOW or INFO. Any other severity, an unknown one included,
+// is scored and gated.
+func qualitySeverity(severity string) bool {
+	switch strings.ToUpper(strings.TrimSpace(severity)) {
+	case SeverityLow, "INFO":
+		return true
+	default:
+		return false
 	}
-	return ""
 }
 
 // Assess scores the findings under policy and attaches the verdict. It marks
@@ -112,7 +142,7 @@ func Assess(in Input, policy Policy) Result {
 	policy = normalizePolicy(policy)
 	findings := make([]Finding, len(in.Findings))
 	for i, f := range in.Findings {
-		f.ReportOnlyKind = ReportOnlyKind(policy, originsOf(f))
+		f.ReportOnlyKind = reportOnlyKind(policy, f)
 		f.ReportOnly = f.ReportOnlyKind != ""
 		findings[i] = f
 	}

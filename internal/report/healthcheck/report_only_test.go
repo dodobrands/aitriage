@@ -75,7 +75,8 @@ func TestReportOnlyKindNeedsEveryOriginOfOneKind(t *testing.T) {
 		{"typo is the strict reading", Policy{QualityFindings: "reprot"}, []Origin{quality}, ""},
 	}
 	for _, tc := range cases {
-		if got := ReportOnlyKind(tc.policy, tc.origins); got != tc.want {
+		f := Finding{Severity: "LOW", Origins: tc.origins}
+		if got := ReportOnlyKind(tc.policy, f); got != tc.want {
 			t.Errorf("%s: ReportOnlyKind = %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -141,6 +142,33 @@ func TestQualityFindingsDefaultKeepsTheGateOfV114(t *testing.T) {
 		if !res.Verdict.Passed || res.Score != 100 || res.Breakdown.ActiveFindings != 0 || res.Breakdown.ReportOnlyByKind[ReportOnlyQuality] != 4 {
 			t.Errorf("%+v: score %d, verdict %+v, breakdown %+v; want the findings reported only", policy, res.Score, res.Verdict, res.Breakdown)
 		}
+	}
+}
+
+// The quality kind covers LOW and INFO findings only. A rule pack can label
+// a severe rule quality; its findings are scored and gate like any other.
+// IaC misconfigurations are reported whatever their severity, as before.
+func TestQualityKindCoversOnlyLowAndInfoFindings(t *testing.T) {
+	packRule := func(severity string) Finding {
+		return Finding{Source: "core", Class: "PACK-QUALITY-CHECK", Severity: severity, File: "app/main.py", Line: 3, NeedsReview: true,
+			Origins: []Origin{{Type: "core", Source: "core", RuleID: "PACK-QUALITY-CHECK", Subcategory: SubcategoryQuality}}}
+	}
+	policy := Policy{FailOn: FailOnCritical, QualityFindings: QualityFindingsReport}
+	for severity, reported := range map[string]bool{"CRITICAL": true, "HIGH": true, "MEDIUM": true, "": true, "LOW": false, "info": false} {
+		if got := ReportOnlyKind(policy, packRule(severity)); (got == "") != reported {
+			t.Errorf("severity %q: ReportOnlyKind = %q", severity, got)
+		}
+	}
+	for _, severity := range []string{"CRITICAL", "HIGH"} {
+		res := Assess(Input{Findings: []Finding{packRule(severity)}}, policy)
+		if res.Verdict.Passed || res.Score == 100 || res.Breakdown.ReportOnlyFindings != 0 || res.Breakdown.CountBySeverity[severity] != 1 {
+			t.Errorf("%s quality finding: score %d, verdict %+v, breakdown %+v; want it scored and blocking fail_on: critical", severity, res.Score, res.Verdict, res.Breakdown)
+		}
+	}
+	iac := Finding{Source: "trivy", Class: "KSV-0017", Severity: "CRITICAL", File: "k8s/app.yaml", Line: 4,
+		Origins: []Origin{{Type: "external", Source: "trivy", RuleID: "KSV-0017", Kind: kindMisconfiguration}}}
+	if got := ReportOnlyKind(policy, iac); got != ReportOnlyIaC {
+		t.Errorf("CRITICAL IaC misconfiguration: ReportOnlyKind = %q, want %q", got, ReportOnlyIaC)
 	}
 }
 
