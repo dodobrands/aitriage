@@ -42,10 +42,11 @@ type Origin struct {
 // qualityChecks lists checks of other scanners that report code quality or
 // hygiene with no direct security impact, by check family and upper-cased id.
 // Rules of the built-in catalog declare it in metadata.subcategory instead.
+//
+// A swallowed exception (Bandit B110 and B112, FAST-LAZY-EXC) is not on it:
+// `except Exception: pass` around a token check turns a failed check into a
+// pass, so the finding is scored and gated whatever quality_findings says.
 var qualityChecks = map[string]map[string]bool{
-	// try/except/pass and try/except/continue. A swallowed exception is a
-	// reliability defect (CWE-703); Bandit rates both LOW.
-	"bandit": {"B110": true, "B112": true},
 	// No .env.example documents the environment variables: documentation
 	// hygiene. A .env file tracked by git (NFR-ENV-002) is not on this list.
 	"nfr": {"NFR-ENV-001": true},

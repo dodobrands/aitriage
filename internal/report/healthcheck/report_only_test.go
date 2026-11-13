@@ -2,6 +2,7 @@ package healthcheck
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,10 +23,8 @@ func TestOriginKind(t *testing.T) {
 		{Origin{Type: "core", Source: "aitriage", RuleID: "ENTR-12"}, ""},
 		{Origin{Type: "core", Source: "core", RuleID: "FAST-SQLI", Subcategory: "vuln"}, ""},
 		{Origin{Type: "core", Source: "core", RuleID: "DOCKER-NO-USER", Subcategory: "policy"}, ""},
-		{Origin{Type: "external", Source: "bandit", RuleID: "B110"}, ReportOnlyQuality},
-		{Origin{Type: "external", Source: "bandit", RuleID: "b112"}, ReportOnlyQuality},
+		{Origin{Type: "core", Source: "aitriage", RuleID: "FAST-SYNC-ASYNC", Subcategory: "quality"}, ReportOnlyQuality},
 		{Origin{Type: "external", Source: "bandit", RuleID: "B105"}, ""},
-		{Origin{Type: "external", Source: "semgrep", RuleID: "B110"}, ""},
 		{Origin{Type: "nfr", Source: "aitriage", RuleID: "NFR-ENV-001"}, ReportOnlyQuality},
 		{Origin{Type: "nfr", Source: "nfr", RuleID: "NFR-ENV-001"}, ReportOnlyQuality},
 		{Origin{Type: "nfr", Source: "nfr", RuleID: "NFR-ENV-002"}, ""},
@@ -40,34 +39,39 @@ func TestOriginKind(t *testing.T) {
 }
 
 // A finding is report-only only when every report behind it is of one
-// report-only kind and the policy reports that kind.
+// report-only kind and the policy reports that kind. Code-quality findings
+// are reported only under an explicit quality_findings: report.
 func TestReportOnlyKindNeedsEveryOriginOfOneKind(t *testing.T) {
-	quality := Origin{Type: "external", Source: "bandit", RuleID: "B110"}
-	qualityRule := Origin{Type: "core", Source: "aitriage", RuleID: "FAST-LAZY-EXC", Subcategory: SubcategoryQuality}
+	quality := Origin{Type: "nfr", Source: "nfr", RuleID: "NFR-ENV-001"}
+	qualityRule := Origin{Type: "core", Source: "aitriage", RuleID: "ENTR-12", Subcategory: SubcategoryQuality}
 	security := Origin{Type: "core", Source: "aitriage", RuleID: "PY-SUBPROCESS", Subcategory: "audit"}
+	swallowed := Origin{Type: "external", Source: "bandit", RuleID: "B110"}
 	iac := Origin{Type: "external", Source: "trivy", RuleID: "DS-0002", Kind: "misconfiguration"}
 	dockerRule := Origin{Type: "core", Source: "aitriage", RuleID: "DOCKER-NO-USER", Subcategory: "policy"}
 
 	defaults := Policy{}
+	reportQuality := Policy{QualityFindings: QualityFindingsReport}
 	blockQuality := Policy{QualityFindings: QualityFindingsBlock}
-	blockIaC := Policy{IaCFindings: IaCFindingsBlock}
+	blockIaC := Policy{IaCFindings: IaCFindingsBlock, QualityFindings: QualityFindingsReport}
 	cases := []struct {
 		name    string
 		policy  Policy
 		origins []Origin
 		want    string
 	}{
-		{"no origins", defaults, nil, ""},
-		{"quality", defaults, []Origin{quality}, ReportOnlyQuality},
-		{"quality reports of two detectors", defaults, []Origin{qualityRule, quality}, ReportOnlyQuality},
-		{"quality merged with a security rule", defaults, []Origin{quality, security}, ""},
+		{"no origins", reportQuality, nil, ""},
+		{"quality", reportQuality, []Origin{quality}, ReportOnlyQuality},
+		{"quality by default", defaults, []Origin{quality}, ""},
+		{"quality reports of two detectors", reportQuality, []Origin{qualityRule, quality}, ReportOnlyQuality},
+		{"quality merged with a security rule", reportQuality, []Origin{quality, security}, ""},
+		{"a swallowed exception", reportQuality, []Origin{swallowed}, ""},
 		{"quality under block", blockQuality, []Origin{quality}, ""},
 		{"quality under iac block", blockIaC, []Origin{quality}, ReportOnlyQuality},
 		{"iac", defaults, []Origin{iac}, ReportOnlyIaC},
 		{"iac merged with a built-in rule", defaults, []Origin{iac, dockerRule}, ""},
 		{"iac under block", blockIaC, []Origin{iac}, ""},
 		{"iac under quality block", blockQuality, []Origin{iac}, ReportOnlyIaC},
-		{"iac merged with quality", defaults, []Origin{iac, quality}, ""},
+		{"iac merged with quality", reportQuality, []Origin{iac, quality}, ""},
 		{"typo is the strict reading", Policy{QualityFindings: "reprot"}, []Origin{quality}, ""},
 	}
 	for _, tc := range cases {
@@ -77,30 +81,117 @@ func TestReportOnlyKindNeedsEveryOriginOfOneKind(t *testing.T) {
 	}
 }
 
-// qualityInput is a project with one unreviewed security finding and, apart
-// from it, findings that are nothing but code quality or IaC.
-func qualityInput() Input {
+// qualityOnlyInput is a project whose only findings are code quality: a
+// file over 1,500 lines, a TypeScript @ts-ignore, a blocking call in an
+// async route and no .env.example, none of them reviewed.
+func qualityOnlyInput() Input {
 	return Input{Findings: []Finding{
-		{Source: "core", Class: "FAST-SQLI", Severity: "MEDIUM", File: "app/db.py", Line: 9, NeedsReview: true,
-			Origins: []Origin{{Type: "core", Source: "core", RuleID: "FAST-SQLI", Subcategory: "vuln"}}},
 		{Source: "core", Class: "ENTR-12", Severity: "LOW", File: "app/views.py", Line: 1, NeedsReview: true,
 			Origins: []Origin{{Type: "core", Source: "core", RuleID: "ENTR-12", Subcategory: SubcategoryQuality}}},
-		{Source: "bandit", Class: "B110", Severity: "LOW", File: "app/jobs.py", Line: 12, NeedsReview: true},
-		{Source: "bandit", Class: "B112", Severity: "LOW", File: "app/jobs.py", Line: 30, NeedsReview: true},
+		{Source: "core", Class: "ENTR-07", Severity: "LOW", File: "web/src/api.ts", Line: 3, NeedsReview: true,
+			Origins: []Origin{{Type: "core", Source: "core", RuleID: "ENTR-07", Subcategory: SubcategoryQuality}}},
+		{Source: "core", Class: "FAST-SYNC-ASYNC", Severity: "LOW", File: "app/routes.py", Line: 20, NeedsReview: true,
+			Origins: []Origin{{Type: "core", Source: "core", RuleID: "FAST-SYNC-ASYNC", Subcategory: SubcategoryQuality}}},
 		{Source: "nfr", Class: "NFR-ENV-001", Severity: "LOW", NeedsReview: true,
 			Origins: []Origin{{Type: "nfr", Source: "nfr", RuleID: "NFR-ENV-001"}}},
-		{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, NeedsReview: true,
-			Origins: []Origin{{Type: "external", Source: "trivy", RuleID: "KSV-0012", Kind: "misconfiguration"}}},
 	}}
 }
 
-// Under report, findings that are nothing but code quality or IaC change
-// neither the score nor the verdict, and the breakdown counts them per kind.
-// Under block they score and gate like any other finding.
+// With quality_findings unset, code-quality findings score and gate exactly
+// as in v1.14.0, before the setting existed: making report the default
+// would let these gates pass for configurations that never asked for it.
+// The expected results are v1.14.0's ApplyPolicy(Evaluate(in), policy) for
+// the same findings. Under an explicit quality_findings: report they are
+// reported only.
+func TestQualityFindingsDefaultKeepsTheGateOfV114(t *testing.T) {
+	unreviewed := "4 finding(s) have not been reviewed yet. None are confirmed exploitable, but this policy requires every finding to be triaged (confirmed, or dismissed as a false positive / accepted risk) before the gate can pass"
+	failed := func(profile string, reason BlockingReason) Verdict {
+		return Verdict{Status: "failed", Summary: fmt.Sprintf("Security policy %q failed with 1 blocking reason(s)", profile), BlockingReasons: []BlockingReason{reason}}
+	}
+	cases := []struct {
+		name    string
+		policy  Policy
+		verdict Verdict
+	}{
+		{"fail_on: any", Policy{FailOn: FailOnAny},
+			failed(PolicyBaseline, BlockingReason{Code: "active_findings", Message: unreviewed, Count: 4})},
+		{"block_classes: [ENTR-12]", Policy{BlockClasses: []string{"ENTR-12"}},
+			failed(PolicyBaseline, BlockingReason{Code: "blocked_class", Message: `Findings with class "entr-12" are blocked by policy`, Class: "entr-12", Count: 1})},
+		{"block_sources: [nfr]", Policy{BlockSources: []string{"nfr"}},
+			failed(PolicyBaseline, BlockingReason{Code: "blocked_source", Message: `Findings from source "nfr" are blocked by policy`, Source: "nfr", Count: 1})},
+		{"profile: strict", PolicyForProfile(PolicyStrict),
+			failed(PolicyStrict, BlockingReason{Code: "active_findings", Message: unreviewed, Count: 4})},
+		{"minimum_score: 95", Policy{MinimumScore: 95},
+			failed(PolicyBaseline, BlockingReason{Code: "minimum_score", Message: "Health Check score is below the required minimum", Count: 94, Threshold: 95})},
+		{"defaults", Policy{}, Verdict{Passed: true, Status: "passed", Summary: `Security policy "baseline" passed`}},
+	}
+	for _, tc := range cases {
+		res := Assess(qualityOnlyInput(), tc.policy)
+		if res.Score != 94 || res.Grade != "A" || !reflect.DeepEqual(res.Verdict, tc.verdict) {
+			t.Errorf("%s: score %d (%s), verdict %+v; want v1.14.0's score 94 (A), verdict %+v", tc.name, res.Score, res.Grade, res.Verdict, tc.verdict)
+		}
+		if bd := res.Breakdown; bd.ActiveFindings != 4 || bd.ReportOnlyFindings != 0 || res.Policy.QualityFindings != QualityFindingsBlock {
+			t.Errorf("%s: breakdown %+v, quality_findings %q; want every finding scored under the default block", tc.name, bd, res.Policy.QualityFindings)
+		}
+	}
+
+	for _, policy := range []Policy{{FailOn: FailOnAny}, PolicyForProfile(PolicyStrict), {MinimumScore: 95}} {
+		policy.QualityFindings = QualityFindingsReport
+		res := Assess(qualityOnlyInput(), policy)
+		if !res.Verdict.Passed || res.Score != 100 || res.Breakdown.ActiveFindings != 0 || res.Breakdown.ReportOnlyByKind[ReportOnlyQuality] != 4 {
+			t.Errorf("%+v: score %d, verdict %+v, breakdown %+v; want the findings reported only", policy, res.Score, res.Verdict, res.Breakdown)
+		}
+	}
+}
+
+// A swallowed exception is not code quality: `except Exception: pass` around
+// a token check turns a failed check into a pass. Bandit's B110 and B112 and
+// the FastAPI rule (FAST-LAZY-EXC, subcategory audit as in v1.14.0) are
+// scored and gate under quality_findings: report exactly as under block, with
+// v1.14.0's score.
+func TestSwallowedExceptionsGateUnderQualityReport(t *testing.T) {
+	for _, origin := range []Origin{
+		{Type: "external", Source: "bandit", RuleID: "B110"},
+		{Type: "external", Source: "bandit", RuleID: "b112"},
+		{Type: "core", Source: "aitriage", RuleID: "FAST-LAZY-EXC", Subcategory: "audit"},
+	} {
+		if got := OriginKind(origin); got != "" {
+			t.Errorf("OriginKind(%+v) = %q, want no report-only kind", origin, got)
+		}
+	}
+	// One swallowed exception both detectors reported, as the full scan
+	// passes it in.
+	in := Input{Findings: []Finding{
+		{Source: "bandit", Class: "B110", Severity: "LOW", File: "app/auth.py", Line: 14, NeedsReview: true},
+		{Source: "core", Class: "FAST-LAZY-EXC", Severity: "LOW", File: "app/auth.py", Line: 14, NeedsReview: true,
+			Origins: []Origin{{Type: "core", Source: "core", RuleID: "FAST-LAZY-EXC", Subcategory: "audit"}}},
+	}}
+	for _, mode := range []string{QualityFindingsReport, QualityFindingsBlock, ""} {
+		res := Assess(in, Policy{FailOn: FailOnAny, QualityFindings: mode})
+		if res.Verdict.Passed || res.Score != 98 || res.Breakdown.ActiveFindings != 1 || res.Breakdown.ReportOnlyFindings != 0 {
+			t.Errorf("quality_findings %q: score %d, verdict %+v, breakdown %+v; want v1.14.0's 98 and a failed gate", mode, res.Score, res.Verdict, res.Breakdown)
+		}
+	}
+}
+
+// qualityInput is a project with one unreviewed security finding and, apart
+// from it, findings that are nothing but code quality or IaC.
+func qualityInput() Input {
+	findings := []Finding{{Source: "core", Class: "FAST-SQLI", Severity: "MEDIUM", File: "app/db.py", Line: 9, NeedsReview: true,
+		Origins: []Origin{{Type: "core", Source: "core", RuleID: "FAST-SQLI", Subcategory: "vuln"}}}}
+	findings = append(findings, qualityOnlyInput().Findings...)
+	return Input{Findings: append(findings, Finding{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, NeedsReview: true,
+		Origins: []Origin{{Type: "external", Source: "trivy", RuleID: "KSV-0012", Kind: "misconfiguration"}}})}
+}
+
+// Under report (the default for IaC, an opt-in for code quality), findings
+// that are nothing but code quality or IaC change neither the score nor the
+// verdict, and the breakdown counts them per kind. Under block they score
+// and gate like any other finding.
 func TestAssessKeepsReportOnlyFindingsOutOfTheScoreAndGate(t *testing.T) {
 	full := qualityInput()
 	securityOnly := Input{Findings: full.Findings[:1]}
-	gate := Policy{FailOn: FailOnCritical, MaxCritical: 0, MaxHigh: 0, MaxMedium: 0, Profile: PolicyStrict}
+	gate := Policy{FailOn: FailOnCritical, MaxCritical: 0, MaxHigh: 0, MaxMedium: 0, Profile: PolicyStrict, QualityFindings: QualityFindingsReport}
 
 	reported := Assess(full, gate)
 	baseline := Assess(securityOnly, gate)
@@ -112,7 +203,7 @@ func TestAssessKeepsReportOnlyFindingsOutOfTheScoreAndGate(t *testing.T) {
 	if bd.ActiveFindings != 1 || bd.ReportOnlyFindings != 5 || bd.ReportOnlyByKind[ReportOnlyQuality] != 4 || bd.ReportOnlyByKind[ReportOnlyIaC] != 1 {
 		t.Fatalf("breakdown = %+v, want 1 active, 5 report-only (4 quality, 1 iac)", bd)
 	}
-	if bd.CountBySource["bandit"] != 0 || bd.CountByRule["entr-12"] != 0 || bd.CountBySeverity["HIGH"] != 0 {
+	if bd.CountBySource["nfr"] != 0 || bd.CountByRule["entr-12"] != 0 || bd.CountBySeverity["HIGH"] != 0 {
 		t.Fatalf("breakdown = %+v, want report-only findings in no other count", bd)
 	}
 
@@ -124,21 +215,24 @@ func TestAssessKeepsReportOnlyFindingsOutOfTheScoreAndGate(t *testing.T) {
 }
 
 // A project with nothing but code-quality findings passes a gate that blocks
-// every finding under report, and fails it under block.
-func TestAssessQualityFindingsGateOnlyUnderBlock(t *testing.T) {
-	in := Input{Findings: qualityInput().Findings[1:5]}
-	strict := Policy{Profile: PolicyStrict, FailOn: FailOnAny}
+// every finding only under an explicit quality_findings: report; unset, as
+// under block, the findings block.
+func TestAssessQualityFindingsGateUnlessReported(t *testing.T) {
+	in := qualityOnlyInput()
+	strict := Policy{Profile: PolicyStrict, FailOn: FailOnAny, QualityFindings: QualityFindingsReport}
 	if res := Assess(in, strict); !res.Verdict.Passed || res.Score != 100 || res.Policy.QualityFindings != QualityFindingsReport {
 		t.Fatalf("under report: score %d, verdict %+v, policy %+v; want a pass at 100", res.Score, res.Verdict, res.Policy)
 	}
-	strict.QualityFindings = QualityFindingsBlock
-	if res := Assess(in, strict); res.Verdict.Passed || res.Score == 100 {
-		t.Fatalf("under block: score %d, verdict %+v; want the findings to block", res.Score, res.Verdict)
+	for _, mode := range []string{"", QualityFindingsBlock} {
+		strict.QualityFindings = mode
+		if res := Assess(in, strict); res.Verdict.Passed || res.Score == 100 || res.Policy.QualityFindings != QualityFindingsBlock {
+			t.Fatalf("quality_findings %q: score %d, verdict %+v, policy %+v; want the findings to block", mode, res.Score, res.Verdict, res.Policy)
+		}
 	}
 }
 
 func TestQualityFindingsPolicyValues(t *testing.T) {
-	for value, want := range map[string]string{"": QualityFindingsReport, "report": QualityFindingsReport, " BLOCK ": QualityFindingsBlock, "blok": QualityFindingsBlock} {
+	for value, want := range map[string]string{"": QualityFindingsBlock, "report": QualityFindingsReport, " BLOCK ": QualityFindingsBlock, "blok": QualityFindingsBlock, "reprot": QualityFindingsBlock} {
 		if got := NormalizeQualityFindings(value); got != want {
 			t.Errorf("NormalizeQualityFindings(%q) = %q, want %q", value, got, want)
 		}
@@ -149,8 +243,8 @@ func TestQualityFindingsPolicyValues(t *testing.T) {
 	if got, ok := ParseQualityFindings(" Report "); !ok || got != QualityFindingsReport {
 		t.Errorf("ParseQualityFindings(Report) = %q, %t", got, ok)
 	}
-	if got := NormalizePolicy(Policy{}).QualityFindings; got != QualityFindingsReport {
-		t.Errorf("default quality_findings = %q, want report", got)
+	if got := NormalizePolicy(Policy{}).QualityFindings; got != QualityFindingsBlock {
+		t.Errorf("default quality_findings = %q, want block", got)
 	}
 }
 

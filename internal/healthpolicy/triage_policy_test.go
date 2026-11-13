@@ -49,31 +49,31 @@ func TestIaCFindingsPolicySetting(t *testing.T) {
 	}
 }
 
-// quality_findings: report by default, block when configured, block on a
+// quality_findings: block by default, report when configured, block on a
 // typo (the strict reading); a CLI override wins and survives a profile
 // switch, and the two report-only settings are independent.
 func TestQualityFindingsPolicySetting(t *testing.T) {
-	if got := FromConfig(&config.Config{}).QualityFindings; got != healthcheck.QualityFindingsReport {
-		t.Fatalf("default quality_findings = %q, want report", got)
+	if got := FromConfig(&config.Config{}).QualityFindings; got != healthcheck.QualityFindingsBlock {
+		t.Fatalf("default quality_findings = %q, want block", got)
 	}
-	for value, want := range map[string]string{"block": healthcheck.QualityFindingsBlock, "Report": healthcheck.QualityFindingsReport, "blok": healthcheck.QualityFindingsBlock} {
+	for value, want := range map[string]string{"block": healthcheck.QualityFindingsBlock, "Report": healthcheck.QualityFindingsReport, "reprot": healthcheck.QualityFindingsBlock} {
 		if got := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: value}}).QualityFindings; got != want {
 			t.Errorf("quality_findings: %s = %q, want %q", value, got, want)
 		}
 	}
-	policy := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: "block"}})
+	policy := FromConfig(&config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: "report"}})
 	if policy.IaCFindings != healthcheck.IaCFindingsReport {
 		t.Fatalf("iac_findings = %q, want quality_findings to leave it at report", policy.IaCFindings)
 	}
 	policy = ApplyOverrides(policy, Overrides{Profile: healthcheck.PolicyStandard, ProfileSet: true})
-	if policy.QualityFindings != healthcheck.QualityFindingsBlock {
-		t.Fatalf("after a profile switch quality_findings = %q, want block kept", policy.QualityFindings)
-	}
-	policy = ApplyOverrides(policy, Overrides{QualityFindings: "report", QualityFindingsSet: true})
 	if policy.QualityFindings != healthcheck.QualityFindingsReport {
-		t.Fatalf("override = %q, want report", policy.QualityFindings)
+		t.Fatalf("after a profile switch quality_findings = %q, want report kept", policy.QualityFindings)
 	}
-	if got := ApplyOverrides(policy, Overrides{QualityFindings: "block"}).QualityFindings; got != healthcheck.QualityFindingsReport {
+	policy = ApplyOverrides(policy, Overrides{QualityFindings: "block", QualityFindingsSet: true})
+	if policy.QualityFindings != healthcheck.QualityFindingsBlock {
+		t.Fatalf("override = %q, want block", policy.QualityFindings)
+	}
+	if got := ApplyOverrides(policy, Overrides{QualityFindings: "report"}).QualityFindings; got != healthcheck.QualityFindingsBlock {
 		t.Fatalf("an unset override changed quality_findings to %q", got)
 	}
 }

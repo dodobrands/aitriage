@@ -123,6 +123,16 @@ func TestScanQualityFindingsFlag(t *testing.T) {
 	if blocked.SecurityScore != blocked.HealthCheck.Score {
 		t.Fatalf("security score %d, health check %d; want one number", blocked.SecurityScore, blocked.HealthCheck.Score)
 	}
+
+	// Set nowhere, quality_findings is block: ENTR-12 gates as it did before
+	// the setting existed.
+	unset := report
+	unset.Config = &config.Config{HealthCheck: config.HealthCheckPolicyConfig{Profile: healthcheck.PolicyStrict}}
+	policy = scanPolicyFromFlags(newScanPolicyTestCommand(), unset)
+	refreshScanHealthCheck(&unset, policy)
+	if hc := unset.HealthCheck; policy.QualityFindings != healthcheck.QualityFindingsBlock || hc.Verdict.Passed || hc.Score != blocked.HealthCheck.Score {
+		t.Fatalf("default: quality_findings %q, score %d (block: %d), verdict %+v; want the block gate", policy.QualityFindings, hc.Score, blocked.HealthCheck.Score, hc.Verdict)
+	}
 }
 
 func newScanPolicyTestCommand() *cobra.Command {

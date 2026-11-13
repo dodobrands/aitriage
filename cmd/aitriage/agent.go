@@ -105,7 +105,7 @@ func init() {
 	agentCmd.Flags().StringVar(&agentConfirmedMinSeverity, "confirmed-min-severity", "", "With --fail-on confirmed: block only on confirmed findings at or above LOW, MEDIUM, HIGH or CRITICAL (default LOW: every confirmed finding blocks)")
 	agentCmd.Flags().BoolVar(&agentFPCriticalRequiresHighConfidence, "fp-critical-requires-high-confidence", false, "Accept an AI false-positive verdict for a CRITICAL finding only when the model reports high confidence; otherwise keep it for manual review")
 	agentCmd.Flags().StringVar(&agentIaCFindings, "iac-findings", "", "IaC misconfigurations (Trivy config): 'report' (default) triages and reports them without scoring or gating them; 'block' gates them like any other finding")
-	agentCmd.Flags().StringVar(&agentQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (rules with subcategory quality such as ENTR-12, Bandit B110/B112, a missing .env.example): 'report' (default) triages and reports them without scoring or gating them; 'block' scores and gates them like any other finding")
+	agentCmd.Flags().StringVar(&agentQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (rules with subcategory quality such as ENTR-12, a missing .env.example; never a swallowed exception): 'block' (default) scores and gates them like any other finding; 'report' triages and reports them without scoring or gating them")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {

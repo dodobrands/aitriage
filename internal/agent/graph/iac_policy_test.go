@@ -8,6 +8,7 @@ import (
 	"github.com/dodobrands/aitriage/internal/engine/core"
 	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 	"github.com/dodobrands/aitriage/internal/scanner/external"
+	"github.com/dodobrands/aitriage/internal/scanner/nfr"
 )
 
 // iacPolicyState is a project with two IaC misconfigurations only Trivy
@@ -117,22 +118,20 @@ func TestIaCFindingsAreRecognisedByTheMarkerOnly(t *testing.T) {
 }
 
 // qualityPolicyState is a project whose findings are nothing but code
-// quality: a file over 1,500 lines and two swallowed exceptions Bandit
-// reported. The model left every finding for manual review.
+// quality: a file over 1,500 lines and two blocking database commits in
+// async routes. The model left every finding for manual review.
 func qualityPolicyState(t *testing.T, policy healthcheck.Policy) *AgentState {
 	t.Helper()
 	root := writeProjectFiles(t, map[string]string{
-		"app/views.py": strings.Repeat("# filler\n", 40),
-		"app/jobs.py":  strings.Repeat("# filler\n", 40),
+		"app/views.py":  strings.Repeat("# filler\n", 40),
+		"app/routes.py": strings.Repeat("# filler\n", 40),
 	})
 	state := &AgentState{
 		ProjectPath: root,
 		CoreFindings: []core.CheckResult{
 			{ID: "ENTR-12", Name: "God File Detected", Status: core.Absent, Severity: "LOW", File: "app/views.py", Line: 1, Evidence: "File exceeds 1500 lines", Subcategory: healthcheck.SubcategoryQuality},
-		},
-		ExternalFindings: []external.UnifiedFinding{
-			{Source: "bandit", RuleID: "B110", Severity: "LOW", File: "app/jobs.py", Line: 12, Message: "try_except_pass: Try, Except, Pass detected."},
-			{Source: "bandit", RuleID: "B112", Severity: "LOW", File: "app/jobs.py", Line: 30, Message: "try_except_continue: Try, Except, Continue detected."},
+			{ID: "FAST-SYNC-ASYNC", Name: "Blocking Database Commit in Async Function", Status: core.Absent, Severity: "LOW", File: "app/routes.py", Line: 12, Evidence: "session.commit()", Subcategory: healthcheck.SubcategoryQuality},
+			{ID: "FAST-SYNC-ASYNC", Name: "Blocking Database Commit in Async Function", Status: core.Absent, Severity: "LOW", File: "app/routes.py", Line: 30, Evidence: "session.commit()", Subcategory: healthcheck.SubcategoryQuality},
 		},
 		Policy: policy,
 	}
@@ -145,26 +144,30 @@ func qualityPolicyState(t *testing.T, policy healthcheck.Policy) *AgentState {
 	return state
 }
 
-// quality_findings: report (the default) keeps findings that are nothing but
+// quality_findings: report (an opt-in) keeps findings that are nothing but
 // code quality out of the score and the gate, even under a gate that blocks
-// every finding; they are still triaged and listed.
+// every finding; they are still triaged and listed, and the summary names
+// the setting.
 func TestQualityFindingsReportModeDoesNotGateOrScore(t *testing.T) {
-	state := qualityPolicyState(t, healthcheck.Policy{Profile: healthcheck.PolicyStrict, FailOn: healthcheck.FailOnAny})
+	state := qualityPolicyState(t, healthcheck.Policy{Profile: healthcheck.PolicyStrict, FailOn: healthcheck.FailOnAny, QualityFindings: healthcheck.QualityFindingsReport})
 	hc := state.HealthCheck
 	if !hc.Verdict.Passed || hc.Score != 100 || hc.Breakdown.ActiveFindings != 0 || hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 3 {
 		t.Fatalf("health check = score %d, verdict %+v, breakdown %+v; want three reported quality findings that neither score nor gate", hc.Score, hc.Verdict, hc.Breakdown)
 	}
 	if hc.Policy.QualityFindings != healthcheck.QualityFindingsReport {
-		t.Fatalf("policy quality_findings = %q, want the default report", hc.Policy.QualityFindings)
+		t.Fatalf("policy quality_findings = %q, want report", hc.Policy.QualityFindings)
 	}
 	summary := state.SummaryMarkdown
 	if !strings.Contains(summary, "_3 code-quality finding(s) reported, not scored and not gating (set `quality_findings: block` to enforce)._") {
 		t.Fatalf("summary lacks the quality line:\n%s", summary)
 	}
+	if !strings.Contains(summary, "`quality_findings=report`") {
+		t.Fatalf("summary does not name the policy:\n%s", summary)
+	}
 	if strings.Contains(summary, "IaC misconfiguration") {
 		t.Fatalf("summary counts quality findings as IaC:\n%s", summary)
 	}
-	for _, location := range []string{"app/views.py:1", "app/jobs.py:12", "app/jobs.py:30"} {
+	for _, location := range []string{"app/views.py:1", "app/routes.py:12", "app/routes.py:30"} {
 		if !strings.Contains(summary, location) {
 			t.Fatalf("summary does not show the finding at %s:\n%s", location, summary)
 		}
@@ -178,19 +181,22 @@ func TestQualityFindingsReportModeDoesNotGateOrScore(t *testing.T) {
 	}
 }
 
-// quality_findings: block scores and gates code-quality findings like any
-// other finding.
+// quality_findings: block, the default, scores and gates code-quality
+// findings like any other finding, as before the setting existed; the
+// summary does not name a setting left at its default.
 func TestQualityFindingsBlockModeGates(t *testing.T) {
-	state := qualityPolicyState(t, healthcheck.Policy{Profile: healthcheck.PolicyStrict, FailOn: healthcheck.FailOnAny, QualityFindings: healthcheck.QualityFindingsBlock})
-	hc := state.HealthCheck
-	if hc.Verdict.Passed || hc.Score >= 100 || hc.Breakdown.ActiveFindings != 3 || hc.Breakdown.ReportOnlyFindings != 0 || hc.Breakdown.CountBySource["bandit"] != 2 {
-		t.Fatalf("health check = score %d, verdict %+v, breakdown %+v; want every quality finding gating", hc.Score, hc.Verdict, hc.Breakdown)
-	}
-	if strings.Contains(state.SummaryMarkdown, "code-quality finding(s) reported") {
-		t.Fatalf("summary reports quality findings as not gating under block:\n%s", state.SummaryMarkdown)
-	}
-	if !strings.Contains(state.SummaryMarkdown, "`quality_findings=block`") {
-		t.Fatalf("summary does not name the policy:\n%s", state.SummaryMarkdown)
+	for _, mode := range []string{"", healthcheck.QualityFindingsBlock} {
+		state := qualityPolicyState(t, healthcheck.Policy{Profile: healthcheck.PolicyStrict, FailOn: healthcheck.FailOnAny, QualityFindings: mode})
+		hc := state.HealthCheck
+		if hc.Verdict.Passed || hc.Score >= 100 || hc.Breakdown.ActiveFindings != 3 || hc.Breakdown.ReportOnlyFindings != 0 || hc.Breakdown.CountByRule["fast-sync-async"] != 2 {
+			t.Fatalf("quality_findings %q: health check = score %d, verdict %+v, breakdown %+v; want every quality finding gating", mode, hc.Score, hc.Verdict, hc.Breakdown)
+		}
+		if hc.Policy.QualityFindings != healthcheck.QualityFindingsBlock {
+			t.Fatalf("quality_findings %q: policy quality_findings = %q, want block", mode, hc.Policy.QualityFindings)
+		}
+		if strings.Contains(state.SummaryMarkdown, "code-quality finding(s) reported") || strings.Contains(state.SummaryMarkdown, "quality_findings=") {
+			t.Fatalf("quality_findings %q: summary reports quality findings as not gating or names the default:\n%s", mode, state.SummaryMarkdown)
+		}
 	}
 }
 
@@ -198,16 +204,20 @@ func TestQualityFindingsBlockModeGates(t *testing.T) {
 func TestReportOnlyLinesCountEachKind(t *testing.T) {
 	root := writeProjectFiles(t, map[string]string{
 		"k8s/app.yaml": strings.Repeat("# filler\n", 20),
-		"app/jobs.py":  strings.Repeat("# filler\n", 40),
+		"app/views.py": strings.Repeat("# filler\n", 40),
 	})
 	state := &AgentState{
 		ProjectPath: root,
+		CoreFindings: []core.CheckResult{
+			{ID: "ENTR-12", Name: "God File Detected", Status: core.Absent, Severity: "LOW", File: "app/views.py", Line: 1, Evidence: "File exceeds 1500 lines", Subcategory: healthcheck.SubcategoryQuality},
+		},
+		NFRFindings: []nfr.NFRFinding{
+			{RuleID: "NFR-ENV-001", Name: ".env.example Missing", Severity: "LOW", Message: "No .env.example documents the environment variables"},
+		},
 		ExternalFindings: []external.UnifiedFinding{
 			{Kind: external.KindMisconfiguration, Source: "trivy", RuleID: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, Message: "Container 'app' should set runAsNonRoot"},
-			{Source: "bandit", RuleID: "B110", Severity: "LOW", File: "app/jobs.py", Line: 12, Message: "try_except_pass"},
-			{Source: "bandit", RuleID: "B112", Severity: "LOW", File: "app/jobs.py", Line: 30, Message: "try_except_continue"},
 		},
-		Policy: healthcheck.Policy{FailOn: healthcheck.FailOnCritical},
+		Policy: healthcheck.Policy{FailOn: healthcheck.FailOnCritical, QualityFindings: healthcheck.QualityFindingsReport},
 	}
 	enrichFindings(state)
 	state.FindingDispositions = allDispositions(state, "True Positive")
@@ -280,7 +290,7 @@ func TestSummaryExplainsALowScoreUnderAPassingGate(t *testing.T) {
 }
 
 // quality_findings changes the score and gate a cached report narrates, so
-// a run under block never reuses entries stored under report.
+// a run under report never reuses entries stored under block.
 func TestVerdictCacheNamespaceSeparatesReportOnlySettings(t *testing.T) {
 	namespace := func(policy healthcheck.Policy) string {
 		ctx := defaultVerdictCacheKeyContext("model")
@@ -288,11 +298,11 @@ func TestVerdictCacheNamespaceSeparatesReportOnlySettings(t *testing.T) {
 		return ctx.namespace()
 	}
 	defaults := namespace(healthcheck.Policy{})
-	if explicit := namespace(healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport}); explicit != defaults {
-		t.Fatal("an explicit quality_findings: report changed the cache namespace")
+	if explicit := namespace(healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsBlock}); explicit != defaults {
+		t.Fatal("an explicit quality_findings: block changed the cache namespace")
 	}
-	if namespace(healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsBlock}) == defaults {
-		t.Fatal("quality_findings: block shares the namespace of report")
+	if namespace(healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport}) == defaults {
+		t.Fatal("quality_findings: report shares the namespace of block")
 	}
 	if namespace(healthcheck.Policy{IaCFindings: healthcheck.IaCFindingsBlock}) == defaults {
 		t.Fatal("iac_findings: block shares the namespace of report")

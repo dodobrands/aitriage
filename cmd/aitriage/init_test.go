@@ -28,6 +28,11 @@ func TestInitConfigTemplateMatchesIgnoreSemantics(t *testing.T) {
 	if cfg.HealthCheck.FailOn != "critical" || cfg.HealthCheck.Profile != "baseline" {
 		t.Errorf("health_check = %+v, want profile baseline and fail_on critical", cfg.HealthCheck)
 	}
+	// quality_findings is shown as a comment: a new configuration follows the
+	// default (block) instead of pinning a mode.
+	if cfg.HealthCheck.QualityFindings != "" || !strings.Contains(template, "# quality_findings: report") {
+		t.Errorf("quality_findings = %q, want it unset and shown as a commented-out opt-in:\n%s", cfg.HealthCheck.QualityFindings, template)
+	}
 	for _, want := range []string{".gitignore syntax", "relative to the project root", "confirmed", "gitleaks:generic-api-key"} {
 		if !strings.Contains(template, want) {
 			t.Errorf("generated config does not mention %q:\n%s", want, template)

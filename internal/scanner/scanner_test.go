@@ -118,8 +118,8 @@ health_check:
 }
 
 // A file over 1,500 lines (ENTR-12) is a code-quality finding: under
-// quality_findings: report, the default, it is reported but neither scored
-// nor gating; under block it counts like any other finding.
+// quality_findings: report it is reported but neither scored nor gating;
+// under block, the default, it counts like any other finding.
 func TestScanAppliesQualityFindingsConfig(t *testing.T) {
 	scan := func(config string) scanner.ScanReport {
 		t.Helper()
@@ -142,7 +142,7 @@ func TestScanAppliesQualityFindingsConfig(t *testing.T) {
 	}
 
 	gate := "health_check:\n  profile: strict\n  fail_on: any\n"
-	reported := scan(gate)
+	reported := scan(gate + "  quality_findings: report\n")
 	found := false
 	for _, r := range reported.Results {
 		if r.ID == "ENTR-12" {
@@ -157,9 +157,56 @@ func TestScanAppliesQualityFindingsConfig(t *testing.T) {
 		t.Fatalf("score %d, verdict %+v, breakdown %+v; want ENTR-12 reported only", hc.Score, hc.Verdict, hc.Breakdown)
 	}
 
-	blocked := scan(gate + "  quality_findings: block\n").HealthCheck
-	if blocked.Verdict.Passed || blocked.Score == 100 || blocked.Breakdown.CountByRule["entr-12"] != 1 {
-		t.Fatalf("under block: score %d, verdict %+v; want ENTR-12 to gate", blocked.Score, blocked.Verdict)
+	for _, settings := range []string{gate, gate + "  quality_findings: block\n"} {
+		blocked := scan(settings).HealthCheck
+		if blocked.Verdict.Passed || blocked.Score == 100 || blocked.Breakdown.CountByRule["entr-12"] != 1 {
+			t.Fatalf("%s: score %d, verdict %+v; want ENTR-12 to gate", settings, blocked.Score, blocked.Verdict)
+		}
+	}
+}
+
+// A swallowed exception is not code quality: `except Exception: pass` around
+// a token check turns a failed check into a pass. FAST-LAZY-EXC, as the
+// built-in catalog defines it, is scored and gates under quality_findings:
+// report exactly as under block.
+func TestScanGatesASwallowedExceptionUnderQualityReport(t *testing.T) {
+	scan := func(settings string) scanner.ScanReport {
+		t.Helper()
+		dir := t.TempDir()
+		source := "import jwt\n\n\ndef current_user(token, key):\n    claims = None\n    try:\n        claims = jwt.decode(token, key, algorithms=[\"HS256\"])\n    except Exception:\n        pass\n    return claims\n"
+		if err := os.WriteFile(filepath.Join(dir, "auth.py"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".aitriage.yaml"), []byte(settings), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		report, err := scanner.Scan(context.Background(), dir, scanner.ScanOptions{ForceStack: "fastapi"})
+		if err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		return report
+	}
+
+	gate := "health_check:\n  fail_on: any\n"
+	reported := scan(gate + "  quality_findings: report\n")
+	found := false
+	for _, r := range reported.Results {
+		if r.ID == "FAST-LAZY-EXC" {
+			found = true
+			if r.Subcategory == healthcheck.SubcategoryQuality {
+				t.Fatalf("FAST-LAZY-EXC has subcategory %q, want it scored and gated", r.Subcategory)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("results = %+v, want FAST-LAZY-EXC on the swallowed exception", reported.Results)
+	}
+	hc := reported.HealthCheck
+	if hc.Verdict.Passed || hc.Breakdown.CountByRule["fast-lazy-exc"] != 1 || hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 0 {
+		t.Fatalf("under report: verdict %+v, breakdown %+v; want FAST-LAZY-EXC to gate", hc.Verdict, hc.Breakdown)
+	}
+	if blocked := scan(gate + "  quality_findings: block\n").HealthCheck; blocked.Score != hc.Score {
+		t.Fatalf("score under report %d, under block %d; want quality_findings to change nothing", hc.Score, blocked.Score)
 	}
 }
 

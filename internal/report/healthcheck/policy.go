@@ -54,11 +54,14 @@ const (
 // of other scanners listed in qualityChecks.
 const (
 	// QualityFindingsReport triages and reports them, but keeps them out of
-	// the score and the gate verdict. The default: a security score should
-	// not move with the size of a file or a swallowed exception.
+	// the score and the gate verdict: a security score need not move with
+	// the size of a file or a commented-out block. An opt-in throughout v1:
+	// as the default it would let findings that blocked before pass for a
+	// configuration that does not set the key, a breaking change (see the
+	// compatibility policy in CONTRIBUTING.md).
 	QualityFindingsReport = "report"
-	// QualityFindingsBlock scores and gates them like any other finding,
-	// as every release before quality_findings did.
+	// QualityFindingsBlock scores and gates them like any other finding, as
+	// every release before quality_findings did. The default.
 	QualityFindingsBlock = "block"
 )
 
@@ -86,8 +89,8 @@ type Policy struct {
 	// a finding another detector also reported gates as before. Assess marks
 	// such findings Finding.ReportOnly.
 	IaCFindings string `json:"iac_findings,omitempty"`
-	// QualityFindings is QualityFindingsReport (the default) or
-	// QualityFindingsBlock. It applies to findings every report of which is
+	// QualityFindings is QualityFindingsBlock (the default) or
+	// QualityFindingsReport. It applies to findings every report of which is
 	// a code-quality finding (see ReportOnlyKind); a finding a security rule
 	// also reported gates as before.
 	QualityFindings string `json:"quality_findings,omitempty"`
@@ -370,12 +373,11 @@ func ParseIaCFindings(value string) (string, bool) {
 }
 
 // NormalizeQualityFindings returns the canonical quality_findings mode.
-// Empty is the default, report. An unrecognised value becomes block: a typo
-// must fall back to the strict reading, not the loose one.
+// Empty is the default, block: with the key unset, the score and the gate
+// are those of every release before the setting existed. An unrecognised
+// value becomes block too: a typo must fall back to the strict reading, not
+// the loose one.
 func NormalizeQualityFindings(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return QualityFindingsReport
-	}
 	if mode, ok := ParseQualityFindings(value); ok {
 		return mode
 	}

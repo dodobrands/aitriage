@@ -604,7 +604,7 @@ func init() {
 	scanCmd.Flags().StringVar(&failOn, "fail-on", "critical", "When to exit with code 1: critical (default), any, never")
 	scanCmd.Flags().IntVar(&failScore, "fail-score", 0, "Fail if Health Check score is below this threshold (0 = disabled)")
 	scanCmd.Flags().StringVar(&healthProfile, "health-profile", "", "Health Check policy profile: baseline, standard, strict")
-	scanCmd.Flags().StringVar(&scanQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (built-in rules with subcategory quality, e.g. ENTR-12): 'report' (default) reports them without scoring or gating them; 'block' scores and gates them like any other finding")
+	scanCmd.Flags().StringVar(&scanQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (built-in rules with subcategory quality, e.g. ENTR-12): 'block' (default) scores and gates them like any other finding; 'report' reports them without scoring or gating them")
 	scanCmd.Flags().BoolVar(&noHistory, "no-history", false, "Skip saving scan results to history (disables diff)")
 	scanCmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Launch interactive TUI dashboard")
 	scanCmd.Flags().BoolVar(&useBaseline, "baseline", false, "Report only NEW findings not in the baseline")

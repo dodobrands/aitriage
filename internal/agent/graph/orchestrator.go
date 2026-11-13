@@ -366,10 +366,11 @@ func computeHealthCheck(state *AgentState) {
 		}
 	}
 	recorded := recordedDismissals(state)
-	// iac_findings and quality_findings (report by default) keep findings
-	// that are nothing but IaC misconfigurations or code-quality reports out
-	// of the score and the gate; they are still triaged and reported.
-	// healthcheck.Assess decides from the origins, as every other path does.
+	// iac_findings: report (the default) and quality_findings: report (an
+	// opt-in) keep findings that are nothing but IaC misconfigurations or
+	// code-quality reports out of the score and the gate; they are still
+	// triaged and reported. healthcheck.Assess decides from the origins, as
+	// every other path does.
 	subcategories := coreSubcategories(state.CoreFindings)
 
 	in := healthcheck.Input{}
@@ -1161,7 +1162,8 @@ func displayLocation(file string, line int) string {
 }
 
 // policyTerms renders the gate settings a reader needs to interpret the
-// verdict: fail_on, plus the confirmed severity floor when it applies.
+// verdict: fail_on, plus the confirmed severity floor when it applies and
+// each other setting that is not at its default.
 func policyTerms(policy healthcheck.Policy) string {
 	terms := fmt.Sprintf("`fail_on=%s`", policy.FailOn)
 	if policy.FailOn == healthcheck.FailOnConfirmed {
@@ -1173,8 +1175,8 @@ func policyTerms(policy healthcheck.Policy) string {
 	if healthcheck.NormalizeIaCFindings(policy.IaCFindings) == healthcheck.IaCFindingsBlock {
 		terms += ", `iac_findings=block`"
 	}
-	if healthcheck.NormalizeQualityFindings(policy.QualityFindings) == healthcheck.QualityFindingsBlock {
-		terms += ", `quality_findings=block`"
+	if healthcheck.NormalizeQualityFindings(policy.QualityFindings) == healthcheck.QualityFindingsReport {
+		terms += ", `quality_findings=report`"
 	}
 	return terms
 }

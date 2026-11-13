@@ -165,18 +165,43 @@ var (
 )
 
 // qualityRuleIDs lists the rules of subcategory quality and why each has no
-// security impact in any project. Under quality_findings: report (the
-// default) their findings are triaged and reported but neither scored nor
-// gating, so tagging a rule quality is a deliberate decision: it must be LOW
-// and listed here.
+// security impact in any project. Under quality_findings: report their
+// findings are triaged and reported but neither scored nor gating, so
+// tagging a rule quality is a deliberate decision: it must be LOW and listed
+// here.
 var qualityRuleIDs = map[string]string{
 	"ENTR-04":          "AI chat text in a comment; a comment has no effect at run time",
 	"ENTR-AI-RESIDUE":  "AI chat preamble in a comment; a comment has no effect at run time",
 	"ENTR-ZOMBIE-CODE": "commented-out code; a comment has no effect at run time",
 	"ENTR-07":          "TypeScript type annotations and @ts-ignore are erased before the code runs",
 	"ENTR-12":          "file length is a maintainability signal",
-	"FAST-LAZY-EXC":    "swallowed exception, a reliability defect (CWE-703); the same class as Bandit B110/B112",
 	"FAST-SYNC-ASYNC":  "a blocking call in an async function is a performance defect",
+}
+
+// neverQualityRuleIDs lists rules that must not be tagged quality, with the
+// reason: their findings can hide a security failure, so they are always
+// scored and gated, whatever quality_findings says.
+var neverQualityRuleIDs = map[string]string{
+	"FAST-LAZY-EXC": "a swallowed exception can turn a failed security check (a token that does not verify) into a pass",
+}
+
+// TestNeverQualityRulesAreNotQuality keeps the rules of neverQualityRuleIDs
+// in the catalog and out of subcategory quality.
+func TestNeverQualityRulesAreNotQuality(t *testing.T) {
+	subcategories := map[string]string{}
+	forEachCatalogRule(t, func(_ string, r models.Rule) { subcategories[r.ID] = r.Metadata["subcategory"] })
+	for id, reason := range neverQualityRuleIDs {
+		subcategory, ok := subcategories[id]
+		switch {
+		case !ok:
+			t.Errorf("neverQualityRuleIDs lists %s, which is not in the catalog", id)
+		case subcategory == "quality":
+			t.Errorf("%s is subcategory quality; it must be scored and gated: %s", id, reason)
+		}
+		if _, listed := qualityRuleIDs[id]; listed {
+			t.Errorf("%s is in qualityRuleIDs and neverQualityRuleIDs", id)
+		}
+	}
 }
 
 // checkMetadata requires the fields reports and SARIF rely on: how much to
