@@ -238,12 +238,12 @@ func TestNewClientSendsTheDefaultTemperature(t *testing.T) {
 }
 
 func TestOpenAIReasoningModels(t *testing.T) {
-	for _, model := range []string{"o1", "o1-mini", "o3", "o3-mini", "o3-pro", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2-codex", "openai/o3", "openai/gpt-5", "O3-MINI"} {
+	for _, model := range []string{"o1", "o1-mini", "o3", "o3-mini", "o3-pro", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2-codex", "openai/o3", "openai/gpt-5", "O3-MINI", "gpt-6", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra", "openai/gpt-6-luna", "GPT-6-Luna"} {
 		if !openAIReasoningModel(model) {
 			t.Errorf("%s is an OpenAI reasoning model", model)
 		}
 	}
-	for _, model := range []string{"", "gpt-4o", "gpt-4.1-mini", "gpt-oss-20b", "openai/gpt-oss-120b", "gemini-2.5-flash", "llama-3.3-70b-versatile", "omni-moderation-latest", "olmo2", "gpt-50"} {
+	for _, model := range []string{"", "gpt-4o", "gpt-4.1-mini", "gpt-oss-20b", "openai/gpt-oss-120b", "gemini-2.5-flash", "llama-3.3-70b-versatile", "omni-moderation-latest", "olmo2", "gpt-50", "gpt-60"} {
 		if openAIReasoningModel(model) {
 			t.Errorf("%s is not an OpenAI reasoning model", model)
 		}
@@ -260,6 +260,8 @@ func TestReasoningModelsGetNoTemperature(t *testing.T) {
 		{provider: "openai", model: "o3-mini"},
 		{provider: "openai", model: "gpt-5", setting: "0.3", warns: true},
 		{provider: "ollama", model: "openai/gpt-5-mini"},
+		{provider: "openai", model: ""}, // the client's default, gpt-6-luna
+		{provider: "openai", model: "gpt-6-luna", setting: "0.3", warns: true},
 	} {
 		f := answering(t, openAIReply)
 		var log bytes.Buffer
@@ -305,7 +307,7 @@ func TestGeminiRequestsCarryTheTemperatureUpToGemini2(t *testing.T) {
 		provider, model, setting, want string
 		warns                          bool
 	}{
-		{provider: "gemini", model: "", want: "0"}, // the client's default, gemini-2.5-flash
+		{provider: "gemini", model: "", want: absent}, // the client's default, gemini-3.5-flash-lite
 		{provider: "gemini", model: "gemini-2.5-flash", want: "0"},
 		{provider: "gemini", model: "gemini-2.5-pro", setting: "0.4", want: "0.4"},
 		{provider: "gemini", model: "gemini-3.6-flash", want: absent},
@@ -347,17 +349,22 @@ func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
 		cfg             Config
 		provider, model string
 	}{
-		{cfg: Config{Provider: "openai"}, provider: "openai", model: "gpt-4o"},
-		{cfg: Config{Provider: "gemini"}, provider: "gemini", model: "gemini-2.5-flash"},
+		{cfg: Config{Provider: "openai"}, provider: "openai", model: "gpt-6-luna"},
+		{cfg: Config{Provider: "gemini"}, provider: "gemini", model: "gemini-3.5-flash-lite"},
 		{cfg: Config{Provider: "ollama", Model: "llama3.1"}, provider: "ollama", model: "llama3.1"},
+		{cfg: Config{Provider: "openai", Model: "gpt-4o"}, provider: "openai", model: "gpt-4o"},
+		{cfg: Config{Provider: "gemini", Model: "gemini-2.5-flash"}, provider: "gemini", model: "gemini-2.5-flash"},
 	} {
 		c := NewRetryClient(openAICompatible(t, tc.cfg, f, io.Discard), 3)
 		if provider, model := RequestModel(c); provider != tc.provider || model != tc.model {
 			t.Errorf("RequestModel(%+v) = %q, %q; want %q, %q", tc.cfg, provider, model, tc.provider, tc.model)
 		}
 	}
-	if provider, model := RequestModel(claude(Config{}, f, io.Discard)); provider != "anthropic" || model != "claude-sonnet-4-5" {
-		t.Errorf("Anthropic RequestModel = %q, %q; want anthropic, claude-sonnet-4-5", provider, model)
+	if provider, model := RequestModel(claude(Config{}, f, io.Discard)); provider != "anthropic" || model != "claude-sonnet-5-5" {
+		t.Errorf("Anthropic RequestModel = %q, %q; want anthropic, claude-sonnet-5-5", provider, model)
+	}
+	if provider, model := RequestModel(claude(Config{Model: "claude-sonnet-4-5"}, f, io.Discard)); provider != "anthropic" || model != "claude-sonnet-4-5" {
+		t.Errorf("Anthropic RequestModel with a model set = %q, %q; want anthropic, claude-sonnet-4-5", provider, model)
 	}
 	if provider, model := RequestModel(&mockClient{}); provider != "" || model != "" {
 		t.Errorf("a client that does not know its model reports %q, %q", provider, model)
@@ -401,7 +408,9 @@ func TestAnthropicRequestsCarryTheTemperature(t *testing.T) {
 		model, setting, want string
 		warns                bool
 	}{
-		{model: "", want: "0"}, // the client's default model, claude-sonnet-4-5
+		{model: "", want: absent}, // the client's default model, claude-sonnet-5-5
+		{model: "", setting: "0.3", want: absent, warns: true},
+		{model: "claude-sonnet-4-5", want: "0"},
 		{model: "claude-sonnet-4-5", setting: "0.9", want: "0.9"},
 		{model: "claude-sonnet-4-5", setting: "1.5", want: absent, warns: true}, // Anthropic takes 0 to 1
 		{model: "claude-sonnet-4-5", setting: "default", want: absent},

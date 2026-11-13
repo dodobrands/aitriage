@@ -16,6 +16,20 @@ import (
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
+// The models requests name when the configuration sets none (llm.model,
+// AITRIAGE_LLM_MODEL or --model). Verdicts differ between models, so a change
+// here changes the verdicts of every run that relies on it: the README lists
+// these, and the release notes say when one moves.
+const (
+	DefaultGeminiModel    = "gemini-3.5-flash-lite"
+	DefaultAnthropicModel = "claude-sonnet-5-5"
+	DefaultOpenAIModel    = "gpt-6-luna"
+)
+
+// ModelFlagUsage is the help text of a --model flag.
+const ModelFlagUsage = "LLM model name (unset: " + DefaultGeminiModel + " for gemini, " +
+	DefaultAnthropicModel + " for anthropic, " + DefaultOpenAIModel + " for openai; groq and ollama need one)"
+
 const noLLMConfiguredMsg = `no LLM provider configured
 
 Set one of these environment variables:
@@ -38,7 +52,7 @@ type openAIClient struct {
 // openAIModel returns the model an OpenAI-compatible request names.
 func openAIModel(configured string) string {
 	if configured == "" {
-		return string(openai.ChatModelGPT4o)
+		return DefaultOpenAIModel
 	}
 	return configured
 }
@@ -126,7 +140,7 @@ func newAnthropicClient(cfg Config, log io.Writer, opts ...option.RequestOption)
 // anthropicModel returns the model an Anthropic request names.
 func anthropicModel(configured string) string {
 	if configured == "" {
-		return anthropic.ModelClaudeSonnet4_5
+		return DefaultAnthropicModel
 	}
 	return configured
 }
@@ -282,7 +296,7 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gemini-2.5-flash"
+			model = DefaultGeminiModel
 		}
 		opts := []openai_option.RequestOption{
 			openai_option.WithAPIKey(cfg.APIKey),

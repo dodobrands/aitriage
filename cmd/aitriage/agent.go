@@ -67,12 +67,13 @@ The LLM provider is auto-detected from environment variables:
   ANTHROPIC_API_KEY → Anthropic Claude
   OPENAI_API_KEY    → OpenAI GPT
 
-You can also configure it in .aitriage.yaml under the "llm:" section.`,
+You can also configure it in .aitriage.yaml under the "llm:" section.
+With no model set, the provider's default model is used (see --model).`,
 	Example: `  aitriage agent                        # Audit current directory
   aitriage agent ./my-project           # Audit specific path
   aitriage agent --no-chat              # Skip interactive Q&A (CI/CD)
   aitriage agent --provider gemini      # Force specific provider
-  aitriage agent --model gemini-1.5-pro # Use specific model`,
+  aitriage agent --model gemini-3.8-flash # Use a specific model`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgent,
 }
@@ -80,7 +81,7 @@ You can also configure it in .aitriage.yaml under the "llm:" section.`,
 func init() {
 	rootCmd.AddCommand(agentCmd)
 	agentCmd.Flags().StringVar(&agentProvider, "provider", "", "LLM provider: gemini, anthropic, openai, ollama, groq (auto-detected from env)")
-	agentCmd.Flags().StringVar(&agentModel, "model", "", "LLM model name")
+	agentCmd.Flags().StringVar(&agentModel, "model", "", llm.ModelFlagUsage)
 	agentCmd.Flags().StringVar(&agentAPIKey, "api-key", "", "LLM API key (or set via env)")
 	agentCmd.Flags().Var(&agentTemperature, "temperature", llm.TemperatureFlagUsage)
 	agentCmd.Flags().BoolVar(&agentNoChat, "no-chat", false, "Skip interactive Q&A (for CI/CD)")

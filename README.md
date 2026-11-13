@@ -363,7 +363,17 @@ aitriage agent . --no-chat
 
 `agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice. It exits `1` when a configured gate fails and `2` when the audit could not complete ([exit codes](#exit-codes)).
 
-AITriage asks the model for temperature 0, so the same finding gets the same verdict on every run; provider defaults, often 1, draw a new answer each time. Set another value from 0 to 2, or `default` to send none, with `--temperature`, `AITRIAGE_LLM_TEMPERATURE` or `llm.temperature` in `.aitriage.yaml`, in that order of precedence. Models that take no temperature get none: OpenAI reasoning models (the o-series and GPT-5), Gemini 3 and later, and Claude models released after Claude Opus 4.6. When any other endpoint answers `400` naming the parameter, AITriage repeats that request without it and sends none for the rest of the run. `llm_usage` in `triage-findings.json` records the provider, model and temperature the requests carried (`provider default` when no temperature, as in an AI IDE run, whose model AITriage does not configure), so verdicts that moved between runs can be traced to a change of model or temperature; the verdict cache keeps verdicts made at different temperatures apart.
+When no model is set (`--model`, `AITRIAGE_LLM_MODEL` or `llm.model`), AITriage uses the provider's default:
+
+| Provider | Default model |
+| :--- | :--- |
+| `gemini` | `gemini-3.5-flash-lite` |
+| `anthropic` | `claude-sonnet-5-5` |
+| `openai` | `gpt-6-luna` |
+
+Groq and Ollama serve models of their own: set one. A default moves when its provider retires the model, and the verdicts move with it ([the gate](#why-the-gate-can-fail-with-nothing-confirmed)); to keep a model, set `llm.model`. Claude 5 models think before they answer: AITriage leaves room for that in `max_tokens` and reads only the answer. A request Claude declines (`stop_reason: refusal`) is never read as an answer: the log names the refusal category, a declined classification request is retried in smaller requests, and a finding Claude keeps declining stays `Needs Manual Review (unclassified)`.
+
+AITriage asks the model for temperature 0, so the same finding gets the same verdict on every run; provider defaults, often 1, draw a new answer each time. Set another value from 0 to 2, or `default` to send none, with `--temperature`, `AITRIAGE_LLM_TEMPERATURE` or `llm.temperature` in `.aitriage.yaml`, in that order of precedence. Models that take no temperature get none: OpenAI reasoning models (the o-series, GPT-5 and GPT-6), Gemini 3 and later, and Claude models released after Claude Opus 4.6. When any other endpoint answers `400` naming the parameter, AITriage repeats that request without it and sends none for the rest of the run. `llm_usage` in `triage-findings.json` records the provider, model and temperature the requests carried (`provider default` when no temperature, as in an AI IDE run, whose model AITriage does not configure), so verdicts that moved between runs can be traced to a change of model or temperature; the verdict cache keeps verdicts made at different temperatures apart.
 
 To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code).
 
@@ -590,7 +600,7 @@ first move: it keeps every finding visible in reports while the gate judges only
 | :--- | :--- |
 | `0` | The gate passed, or no gate applies |
 | `1` | The security gate failed. Usage errors and setup problems caught before the run starts (Docker not running) also exit `1` |
-| `2` | `aitriage agent` could not complete the audit: no usable LLM provider, a provider failure (rejected key, rate limit, timeout) or replies that classify nothing (empty, malformed, or only rejected verdicts), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
+| `2` | `aitriage agent` could not complete the audit: no usable LLM provider, a provider failure (rejected key, rate limit, timeout) or replies that classify nothing (empty, malformed, declined, or only rejected verdicts), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
 
 A provider failure no longer discards the run. When triage is cut short, AITriage still writes
 every report: `triage-findings.json` records `triage_status: failed` and the reason, the

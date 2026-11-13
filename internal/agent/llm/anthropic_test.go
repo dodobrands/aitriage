@@ -115,16 +115,16 @@ func TestFakeSonnet55RejectsWhatTheModelRejects(t *testing.T) {
 	}
 }
 
-// Requests to claude-sonnet-5-5 are made the way it accepts them: no
-// sampling parameter, no thinking setting (it runs adaptive thinking),
-// max_tokens with room for thinking as well as the reply, and a conversation
-// that ends with a user turn. The answer is the text after the thinking
-// block.
-func TestSonnet55IsAskedTheWayItAccepts(t *testing.T) {
+// With no model configured, requests name claude-sonnet-5-5 and are made
+// the way it accepts them: no sampling parameter, no thinking setting (it
+// runs adaptive thinking), max_tokens with room for thinking as well as the
+// reply, and a conversation that ends with a user turn. The answer is the
+// text after the thinking block.
+func TestDefaultAnthropicModelIsAskedTheWaySonnet55Accepts(t *testing.T) {
 	const answer = `{"finding_dispositions":[]}`
 	f := fakeSonnet55(t, func() string { return sonnet55Answer(answer) })
 	var log bytes.Buffer
-	c := NewRetryClient(claude(Config{Model: "claude-sonnet-5-5"}, f, &log), 3)
+	c := NewRetryClient(claude(Config{}, f, &log), 3)
 
 	got, usage, err := c.Chat(context.Background(), classificationRequest())
 	if err != nil {
@@ -167,7 +167,7 @@ func TestAnthropicAnswerJoinsTheTextBlocks(t *testing.T) {
 	content := `[` + thinkingBlock + `,{"type":"redacted_thinking","data":"ZW5jcnlwdGVk"},{"type":"text","text":"{\"finding_dispositions\":"},` +
 		thinkingBlock + `,{"type":"text","text":"[]}"}]`
 	f := fakeSonnet55(t, func() string { return sonnet55Message(content, "end_turn", "null") })
-	got, _, err := claude(Config{Model: "claude-sonnet-5-5"}, f, io.Discard).Chat(context.Background(), classificationRequest())
+	got, _, err := claude(Config{}, f, io.Discard).Chat(context.Background(), classificationRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestDeclinedRequestIsAFailedRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := fakeSonnet55(t, func() string { return sonnet55Message(tc.content, "refusal", tc.details) })
 			var log bytes.Buffer
-			c := NewRetryClient(claude(Config{Model: "claude-sonnet-5-5"}, f, &log), 3)
+			c := NewRetryClient(claude(Config{}, f, &log), 3)
 
 			got, usage, err := c.Chat(context.Background(), classificationRequest())
 			if got != "" {
@@ -241,7 +241,7 @@ func TestDeclinedRequestIsAFailedRequest(t *testing.T) {
 func TestThinkingWithoutTextIsNoAnswer(t *testing.T) {
 	f := fakeSonnet55(t, func() string { return sonnet55Message(`[`+thinkingBlock+`]`, "max_tokens", "null") })
 	var log bytes.Buffer
-	c := NewRetryClient(claude(Config{Model: "claude-sonnet-5-5"}, f, &log), 3)
+	c := NewRetryClient(claude(Config{}, f, &log), 3)
 
 	got, _, err := c.Chat(context.Background(), classificationRequest())
 	if got != "" || !errors.Is(err, ErrNoAnswer) || errors.Is(err, ErrRefused) {
@@ -258,16 +258,16 @@ func TestThinkingWithoutTextIsNoAnswer(t *testing.T) {
 	}
 }
 
-// Claude Sonnet 5.5 answers 400 to any temperature but its default. It never
-// gets one, not even a configured one, and one line says so. A name AITriage
-// takes for an older model but that the endpoint serves as Claude Sonnet 5.5,
-// as a gateway alias may, is refused once and asked again without it for the
-// rest of the run.
+// Claude Sonnet 5.5 answers 400 to any temperature but its default. The
+// default model never gets one, not even a configured one, and one line says
+// so. A name AITriage takes for an older model but that the endpoint serves
+// as Claude Sonnet 5.5, as a gateway alias may, is refused once and asked
+// again without it for the rest of the run.
 func TestSonnet55NeverGetsATemperature(t *testing.T) {
-	t.Run("claude-sonnet-5-5", func(t *testing.T) {
+	t.Run("default model", func(t *testing.T) {
 		f := fakeSonnet55(t, func() string { return sonnet55Answer("ok") })
 		var log bytes.Buffer
-		c := claude(Config{Model: "claude-sonnet-5-5", Temperature: "0.3"}, f, &log)
+		c := claude(Config{Temperature: "0.3"}, f, &log)
 		for range 2 {
 			if err := chatOnce(t, c); err != nil {
 				t.Fatal(err)

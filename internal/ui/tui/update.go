@@ -2327,8 +2327,8 @@ func (m *DashboardModel) initConfigInputs() {
 		m.ConfigInputs[2].SetValue("gemini")
 
 		// 4. LLM Model
-		m.ConfigInputs[3].Placeholder = "gemini-2.5-flash"
-		m.ConfigInputs[3].SetValue("gemini-2.5-flash")
+		m.ConfigInputs[3].Placeholder = llm.DefaultGeminiModel
+		m.ConfigInputs[3].SetValue(llm.DefaultGeminiModel)
 
 		m.ConfigFocusIndex = 0
 		m.ConfigInputs[0].Focus()
