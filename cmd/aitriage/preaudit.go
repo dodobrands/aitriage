@@ -30,7 +30,7 @@ func init() {
 	rootCmd.AddCommand(preauditCmd)
 	preauditCmd.Flags().StringVar(&preauditArchitecture, "arch", "", "Describe the architecture you plan to build (e.g. Next.js, Go API, Postgres)")
 	preauditCmd.Flags().StringVar(&preauditProvider, "provider", "", "LLM provider: gemini, anthropic, openai, ollama, groq (auto-detected from env)")
-	preauditCmd.Flags().StringVar(&preauditModel, "model", "", "LLM model name")
+	preauditCmd.Flags().StringVar(&preauditModel, "model", "", llm.ModelFlagUsage)
 	preauditCmd.Flags().StringVar(&preauditAPIKey, "api-key", "", "LLM API key (or set via env)")
 	preauditCmd.Flags().Var(&preauditTemperature, "temperature", llm.TemperatureFlagUsage)
 }

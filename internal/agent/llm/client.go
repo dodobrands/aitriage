@@ -21,6 +21,8 @@ type Usage struct {
 // Client is the interface for any LLM provider.
 type Client interface {
 	// Chat sends a list of messages and returns the model's response and usage stats.
+	// An error that matches ErrNoAnswer means the provider answered without an
+	// answer to use, such as a request the model declined (see RefusalError).
 	Chat(ctx context.Context, messages []Message) (string, Usage, error)
 }
 

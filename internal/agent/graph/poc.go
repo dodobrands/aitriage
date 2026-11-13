@@ -158,7 +158,14 @@ func pocBatchLLM(ctx context.Context, language string, batch []EnrichedFinding, 
 	}
 
 	response, u, err := llmClient.Chat(ctx, messages)
-	if err != nil {
+	switch {
+	case errors.Is(err, llm.ErrRefused):
+		// The model declined the request (stop_reason refusal): the same
+		// outcome as a refusal written as text below.
+		return pocRefusalResults(batch), u, PoCStats{Refusals: len(batch)}, nil
+	case errors.Is(err, llm.ErrNoAnswer):
+		return nil, u, PoCStats{ParseFailures: 1}, fmt.Errorf("%w: %w", errPoCParse, err)
+	case err != nil:
 		return nil, u, PoCStats{TransportErrors: 1}, fmt.Errorf("PoC verification LLM call failed: %w", err)
 	}
 	if isPoCRefusal(response) {

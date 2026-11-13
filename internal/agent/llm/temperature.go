@@ -290,14 +290,18 @@ func leadingDigits(s string) string {
 
 // openAIReasoningModel reports whether model is an OpenAI reasoning model,
 // which rejects any temperature but the default: the o-series (o1, o3,
-// o4-mini) and the GPT-5 family (gpt-5, gpt-5-mini, gpt-5.1), whichever
-// OpenAI-compatible endpoint serves it.
+// o4-mini) and the GPT-5 and GPT-6 families (gpt-5, gpt-5-mini, gpt-5.1,
+// gpt-6-luna, gpt-6.1-sol), whichever OpenAI-compatible endpoint serves it.
+// OpenAI's GPT-6 guide says to leave temperature out unless reasoning effort
+// is "none", which AITriage never sets.
 func openAIReasoningModel(model string) bool {
 	m := baseModelName(model)
 	var rest string
 	switch {
 	case strings.HasPrefix(m, "gpt-5"):
 		rest = m[len("gpt-5"):]
+	case strings.HasPrefix(m, "gpt-6"):
+		rest = m[len("gpt-6"):]
 	case len(m) > 1 && m[0] == 'o' && leadingDigits(m[1:]) != "":
 		rest = m[1+len(leadingDigits(m[1:])):]
 	default:

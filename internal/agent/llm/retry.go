@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -84,6 +85,12 @@ func retryDelay(attempt int) time.Duration {
 // isRetryable checks whether an error is transient and worth retrying.
 func isRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	// The provider answered, without an answer to use: the same request
+	// would end the same way, so callers decide what to do with it.
+	if errors.Is(err, ErrNoAnswer) {
 		return false
 	}
 

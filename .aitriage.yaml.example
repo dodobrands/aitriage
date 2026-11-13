@@ -11,7 +11,10 @@ llm:
   # The model used for deep analysis and remediation. Verdicts differ between
   # models on the same code, so the fail_on: confirmed gate depends on this
   # choice: pin one model and re-check a known project before switching.
-  model: gemini-2.5-flash
+  # Left unset, the provider's default applies: gemini-3.5-flash-lite
+  # (gemini), claude-sonnet-5-5 (anthropic), gpt-6-luna (openai); groq and
+  # ollama need a model. A default moves when its provider retires the model.
+  model: gemini-3.5-flash-lite
 
   # NEVER hardcode keys here. Always use environment variables.
   api_key: $GEMINI_API_KEY
@@ -22,9 +25,9 @@ llm:
 
   # Sampling temperature, 0 to 2 (default 0, so the same finding gets the same
   # verdict on every run), or "default" to send none and keep the provider's own.
-  # Models that take no temperature get none: OpenAI o-series and GPT-5, Gemini 3
-  # and later, Claude models after Opus 4.6. AITRIAGE_LLM_TEMPERATURE and
-  # --temperature win.
+  # Models that take no temperature get none: OpenAI o-series, GPT-5 and GPT-6,
+  # Gemini 3 and later, Claude models after Opus 4.6. AITRIAGE_LLM_TEMPERATURE
+  # and --temperature win.
   # temperature: 0
 
 # ─── Ignore Rules ─────────────────────────────────────────────────────────────

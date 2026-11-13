@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/spf13/cobra"
 )
 
@@ -298,7 +299,7 @@ func generateAitrageConfig(stacks []detectedStack) string {
 	sb.WriteString("# Verdicts differ between models, and so does fail_on: confirmed: pin one model.\n")
 	sb.WriteString("llm:\n")
 	sb.WriteString("  provider: \"\"  # auto-detected from env\n")
-	sb.WriteString("  model: \"\"\n")
+	sb.WriteString("  model: \"\"  # empty: " + llm.DefaultGeminiModel + " (gemini), " + llm.DefaultAnthropicModel + " (anthropic), " + llm.DefaultOpenAIModel + " (openai)\n")
 	sb.WriteString("  # temperature: 0  # 0 to 2, or default to send none; 0 keeps verdicts repeatable\n\n")
 
 	// CI section

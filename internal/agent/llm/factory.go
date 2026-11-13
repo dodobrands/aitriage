@@ -16,6 +16,20 @@ import (
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
+// The models requests name when the configuration sets none (llm.model,
+// AITRIAGE_LLM_MODEL or --model). Verdicts differ between models, so a change
+// here changes the verdicts of every run that relies on it: the README lists
+// these, and the release notes say when one moves.
+const (
+	DefaultGeminiModel    = "gemini-3.5-flash-lite"
+	DefaultAnthropicModel = "claude-sonnet-5-5"
+	DefaultOpenAIModel    = "gpt-6-luna"
+)
+
+// ModelFlagUsage is the help text of a --model flag.
+const ModelFlagUsage = "LLM model name (unset: " + DefaultGeminiModel + " for gemini, " +
+	DefaultAnthropicModel + " for anthropic, " + DefaultOpenAIModel + " for openai; groq and ollama need one)"
+
 const noLLMConfiguredMsg = `no LLM provider configured
 
 Set one of these environment variables:
@@ -38,7 +52,7 @@ type openAIClient struct {
 // openAIModel returns the model an OpenAI-compatible request names.
 func openAIModel(configured string) string {
 	if configured == "" {
-		return string(openai.ChatModelGPT4o)
+		return DefaultOpenAIModel
 	}
 	return configured
 }
@@ -106,22 +120,27 @@ type anthropicClientWrapper struct {
 	client      anthropic.Client
 	cfg         Config
 	temperature *temperatureControl
+	log         io.Writer // a declined request is reported here
 }
 
 // newAnthropicClient builds the Anthropic client from cfg; opts carry the
 // credentials and transport settings.
 func newAnthropicClient(cfg Config, log io.Writer, opts ...option.RequestOption) *anthropicClientWrapper {
+	if log == nil {
+		log = io.Discard
+	}
 	return &anthropicClientWrapper{
 		client:      anthropic.NewClient(opts...),
 		cfg:         cfg,
 		temperature: newTemperatureControl(cfg, anthropicModel(cfg.Model), log),
+		log:         log,
 	}
 }
 
 // anthropicModel returns the model an Anthropic request names.
 func anthropicModel(configured string) string {
 	if configured == "" {
-		return anthropic.ModelClaudeSonnet4_5
+		return DefaultAnthropicModel
 	}
 	return configured
 }
@@ -156,9 +175,15 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 
 	model := anthropicModel(c.cfg.Model)
 
+	// No thinking parameter: each model runs its own default, adaptive
+	// thinking on the Claude 5 generation (see anthropicAnswer), so a model
+	// set in llm.model gets the same request as the default. Turning thinking
+	// off would take {"type": "between_tools"}, which claude-sonnet-5-5 alone
+	// accepts: any other model, or the same model under a gateway's name for
+	// it, would answer 400.
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
-		MaxTokens: 8192,
+		MaxTokens: anthropicMaxTokens(model),
 		Messages:  anthropicMessages,
 	}
 
@@ -176,13 +201,16 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		return "", Usage{}, fmt.Errorf("anthropic chat error: %w", err)
 	}
 
-	if len(message.Content) == 0 {
-		return "", Usage{}, fmt.Errorf("empty response from anthropic")
-	}
-
 	usage := usageFromAnthropic(message.Usage)
-
-	return message.Content[0].Text, usage, nil
+	answer, err := anthropicAnswer(message, model)
+	if err != nil {
+		var refusal *RefusalError
+		if errors.As(err, &refusal) {
+			_, _ = fmt.Fprintf(c.log, "   ⚠️ %v; the request counts as failed\n", refusal)
+		}
+		return "", usage, err
+	}
+	return answer, usage, nil
 }
 
 func usageFromOpenAI(u openai.CompletionUsage) Usage {
@@ -268,7 +296,7 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gemini-2.5-flash"
+			model = DefaultGeminiModel
 		}
 		opts := []openai_option.RequestOption{
 			openai_option.WithAPIKey(cfg.APIKey),
