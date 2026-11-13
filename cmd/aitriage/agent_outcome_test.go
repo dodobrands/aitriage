@@ -237,12 +237,11 @@ func TestAgentQualityFindingsFlag(t *testing.T) {
 		t.Fatalf("policy quality_findings = %q, want the flag to override the configuration", policy.QualityFindings)
 	}
 	agentHealthProfile = previousProfile
-	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), &config.Config{}); policy.QualityFindings != healthcheck.QualityFindingsReport {
-		t.Fatalf("default quality_findings = %q, want report", policy.QualityFindings)
+	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), &config.Config{}); policy.QualityFindings != healthcheck.QualityFindingsBlock {
+		t.Fatalf("default quality_findings = %q, want block", policy.QualityFindings)
 	}
-	blocked := &config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: "block"}}
-	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), blocked); policy.QualityFindings != healthcheck.QualityFindingsBlock {
-		t.Fatalf("configured quality_findings = %q, want block", policy.QualityFindings)
+	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), reported); policy.QualityFindings != healthcheck.QualityFindingsReport {
+		t.Fatalf("configured quality_findings = %q, want report", policy.QualityFindings)
 	}
 
 	args, err := agentContainerCommandArgs(t.TempDir())

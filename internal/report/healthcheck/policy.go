@@ -3,6 +3,8 @@ package healthcheck
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 const (
@@ -54,11 +56,14 @@ const (
 // of other scanners listed in qualityChecks.
 const (
 	// QualityFindingsReport triages and reports them, but keeps them out of
-	// the score and the gate verdict. The default: a security score should
-	// not move with the size of a file or a swallowed exception.
+	// the score and the gate verdict: a security score need not move with
+	// the size of a file or a commented-out block. An opt-in throughout v1:
+	// as the default it would let findings that blocked before pass for a
+	// configuration that does not set the key, a breaking change (see the
+	// compatibility policy in CONTRIBUTING.md).
 	QualityFindingsReport = "report"
-	// QualityFindingsBlock scores and gates them like any other finding,
-	// as every release before quality_findings did.
+	// QualityFindingsBlock scores and gates them like any other finding, as
+	// every release before quality_findings did. The default.
 	QualityFindingsBlock = "block"
 )
 
@@ -83,13 +88,15 @@ type Policy struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
 	// applies to findings every report of which is an IaC misconfiguration;
-	// a finding another detector also reported gates as before. Assess marks
-	// such findings Finding.ReportOnly.
+	// a finding another detector also reported, or one that BlockSources or
+	// BlockClasses names, gates as before. Assess marks such findings
+	// Finding.ReportOnly (see ReportOnlyKind).
 	IaCFindings string `json:"iac_findings,omitempty"`
-	// QualityFindings is QualityFindingsReport (the default) or
-	// QualityFindingsBlock. It applies to findings every report of which is
-	// a code-quality finding (see ReportOnlyKind); a finding a security rule
-	// also reported gates as before.
+	// QualityFindings is QualityFindingsBlock (the default) or
+	// QualityFindingsReport. It applies to LOW and INFO findings every report
+	// of which is a code-quality finding (see ReportOnlyKind); a finding a
+	// security rule also reported, or one that BlockSources or BlockClasses
+	// names, gates as before.
 	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
@@ -229,37 +236,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		})
 	}
 
-	for _, source := range policy.BlockSources {
-		key := normalizeKey(source)
-		if key == "" {
-			continue
-		}
-		if count := res.Breakdown.CountBySource[key]; count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_source",
-				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
-				Source:    key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
-
-	for _, class := range policy.BlockClasses {
-		key := normalizeKey(class)
-		if key == "" {
-			continue
-		}
-		if count := blockedClassCount(res.Breakdown, key); count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_class",
-				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
-				Class:     key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
+	reasons = append(reasons, namedBlockingReasons(res.Breakdown, policy)...)
 
 	if len(reasons) == 0 {
 		return Verdict{
@@ -277,11 +254,55 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 	}
 }
 
+// namedBlockingReasons returns a reason for each block_sources and
+// block_classes entry that names an active finding counted in bd. The gate
+// applies it to the whole project; Assess applies it to one finding at a
+// time, so a finding the gate would block by name is never report-only.
+func namedBlockingReasons(bd Breakdown, policy Policy) []BlockingReason {
+	var reasons []BlockingReason
+	for _, source := range policy.BlockSources {
+		key := normalizeKey(source)
+		if key == "" {
+			continue
+		}
+		if count := bd.CountBySource[key]; count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_source",
+				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
+				Source:    key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+
+	for _, class := range policy.BlockClasses {
+		key := normalizeKey(class)
+		if key == "" {
+			continue
+		}
+		if count := blockedClassCount(bd, key); count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_class",
+				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
+				Class:     key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+	return reasons
+}
+
 // blockedClassCount counts the active findings a block_classes entry names. An
 // entry may be a canonical class ("hardcoded_secret", or "hardcoded-secret" as
 // the configuration examples spell it) or a rule id, which is what classes
 // were before findings of several detectors were merged: a policy written
-// then must keep blocking the findings it blocked.
+// then must keep blocking the findings it blocked. An entry in a spelling
+// Trivy has used for a Kubernetes or Dockerfile check (KSV012, KSV-0012,
+// AVD-KSV-0012) matches the findings Trivy reported under any spelling of
+// that check, so a scanner upgrade that respells it does not relax the gate;
+// every other id compares as written, as in ignore.rules.
 func blockedClassCount(bd Breakdown, key string) int {
 	count := bd.CountByClass[key]
 	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
@@ -290,6 +311,13 @@ func blockedClassCount(bd Breakdown, key string) int {
 	n := bd.CountByRule[key]
 	for _, successor := range ruleSuccessors[key] {
 		n += bd.CountByRule[successor]
+	}
+	if config.IsTrivyCheckID(key) {
+		// Every Trivy report of the check is counted here once, whatever
+		// its spelling, the one in the entry included.
+		if t := bd.trivyChecks[config.NormalizeTrivyCheckID(key)]; t > n {
+			n = t
+		}
 	}
 	if n > count {
 		count = n
@@ -370,12 +398,11 @@ func ParseIaCFindings(value string) (string, bool) {
 }
 
 // NormalizeQualityFindings returns the canonical quality_findings mode.
-// Empty is the default, report. An unrecognised value becomes block: a typo
-// must fall back to the strict reading, not the loose one.
+// Empty is the default, block: with the key unset, the score and the gate
+// are those of every release before the setting existed. An unrecognised
+// value becomes block too: a typo must fall back to the strict reading, not
+// the loose one.
 func NormalizeQualityFindings(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return QualityFindingsReport
-	}
 	if mode, ok := ParseQualityFindings(value); ok {
 		return mode
 	}

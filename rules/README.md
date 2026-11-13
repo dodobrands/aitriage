@@ -98,12 +98,17 @@ get the `external/cwe/cwe-<n>` tag used by GitHub code scanning.
 `subcategory: quality` marks a rule about code quality, maintainability or
 hygiene that has no security impact in any project: `ENTR-04`,
 `ENTR-AI-RESIDUE` and `ENTR-ZOMBIE-CODE` (comments), `ENTR-07` (TypeScript
-type checks), `ENTR-12` (file length), `FAST-LAZY-EXC` (swallowed exception,
-the same defect as Bandit `B110`) and `FAST-SYNC-ASYNC` (a blocking call in an
-async function). Their findings carry the subcategory, and under the default
-`quality_findings: report` they are triaged and reported but neither scored nor
-gating; `quality_findings: block` restores gating. A quality rule must be `LOW`
-and is listed with its reason in `catalog_strict_test.go`.
+type checks), `ENTR-12` (file length) and `FAST-SYNC-ASYNC` (a blocking call
+in an async function). Their findings carry the subcategory. Under the default
+`quality_findings: block` they are scored and gate like any other finding;
+under `quality_findings: report` they are triaged and reported but neither
+scored nor gating, unless a `block_classes` or `block_sources` entry names them.
+A built-in quality rule must be `LOW` and is listed with its reason in
+`catalog_strict_test.go`. A rule pack can label any rule `quality`, but only its
+`LOW` and `INFO` findings are ever reported without scoring; a more severe
+finding is scored and gates whatever its subcategory. A swallowed exception
+(`FAST-LAZY-EXC`, like Bandit's `B110`) is not quality: `except Exception:
+pass` around a token check turns a failed check into a pass.
 
 A rule runs only when its `stack` is `universal` or matches the detected (or
 `--stack`) stack. Every built-in rule declares its severity in `severity:`

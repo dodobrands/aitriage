@@ -33,15 +33,13 @@ rules:
     exclude_tests: true
     # A bare or broad except whose only statement is pass/... . Bandit rates
     # the same pattern LOW (B110): a reliability defect, not an exploitable flaw.
-    # Subcategory quality, like Bandit's B110 and B112: one defect class, so a
-    # report of both detectors is treated alike.
     pattern: '(?m)^[ \t]*except(?:\s+(?:Exception|BaseException)(?:\s+as\s+\w+)?)?\s*:[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?:pass|\.\.\.)[ \t]*(?:#[^\r\n]*)?\r?$'
     severity: LOW
     metadata:
       cwe: "CWE-703"
       owasp: "A10:2025"
       confidence: high
-      subcategory: quality
+      subcategory: audit
     suggestion: "A broad except block that only passes hides failures, including security checks that raised. Catch the specific exception you expect, and log or re-raise everything else."
 
   - id: FAST-SYNC-ASYNC

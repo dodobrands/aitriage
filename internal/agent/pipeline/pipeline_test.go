@@ -106,21 +106,24 @@ func TestRunStateNilGuards(t *testing.T) {
 }
 
 // The pre-triage score the agent prints covers every scanner under the run's
-// policy: a --quality-findings block flag counts a code-quality finding that
-// the project configuration only reports.
+// policy: a --quality-findings report flag leaves out a code-quality finding
+// that the project configuration scores, and the default policy (block)
+// counts one the configuration only reports.
 func TestPreTriageScoreFollowsTheRunPolicy(t *testing.T) {
 	var rich llm.RichScanResult
 	rich.Report.Results = []core.CheckResult{
 		{ID: "ENTR-12", Name: "God File Detected", Status: core.Absent, Severity: "LOW", File: "app/views.py", Line: 1, Subcategory: healthcheck.SubcategoryQuality},
 	}
-	rich.Report.HealthCheck.Policy = healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport}
 
-	reported := scoreUnderPolicy(rich, healthcheck.DefaultPolicy())
+	rich.Report.HealthCheck.Policy = healthcheck.DefaultPolicy()
+	reported := scoreUnderPolicy(rich, healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport})
 	if reported.Report.SecurityScore != 100 || reported.Report.HealthCheck.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 1 {
 		t.Fatalf("score %d, breakdown %+v; want the quality finding reported only", reported.Report.SecurityScore, reported.Report.HealthCheck.Breakdown)
 	}
-	blocked := scoreUnderPolicy(rich, healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsBlock})
+
+	rich.Report.HealthCheck.Policy = healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport}
+	blocked := scoreUnderPolicy(rich, healthcheck.DefaultPolicy())
 	if blocked.Report.SecurityScore >= 100 || blocked.Report.HealthCheck.Policy.QualityFindings != healthcheck.QualityFindingsBlock {
-		t.Fatalf("score %d, policy %+v; want the run's block policy to count the finding", blocked.Report.SecurityScore, blocked.Report.HealthCheck.Policy)
+		t.Fatalf("score %d, policy %+v; want the run's default policy (block) to count the finding", blocked.Report.SecurityScore, blocked.Report.HealthCheck.Policy)
 	}
 }

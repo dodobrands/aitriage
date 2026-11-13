@@ -400,8 +400,9 @@ func RecomputeHealthCheck(result *llm.RichScanResult) {
 
 // applyFullHealthCheck scores every finding under the policy the scan carries
 // (the project configuration). Findings that policy reports without scoring
-// or gating them, IaC misconfigurations and code-quality findings by default,
-// are decided by healthcheck.Assess, the same rule AI triage applies.
+// or gating them, IaC misconfigurations by default and code-quality findings
+// under quality_findings: report, are decided by healthcheck.Assess, the
+// same rule AI triage applies.
 func applyFullHealthCheck(result *llm.RichScanResult) {
 	in := healthcheck.FromCoreResults(result.Report.Results)
 

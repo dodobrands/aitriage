@@ -539,26 +539,32 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | Setting | Meaning |
 | :--- | :--- |
 | `fail_on: critical` (default) | Active CRITICAL/HIGH findings block |
-| `fail_on: any` | Any active finding blocks, reviewed or not |
+| `fail_on: any` | Any active finding blocks, reviewed or not. Findings reported under `iac_findings: report` (the default) and `quality_findings: report` (when set) are not active: they are listed but never block |
 | `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
-| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way. `report` stays the default throughout v1; a default change follows the [compatibility policy](CONTRIBUTING.md#compatibility-and-versioning) |
-| `quality_findings: report` (default) / `block` | Code-quality findings with no security impact: built-in rules of [subcategory `quality`](rules/README.md#rule-schema) (`ENTR-04`, `ENTR-07`, `ENTR-12`, `ENTR-AI-RESIDUE`, `ENTR-ZOMBIE-CODE`, `FAST-LAZY-EXC`, `FAST-SYNC-ASYNC`), Bandit's `B110` and `B112` (`try`/`except`/`pass` and `continue`) and the NFR check for a missing `.env.example`. `report` triages and shows them like IaC findings under `iac_findings: report`, but keeps them out of the score and the gate; `block` (`--quality-findings block`, on `aitriage agent` and `aitriage scan`) restores gating: they are scored and gate like any other finding, as before this setting existed. A finding a security check also reported gates either way |
+| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way, and so does one a `block_sources` or `block_classes` entry names (`block_sources: [trivy]`, `block_classes: [KSV-0012]`). `report` stays the default throughout v1; a default change follows the [compatibility policy](CONTRIBUTING.md#compatibility-and-versioning) |
+| `quality_findings: block` (default) / `report` | Code-quality findings with no security impact, at `LOW` or `INFO`: rules of [subcategory `quality`](rules/README.md#rule-schema) (built in: `ENTR-04`, `ENTR-07`, `ENTR-12`, `ENTR-AI-RESIDUE`, `ENTR-ZOMBIE-CODE`, `FAST-SYNC-ASYNC`) and the NFR check for a missing `.env.example`. A swallowed exception (`FAST-LAZY-EXC`, Bandit's `B110` and `B112`) is not one: `except Exception: pass` around a token check turns a failed check into a pass. `block` scores them and gates on them like any other finding, as before this setting existed. `report` (`--quality-findings report`, on `aitriage agent` and `aitriage scan`) triages and shows them like IaC findings under `iac_findings: report`, but keeps them out of the score and the gate. A finding a security check also reported, a `MEDIUM` or more severe one whatever its rule's subcategory, and one a `block_sources` or `block_classes` entry names gate either way. `block` stays the default throughout v1 |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
 including the Action's default `scan` command, uses `critical`; a raw scan confirms nothing, so
 `fail_on: confirmed` alone never blocks it. `aitriage agent` applies a gate only when one is
 configured in `.aitriage.yaml` or passed with `--fail-on`, `--fail-score` or `--health-profile`.
-`iac_findings` and `quality_findings` mean the same in every command: `aitriage scan`, the
-full scan behind the Web UI, MCP tools and `aitriage baseline`, and AI triage. The
-`breakdown` of the health check counts the findings they keep out of the score in
-`report_only_findings`, split by setting in `report_only_by_kind` (`iac`, `quality`).
+`iac_findings` and `quality_findings` mean the same wherever a scan is scored: `aitriage scan`,
+the scans the Web UI, the TUI and MCP tools run, `aitriage baseline`, and AI triage. The
+aggregate scores on the Web UI dashboards are an exception: they are computed from stored
+findings without these settings and count every open finding. The `breakdown` of the health
+check counts the findings the settings keep out of the score in `report_only_findings`, the
+total of both, split by setting in `report_only_by_kind` (`iac`, `quality`). A `block_classes`
+entry that names a Trivy Kubernetes or Dockerfile check matches it in each spelling Trivy has
+used (`KSV012`, `KSV-0012`, `AVD-KSV-0012`), as in `ignore.rules`; every other ID compares as
+written.
 
 The score and the gate answer different questions. The score counts every active finding,
-reviewed or not, so a project with many unreviewed findings can score low while a gate that
-blocks only confirmed findings passes. When that happens and unreviewed findings cause most of
-the penalty, the summary says so in one line, for example: `Score 68/100: 3 finding(s) await
+reviewed or not, code-quality findings included unless `quality_findings: report` is set, so a
+project with many unreviewed findings can score low while a gate that blocks only confirmed
+findings passes. When that happens and unreviewed findings cause most of the penalty, the
+summary says so in one line, for example: `Score 68/100: 3 finding(s) await
 review and count in full (all 32 penalty points), but fail_on: confirmed blocks only confirmed
 findings at or above MEDIUM.` Before triage, `aitriage agent` prints the
 `Pre-triage health check (all scanners, nothing reviewed yet)`: every scanner, under the run's
@@ -660,7 +666,7 @@ report format. The AI panels report that they are offline instead of failing the
 | Many findings are `Needs Manual Review (unclassified)` | The model returned no verdict for them. Re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE` |
 | Semgrep findings in a large file come and go between runs | Semgrep stops analysing a file after repeated rule timeouts, and timeouts depend on machine load. The summary names the files Semgrep analysed only partly, and `manifest.json` lists them under `scanners[].partial_files` with the reason (`timeout`, `parse_error`, `error`). If such a file is generated, exclude it with `ignore.paths` |
 | A warning says an `ignore.paths` pattern no longer excludes a path | Patterns use `.gitignore` syntax now. Add the suggested entry if the path should stay out of scope |
-| Every Kubernetes manifest without `metadata.namespace` is reported as running in the default namespace (Trivy `KSV-0110`) | Trivy reads a missing namespace as `default`; it cannot see a namespace set at deploy time. If your deploy sets one (`kubectl apply -n`, Helm, Kustomize), add `trivy:KSV-0110` to `ignore.rules` (any spelling, such as `KSV110`, matches). Under the default `iac_findings: report` these findings never gate |
+| Every Kubernetes manifest without `metadata.namespace` is reported as running in the default namespace (Trivy `KSV-0110`) | Trivy reads a missing namespace as `default`; it cannot see a namespace set at deploy time. If your deploy sets one (`kubectl apply -n`, Helm, Kustomize), add `trivy:KSV-0110` to `ignore.rules` (any spelling, such as `KSV110`, matches). Under the default `iac_findings: report` these findings do not gate unless `block_sources` or `block_classes` names them |
 | Images from your own registry are reported as untrusted (Trivy `KSV-0125`) | Trivy trusts only a built-in list of registries. If your cluster policy already restricts registries, add `trivy:KSV-0125` to `ignore.rules` or list it in `.trivyignore` |
 | A dismissed finding still fails CI | Commit `.aitriage-suppressions.json`. A dismissal made in the Web UI or an AI IDE under the container runtime sits in `aitriage-reports/suppressions/…` until you move it into that file. `aitriage agent` applies the file; the raw `aitriage scan` does not |
 

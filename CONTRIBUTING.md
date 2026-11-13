@@ -234,7 +234,10 @@ next major one.
 For example, `iac_findings` defaults to `report` in `v1`. Making `block` the
 default changes the gate for every configuration that does not set the key, so
 it ships in a major release, after `v1` minor releases have warned the runs
-that rely on the default.
+that rely on the default. The same holds the other way round:
+`quality_findings` defaults to `block` in `v1`, the gate of every release
+before the key existed, because a `report` default would let findings that
+block today pass.
 
 ### The `triage-findings.json` schema version
 
@@ -258,7 +261,11 @@ severity changes, scanner updates, and every change that can move verdicts.
 The verdict cache stores each verdict under a namespace: a hash of the cache
 schema version, the AITriage version, the prompt version, a digest of the
 embedded rules, the provider, model and base URL, the thinking setting, the
-output language and the gate policy (`internal/agent/graph/cache.go`). The
+temperature the client sends, the output language and the gate policy
+(profile, `fail_on`, `minimum_score`, the `max_*` thresholds, `block_sources`,
+`block_classes`, `confirmed_min_severity`,
+`fp_critical_requires_high_confidence`, `iac_findings` and `quality_findings`;
+`internal/agent/graph/cache.go`). The
 AITriage version is the `AITRIAGE_VERSION` the scanner image is built with.
 Every run inside the image (the default container runtime of `aitriage agent`,
 the Web UI and the AI IDE connectors, and the GitHub Action) therefore starts
