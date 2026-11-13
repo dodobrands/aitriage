@@ -7,6 +7,13 @@ name: Promote major tag
 # once the release is published, which happens only after its image passed the
 # publish gate; it can also be run by hand for an existing release. A major tag
 # never moves back to an older release, and a failed run puts both tags back.
+#
+# GitHub does not let the workflow token move a tag across commits that change
+# files in .github/workflows. Such a move needs the MAJOR_TAG_TOKEN secret: a
+# fine-grained token for this repository with Contents and Workflows set to
+# read and write. Without it, move the git tag yourself
+# (git push -f origin <release commit>:refs/tags/v1) and run this workflow for
+# the release: it then finds the git tag in place and moves the image.
 
 on:
   workflow_call:
@@ -15,6 +22,9 @@ on:
         description: Release tag to promote, for example v1.14.0
         required: true
         type: string
+    secrets:
+      MAJOR_TAG_TOKEN:
+        required: false
   workflow_dispatch:
     inputs:
       tag:
@@ -94,12 +104,22 @@ jobs:
       # has changed yet.
       - name: Move the git tag
         id: tag
+        env:
+          TAG_TOKEN: ${{ secrets.MAJOR_TAG_TOKEN || github.token }}
         run: |
           set -euo pipefail
+          if [ "$PREV_SHA" = "$SHA" ]; then
+            echo "$MAJOR already points at $TAG"
+            exit 0
+          fi
           if [ -n "$PREV_SHA" ]; then
-            gh api -X PATCH "repos/$REPO/git/refs/tags/$MAJOR" -f sha="$SHA" -F force=true >/dev/null
+            update=(api -X PATCH "repos/$REPO/git/refs/tags/$MAJOR" -f sha="$SHA" -F force=true)
           else
-            gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$MAJOR" -f sha="$SHA" >/dev/null
+            update=(api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$MAJOR" -f sha="$SHA")
+          fi
+          if ! GH_TOKEN="$TAG_TOKEN" gh "${update[@]}" >/dev/null; then
+            echo "::error::GitHub refused to move the $MAJOR git tag to $TAG. The workflow token cannot move a tag across changes to .github/workflows: add the MAJOR_TAG_TOKEN secret (fine-grained token for this repository, Contents and Workflows: read and write), or run 'git push -f origin $SHA:refs/tags/$MAJOR' and run this workflow again. Nothing was changed."
+            exit 1
           fi
 
       - name: Move the image tag
@@ -123,9 +143,12 @@ jobs:
         if: failure() && steps.tag.outcome == 'success'
         env:
           IMAGE_MOVED: ${{ steps.image.outcome == 'success' }}
+          GH_TOKEN: ${{ secrets.MAJOR_TAG_TOKEN || github.token }}
         run: |
           set -uo pipefail
-          if [ -n "$PREV_SHA" ]; then
+          if [ "$PREV_SHA" = "$SHA" ]; then
+            :
+          elif [ -n "$PREV_SHA" ]; then
             gh api -X PATCH "repos/$REPO/git/refs/tags/$MAJOR" -f sha="$PREV_SHA" -F force=true >/dev/null
           else
             gh api -X DELETE "repos/$REPO/git/refs/tags/$MAJOR"

@@ -263,3 +263,5 @@ jobs:
     uses: ./.github/workflows/promote-major.yml
     with:
       tag: ${{ github.ref_name }}
+    secrets:
+      MAJOR_TAG_TOKEN: ${{ secrets.MAJOR_TAG_TOKEN }}
