@@ -104,7 +104,9 @@ rules:
     target: all
     regions: code_and_strings
     condition: "required_pattern"
-    pattern: '(?i)(slowapi|limiter|ratelimit|rate_limit|throttl)'
+    # "limiter" is matched as a word: inside "delimiter" (csv.reader(...,
+    # delimiter=";")) it says nothing about rate limiting.
+    pattern: '(?i)(slowapi|fastapi[-_]limiter|\blimiter\b|ratelimit|rate_limit|throttl)'
     severity: MEDIUM
     metadata:
       cwe: "CWE-770"

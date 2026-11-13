@@ -36,6 +36,7 @@ RUN go mod download github.com/zricethezav/gitleaks/v8@v8.30.1 && \
     chmod -R u+w /src && \
     go mod edit -require=golang.org/x/crypto@v0.55.0 && \
     go mod edit -require=golang.org/x/text@v0.39.0 && \
+    go mod edit -require=github.com/klauspost/compress@v1.18.7 && \
     go mod tidy && \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -trimpath -ldflags="-s -w -X=github.com/zricethezav/gitleaks/v8/version.Version=v8.30.1" -o /gitleaks .
@@ -47,7 +48,8 @@ RUN go mod download github.com/zricethezav/gitleaks/v8@v8.30.1 && \
 # Every pin below answers a CVE the image gate reported, and each one has to be
 # revisited whenever a new advisory lands — this is the same maintenance that
 # blocked v1.11.1. Current set: Go 1.26.11 (stdlib), x/crypto 0.55.0,
-# x/net 0.56.0, x/mod 0.40.0, gRPC-Go 1.83.2.
+# x/net 0.62.0, x/mod 0.40.0, gRPC-Go 1.83.2, containerd 2.3.4, go-jose 4.1.9,
+# klauspost/compress 1.18.7.
 FROM --platform=$BUILDPLATFORM golang:1.26.11-bookworm AS trivy-builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -59,9 +61,12 @@ RUN go mod download github.com/aquasecurity/trivy@v0.72.0 && \
     go mod edit -require=github.com/go-git/go-git/v5@v5.19.2 && \
     go mod edit -require=golang.org/x/text@v0.39.0 && \
     go mod edit -require=golang.org/x/crypto@v0.55.0 && \
-    go mod edit -require=golang.org/x/net@v0.56.0 && \
+    go mod edit -require=golang.org/x/net@v0.62.0 && \
     go mod edit -require=golang.org/x/mod@v0.40.0 && \
     go mod edit -require=google.golang.org/grpc@v1.83.2 && \
+    go mod edit -require=github.com/containerd/containerd/v2@v2.3.4 && \
+    go mod edit -require=github.com/go-jose/go-jose/v4@v4.1.9 && \
+    go mod edit -require=github.com/klauspost/compress@v1.18.7 && \
     go mod tidy && \
     GOEXPERIMENT=jsonv2 CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -trimpath -ldflags="-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=0.72.0" -o /trivy ./cmd/trivy
@@ -84,7 +89,8 @@ ENV PIPX_HOME=/opt/pipx
 ENV PIPX_BIN_DIR=/usr/local/bin
 # Semgrep 1.170.1 pins mcp 1.23.3 (three fixable HIGH CVEs); upstream 1.172.0
 # still pins it, so this patched override is deliberate and E2E-proven.
-# It also pins PyJWT 2.13.x; 2.14.0 fixes six HIGH/CRITICAL advisories.
+# It also pins PyJWT 2.13.x; 2.14.0 fixes six HIGH/CRITICAL advisories, and
+# certifi 2026.10.18+ fixes a CRITICAL advisory in the bundled CA store.
 # Keep the scanner version and exercise the overrides in the process E2E gate.
 # AITriage never exposes Semgrep's MCP server.
 #
@@ -93,12 +99,12 @@ ENV PIPX_BIN_DIR=/usr/local/bin
 # Remove the complete pip/pipx toolchain after provisioning the scanner venvs.
 RUN pip3 install --break-system-packages --no-cache-dir 'pipx==1.8.0' && \
     pipx install 'semgrep==1.170.1' && \
-    pipx runpip semgrep install --no-cache-dir 'mcp==1.28.1' 'setuptools==83.0.0' 'PyJWT==2.14.0' && \
+    pipx runpip semgrep install --no-cache-dir 'mcp==1.28.1' 'setuptools==83.0.0' 'PyJWT==2.14.0' 'certifi==2026.10.23' && \
     pipx install 'bandit==1.9.4' && \
     pipx runpip bandit install --no-cache-dir 'setuptools==83.0.0' && \
     semgrep --version && semgrep scan --help >/dev/null && \
     /opt/pipx/venvs/semgrep/bin/python -c \
-      "import importlib.metadata as m; assert m.version('mcp') == '1.28.1'; assert m.version('setuptools') == '83.0.0'; assert m.version('PyJWT') == '2.14.0'" && \
+      "import importlib.metadata as m; assert m.version('mcp') == '1.28.1'; assert m.version('setuptools') == '83.0.0'; assert m.version('PyJWT') == '2.14.0'; assert m.version('certifi') == '2026.10.23'" && \
     /opt/pipx/venvs/bandit/bin/python -c \
       "import importlib.metadata as m; assert m.version('setuptools') == '83.0.0'" && \
     bandit --version && \
