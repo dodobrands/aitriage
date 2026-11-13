@@ -6,6 +6,12 @@
 # scaffolding markers and replaced code blocks. They are
 # code-quality signals (LOW), not vulnerabilities.
 #
+# A comment has no effect at run time, so the residue rules are
+# subcategory quality: reported, not scored or gating under
+# quality_findings: report. ENTR-SCAFFOLDING stays policy: its
+# marker says the logic is unfinished, and an unfinished
+# function may be a missing check.
+#
 # All rules use `regions: comments`: the same words inside a
 # string literal are usually a real system prompt or UI copy,
 # not residue.
@@ -23,7 +29,7 @@ rules:
     metadata:
       cwe: "CWE-546"
       confidence: high
-      subcategory: policy
+      subcategory: quality
     suggestion: "A comment contains text from an AI chat session (an apology or \"as an AI language model\"). The surrounding code may not have been reviewed; review it and remove the comment."
 
   - id: ENTR-ZOMBIE-CODE
@@ -37,7 +43,7 @@ rules:
     metadata:
       cwe: "CWE-561"
       confidence: high
-      subcategory: policy
+      subcategory: quality
     suggestion: "A commented-out block marked as old or replaced code is still in the file. Delete it; version control keeps the history."
 
   - id: ENTR-AI-RESIDUE
@@ -51,7 +57,7 @@ rules:
     metadata:
       cwe: "CWE-546"
       confidence: high
-      subcategory: policy
+      subcategory: quality
     suggestion: "A comment contains an AI chat preamble (\"Certainly! Here is the ...\"). The code was likely pasted from a chat; review it and remove the comment."
 
   - id: ENTR-SCAFFOLDING

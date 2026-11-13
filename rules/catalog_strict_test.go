@@ -159,10 +159,25 @@ var (
 	owaspID    = regexp.MustCompile(`^(?:A(?:0[1-9]|10)|LLM(?:0[1-9]|10)):2025$`)
 	metaValues = map[string]map[string]bool{
 		"confidence":  {"high": true, "medium": true, "low": true},
-		"subcategory": {"vuln": true, "audit": true, "policy": true},
+		"subcategory": {"vuln": true, "audit": true, "policy": true, "quality": true},
 	}
 	metaKeys = map[string]bool{"cwe": true, "owasp": true, "confidence": true, "subcategory": true, "category": true}
 )
+
+// qualityRuleIDs lists the rules of subcategory quality and why each has no
+// security impact in any project. Under quality_findings: report (the
+// default) their findings are triaged and reported but neither scored nor
+// gating, so tagging a rule quality is a deliberate decision: it must be LOW
+// and listed here.
+var qualityRuleIDs = map[string]string{
+	"ENTR-04":          "AI chat text in a comment; a comment has no effect at run time",
+	"ENTR-AI-RESIDUE":  "AI chat preamble in a comment; a comment has no effect at run time",
+	"ENTR-ZOMBIE-CODE": "commented-out code; a comment has no effect at run time",
+	"ENTR-07":          "TypeScript type annotations and @ts-ignore are erased before the code runs",
+	"ENTR-12":          "file length is a maintainability signal",
+	"FAST-LAZY-EXC":    "swallowed exception, a reliability defect (CWE-703); the same class as Bandit B110/B112",
+	"FAST-SYNC-ASYNC":  "a blocking call in an async function is a performance defect",
+}
 
 // checkMetadata requires the fields reports and SARIF rely on: how much to
 // trust a finding (confidence), what kind of finding it is (subcategory),
@@ -179,6 +194,12 @@ func checkMetadata(t *testing.T, where string, r models.Rule) {
 			t.Errorf("%s: metadata.%s = %q is not one of %v", where, k, r.Metadata[k], keysOf(allowed))
 		}
 	}
+	_, listed := qualityRuleIDs[r.ID]
+	if quality := r.Metadata["subcategory"] == "quality"; quality != listed {
+		t.Errorf("%s: subcategory quality and qualityRuleIDs disagree (subcategory %q, listed %t); a quality rule is reported without scoring or gating, so list it with the reason it has no security impact", where, r.Metadata["subcategory"], listed)
+	} else if quality && r.Severity != "LOW" {
+		t.Errorf("%s: a quality rule must be LOW (got %q)", where, r.Severity)
+	}
 	if r.Metadata["subcategory"] != "vuln" {
 		return
 	}
@@ -187,6 +208,18 @@ func checkMetadata(t *testing.T, where string, r models.Rule) {
 	}
 	if !owaspID.MatchString(r.Metadata["owasp"]) {
 		t.Errorf("%s: a vulnerability rule needs metadata.owasp such as A05:2025 or LLM01:2025 (got %q)", where, r.Metadata["owasp"])
+	}
+}
+
+// TestQualityRuleListIsCurrent keeps qualityRuleIDs from naming a rule the
+// catalog no longer has.
+func TestQualityRuleListIsCurrent(t *testing.T) {
+	present := map[string]bool{}
+	forEachCatalogRule(t, func(_ string, r models.Rule) { present[r.ID] = true })
+	for id := range qualityRuleIDs {
+		if !present[id] {
+			t.Errorf("qualityRuleIDs lists %s, which is not in the catalog", id)
+		}
 	}
 }
 
