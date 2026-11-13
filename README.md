@@ -438,6 +438,16 @@ left out. The file is read from the repository root wherever AITriage runs, incl
 container. `scanners.trivy.ignore_unfixed` and `scanners.trivy.severity` in `.aitriage.yaml`
 narrow what Trivy reports; see the [configuration example](.aitriage.yaml.example).
 
+### Hardcoded secrets
+
+A hardcoded secret is never dismissed automatically: a person decides. Reports that cannot be
+a live secret are kept out of that queue:
+
+- Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
+  cannot be a credential: it is empty, it is a sentence such as an error message, or it is the
+  name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`). Every other value, weak
+  ones included, is still reported.
+
 ### Silencing rules and findings
 
 | Mechanism | What it silences |
