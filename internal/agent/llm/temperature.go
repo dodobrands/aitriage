@@ -222,7 +222,35 @@ func temperatureUnsupported(provider, model string, value float64) string {
 	if geminiTakesNoTemperature(model) {
 		return model + " is a Gemini 3 or later model, which takes no temperature"
 	}
+	if r1StyleReasoningModel(model) {
+		return model + " is an R1-style reasoning model, which can repeat itself without end at temperature 0"
+	}
 	return ""
+}
+
+// r1StyleReasoningFamilies name the open reasoning models that degrade at
+// temperature 0: DeepSeek-R1 and its distills (deepseek-r1:14b on Ollama,
+// deepseek-r1-distill-llama-70b), DeepSeek's deepseek-reasoner, and QwQ
+// (qwq:32b, qwen-qwq-32b). Their model cards ask for a temperature of about
+// 0.6 instead of greedy decoding, which makes them repeat themselves or lose
+// coherence; a reply that does not end holds the request until it times out,
+// and the run fails. They get no temperature, so the provider's default
+// applies. The list holds only families known to do this, matched by name
+// wherever they are served: other open models, DeepSeek's chat models
+// (deepseek-chat, deepseek-v3) and Qwen's coder models included, keep the
+// AITriage default.
+var r1StyleReasoningFamilies = []string{"deepseek-r1", "deepseek-reasoner", "qwq", "-r1-distill"}
+
+// r1StyleReasoningModel reports whether model, after any gateway prefix, is of
+// an R1-style reasoning family (see r1StyleReasoningFamilies).
+func r1StyleReasoningModel(model string) bool {
+	m := baseModelName(model)
+	for _, family := range r1StyleReasoningFamilies {
+		if strings.Contains(m, family) {
+			return true
+		}
+	}
+	return false
 }
 
 // geminiTakesNoTemperature reports whether model is Gemini 3 or later

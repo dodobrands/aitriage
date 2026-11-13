@@ -341,6 +341,66 @@ func TestGeminiRequestsCarryTheTemperatureUpToGemini2(t *testing.T) {
 	}
 }
 
+func TestR1StyleReasoningModels(t *testing.T) {
+	for _, model := range []string{
+		// deepseek-r1
+		"deepseek-r1", "deepseek-r1:14b", "DeepSeek-R1", "deepseek-ai/DeepSeek-R1-0528",
+		// deepseek-reasoner
+		"deepseek-reasoner", "deepseek/deepseek-reasoner",
+		// qwq
+		"qwq", "qwq:32b", "qwen-qwq-32b", "Qwen/QwQ-32B",
+		// -r1-distill
+		"llama-3.3-70b-r1-distill", "qwen2.5-14b-r1-distill:q4_k_m",
+		// more than one
+		"deepseek-r1-distill-llama-70b",
+	} {
+		if !r1StyleReasoningModel(model) {
+			t.Errorf("%s is an R1-style reasoning model", model)
+		}
+	}
+	for _, model := range []string{"", "deepseek-chat", "deepseek/deepseek-chat", "deepseek-v3", "deepseek-coder-v2", "qwen2.5-coder", "qwen2.5-coder:32b", "Qwen/Qwen2.5-72B-Instruct", "llama-3.3-70b-versatile", "openai/gpt-oss-120b"} {
+		if r1StyleReasoningModel(model) {
+			t.Errorf("%s is not an R1-style reasoning model", model)
+		}
+	}
+}
+
+// R1-style reasoning models can loop at temperature 0, so they get none on
+// any OpenAI-compatible provider, and an explicit setting says so once; their
+// neighbours keep 0.
+func TestR1StyleReasoningModelsGetNoTemperature(t *testing.T) {
+	for _, tc := range []struct {
+		provider, model, setting, want string
+		warns                          bool
+	}{
+		{provider: "ollama", model: "deepseek-r1:14b", want: absent},
+		{provider: "ollama", model: "qwq:32b", want: absent},
+		{provider: "groq", model: "deepseek-r1-distill-llama-70b", setting: "0.6", want: absent, warns: true},
+		{provider: "groq", model: "qwen-qwq-32b", want: absent},
+		{provider: "openai", model: "deepseek-reasoner", want: absent},
+		{provider: "openai", model: "deepseek-ai/DeepSeek-R1", setting: "0", want: absent, warns: true},
+		{provider: "ollama", model: "qwen2.5-coder:32b", want: "0"},
+		{provider: "openai", model: "deepseek-chat", want: "0"},
+	} {
+		f := answering(t, openAIReply)
+		var log bytes.Buffer
+		c := openAICompatible(t, Config{Provider: tc.provider, Model: tc.model, Temperature: tc.setting}, f, &log)
+		if err := chatOnce(t, c); err != nil {
+			t.Fatalf("%s %s: %v", tc.provider, tc.model, err)
+		}
+		if got := f.seen(); !sameTemperatures(got, tc.want) {
+			t.Errorf("%s %q with temperature %q sent %v, want [%s]", tc.provider, tc.model, tc.setting, got, tc.want)
+		}
+		lines := strings.Count(log.String(), "\n")
+		if tc.warns && (lines != 1 || !strings.Contains(log.String(), tc.model)) {
+			t.Errorf("%s with an explicit temperature printed %q, want one line naming the model", tc.model, log.String())
+		}
+		if !tc.warns && lines != 0 {
+			t.Errorf("%s printed %q, want nothing", tc.model, log.String())
+		}
+	}
+}
+
 // Clients name the provider and the model their requests carry, the model
 // after the client's own defaults.
 func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
