@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -314,6 +315,12 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 	case "openai", "ollama", "groq":
 		if cfg.APIKey == "" && cfg.Provider == "openai" {
 			return nil, errors.New(noLLMConfiguredMsg)
+		}
+		if cfg.Provider != "openai" && strings.TrimSpace(cfg.Model) == "" {
+			// Groq and Ollama serve models of their own. The OpenAI default
+			// would reach them as a model they do not have, so the run would
+			// stop at its first request instead of here.
+			return nil, fmt.Errorf("the %s provider needs a model: set --model, AITRIAGE_LLM_MODEL or llm.model in .aitriage.yaml", cfg.Provider)
 		}
 		opts := []openai_option.RequestOption{}
 		if cfg.APIKey != "" {
