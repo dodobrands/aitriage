@@ -471,9 +471,12 @@ are kept out of that queue or ranked lower, because they are not live secrets:
   `ignore.rules` entries, inline comments, baseline entries and dismissals written for
   `compose_hardcoded_secret` still cover default credentials.
 - Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
-  cannot be a credential: it is empty, it is a sentence such as an error message, or it is the
-  name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`). Every other value, weak
-  ones included, is still reported.
+  cannot be a credential: it is empty; it is a message about a credential, that is two or more
+  words that name one (`password`, `token`, `secret`, `key`, `username`, `login`…) or hold a
+  format placeholder (`%s`, `{}`), unless one of its words could itself be a credential; or it is
+  the name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`) that the quoted code uses
+  as a cookie, header or mapping key. Every other value, weak ones and passphrases included, is
+  still reported.
 
 ### Silencing rules and findings
 
