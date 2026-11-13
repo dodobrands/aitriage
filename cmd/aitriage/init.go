@@ -315,6 +315,8 @@ func generateAitrageConfig(stacks []detectedStack) string {
 	sb.WriteString("  max_medium: -1\n")
 	sb.WriteString("  block_sources: []  # e.g. [gitleaks]\n")
 	sb.WriteString("  block_classes: []  # e.g. [hardcoded-secret]\n")
+	sb.WriteString("  # quality_findings: report  # report (default): code-quality findings such as ENTR-12\n")
+	sb.WriteString("  #   are reported, not scored or gating; block: scored and gating like any other\n")
 
 	// Detected stacks comment
 	if len(stacks) > 0 {

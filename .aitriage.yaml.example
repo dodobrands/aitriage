@@ -77,6 +77,17 @@ health_check:
   # DS-0002) gates either way. A later minor release makes block the default.
   iac_findings: report
 
+  # Code-quality findings with no security impact: built-in rules of
+  # subcategory quality (ENTR-12 file length, ENTR-07, AI chat residue in
+  # comments, FAST-LAZY-EXC, FAST-SYNC-ASYNC), Bandit B110/B112 and a missing
+  # .env.example:
+  #   report (default): triaged and shown like IaC findings above, but not
+  #     scored and not gating;
+  #   block: scored and gating like any other finding (the behaviour before
+  #     this setting existed). Also --quality-findings on agent and scan.
+  # A finding that a security check also reported gates either way.
+  quality_findings: report
+
   # Fail if the Health Check score is below this threshold (0 disables score gating)
   minimum_score: 0
 
