@@ -2,9 +2,9 @@ package healthcheck
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 // ── Canonical finding classes ────────────────────────────────────────────────
@@ -227,7 +227,7 @@ var classRules = map[string][]string{
 var ruleClasses = map[string]string{}
 
 // trivyCheckClasses maps normalized Trivy misconfiguration ids (see
-// normalizeTrivyCheckID) to classes.
+// config.NormalizeTrivyCheckID) to classes.
 var trivyCheckClasses = map[string]string{
 	"DS-0001":  "image_latest_tag",
 	"DS-0002":  ClassContainerRunsAsRoot,
@@ -307,7 +307,7 @@ func ClassifyRule(ref RuleRef) (FindingClass, bool) {
 		// Gitleaks detects nothing but secrets.
 		return findingClasses[ClassHardcodedSecret], true
 	case "trivy":
-		if key, ok := trivyCheckClasses[normalizeTrivyCheckID(id)]; ok {
+		if key, ok := trivyCheckClasses[config.NormalizeTrivyCheckID(id)]; ok {
 			return findingClasses[key], true
 		}
 	case "semgrep":
@@ -347,23 +347,6 @@ func semgrepClass(checkID string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-var trivyCheckIDPattern = regexp.MustCompile(`^([A-Z]+)-?0*([0-9]+)$`)
-
-// normalizeTrivyCheckID maps the spellings Trivy releases use for one check
-// ("DS002", "AVD-DS-0002", "DS-0002") to one form.
-func normalizeTrivyCheckID(id string) string {
-	id = strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(id)), "AVD-")
-	m := trivyCheckIDPattern.FindStringSubmatch(id)
-	if m == nil {
-		return id
-	}
-	n, err := strconv.Atoi(m[2])
-	if err != nil {
-		return id
-	}
-	return fmt.Sprintf("%s-%04d", m[1], n)
 }
 
 // findingClassOf resolves a health-check finding's class: Class is either a

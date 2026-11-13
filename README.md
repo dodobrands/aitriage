@@ -446,6 +446,10 @@ narrow what Trivy reports; see the [configuration example](.aitriage.yaml.exampl
 | An inline comment | The rules it names, at one place in the source: built-in, external-scanner and deploy findings |
 | `aitriage ignore add` | Findings a person reviewed and dismissed as a false positive, accepted risk or won't-fix, recorded in `.aitriage-suppressions.json` |
 
+A Trivy check matches in every spelling Trivy releases have used, in `ignore.rules` and in
+inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012` (with or without `trivy:`) name one
+check. Advisory IDs (`CVE-…`, `GHSA-…`) and the IDs of other scanners compare as written.
+
 Inline directives name the rules they silence. IDs compare whole, text after the list (such
 as a reason) is never read as an ID, and `all` silences every rule only as an ID of its own:
 
