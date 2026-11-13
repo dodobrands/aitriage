@@ -131,10 +131,11 @@ type Breakdown struct {
 	// written against rule ids keeps matching merged findings.
 	CountByRule map[string]int `json:"count_by_rule,omitempty"`
 
-	// ReportOnlyFindings counts active findings the policy reports without
-	// scoring or gating them (IaC misconfigurations under iac_findings:
-	// report, code-quality findings under quality_findings: report). They are
-	// not part of ActiveFindings or any other count.
+	// ReportOnlyFindings is the total of the active findings the policy
+	// reports without scoring or gating them, of every report-only kind (IaC
+	// misconfigurations under iac_findings: report, code-quality findings
+	// under quality_findings: report); report_only_by_kind splits it by
+	// kind. They are not part of ActiveFindings or any other count.
 	ReportOnlyFindings int `json:"report_only_findings,omitempty"`
 	// ReportOnlyByKind splits ReportOnlyFindings by the setting that reports
 	// them: ReportOnlyIaC ("iac") and ReportOnlyQuality ("quality").

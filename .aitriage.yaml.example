@@ -89,20 +89,25 @@ health_check:
   #     triage-findings.json, but not scored and not gating;
   #   block: scored and gating like any other finding.
   # A finding that another check also reported (DOCKER-NO-USER and Trivy's
-  # DS-0002) gates either way. report stays the default throughout v1; a
-  # default change follows the compatibility policy in CONTRIBUTING.md.
+  # DS-0002), or that block_sources or block_classes below names, gates
+  # either way. report stays the default throughout v1; a default change
+  # follows the compatibility policy in CONTRIBUTING.md.
   iac_findings: report
 
-  # Code-quality findings with no security impact: built-in rules of
-  # subcategory quality (ENTR-12 file length, ENTR-07, AI chat residue in
-  # comments, FAST-LAZY-EXC, FAST-SYNC-ASYNC), Bandit B110/B112 and a missing
-  # .env.example:
-  #   report (default): triaged and shown like IaC findings above, but not
-  #     scored and not gating;
-  #   block: scored and gating like any other finding (the behaviour before
-  #     this setting existed). Also --quality-findings on agent and scan.
-  # A finding that a security check also reported gates either way.
-  quality_findings: report
+  # Code-quality findings with no security impact, at LOW or INFO: rules of
+  # subcategory quality (built in: ENTR-04 and ENTR-AI-RESIDUE, AI chat
+  # residue in comments; ENTR-ZOMBIE-CODE, commented-out code; ENTR-07;
+  # ENTR-12, file length; FAST-SYNC-ASYNC) and a missing .env.example:
+  #   block (default): scored and gating like any other finding, as before
+  #     this setting existed;
+  #   report: triaged and shown like IaC findings above, but not scored and
+  #     not gating. Also --quality-findings on agent and scan.
+  # A finding that a security check also reported, a MEDIUM or more severe
+  # one whatever its rule's subcategory, and one that block_sources or
+  # block_classes below names gate either way. A swallowed exception
+  # (FAST-LAZY-EXC, Bandit B110/B112) is never code quality: it can turn a
+  # failed security check into a pass. block stays the default throughout v1.
+  quality_findings: block
 
   # Fail if the Health Check score is below this threshold (0 disables score gating)
   minimum_score: 0
@@ -112,7 +117,10 @@ health_check:
   max_high: -1
   max_medium: -1
 
-  # Expose block lists for specific rules/classes/sources
+  # Expose block lists for specific rules/classes/sources. An entry here wins
+  # over iac_findings: report and quality_findings: report for the findings
+  # it names. A Trivy Kubernetes or Dockerfile check matches in each spelling
+  # Trivy has used, as in ignore.rules above.
   block_sources: []  # e.g., ["gitleaks"]
   block_classes: []  # e.g., ["hardcoded-secret"]
 
