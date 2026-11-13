@@ -80,6 +80,7 @@ func runFix(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("LLM client required for fix mode: %w\nSet GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY", err)
 	}
+	llm.PrintDefaultModelNotices(os.Stderr, client)
 
 	// Run scan
 	fmt.Fprintf(os.Stderr, "%s  Scanning project...%s\n", dim, reset)

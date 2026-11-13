@@ -106,6 +106,10 @@ type AgentState struct {
 	// StageFailures lists LLM stages that degraded or fell back to a
 	// deterministic rendering instead of failing the run.
 	StageFailures []StageFailure
+	// DeprecationWarnings are warnings about a setting the run relies on
+	// that a later release changes, such as a default model; they are
+	// printed when the run starts and repeated in the summary.
+	DeprecationWarnings []string
 
 	// Suppressions summarises the project decisions (.aitriage-suppressions.json
 	// and the audit log) applied before triage. Suppressed findings are never

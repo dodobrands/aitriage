@@ -66,6 +66,7 @@ func runPreaudit(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
 		return err
 	}
+	llm.PrintDefaultModelNotices(os.Stderr, client)
 
 	archDesc := preauditArchitecture
 	if archDesc == "" {

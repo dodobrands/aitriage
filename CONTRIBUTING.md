@@ -239,6 +239,15 @@ that rely on the default. The same holds the other way round:
 before the key existed, because a `report` default would let findings that
 block today pass.
 
+One exception: when a provider retires the model a default names before a
+release with the warning could reach users, keeping the default would break
+every run that relies on it. The default then moves in the next release
+without a warning release, and the release notes say so. `v1.15.0` moves the
+Anthropic and Gemini defaults this way, off `claude-sonnet-4-5` (retired
+2026-11-30) and `gemini-2.5-flash` (shut down 2026-12-01). The OpenAI default
+stays `gpt-4o`, whose snapshots shut down on 2027-01-14, and runs that rely on
+it are warned that `v1.16.0` moves it to `gpt-6-luna`.
+
 ### The `triage-findings.json` schema version
 
 `schema_version` increments on any incompatible change to the file: a field

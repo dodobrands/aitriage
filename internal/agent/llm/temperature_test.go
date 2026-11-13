@@ -260,7 +260,7 @@ func TestReasoningModelsGetNoTemperature(t *testing.T) {
 		{provider: "openai", model: "o3-mini"},
 		{provider: "openai", model: "gpt-5", setting: "0.3", warns: true},
 		{provider: "ollama", model: "openai/gpt-5-mini"},
-		{provider: "openai", model: ""}, // the client's default, gpt-6-luna
+		{provider: "openai", model: "gpt-6-luna"},
 		{provider: "openai", model: "gpt-6-luna", setting: "0.3", warns: true},
 	} {
 		f := answering(t, openAIReply)
@@ -455,7 +455,7 @@ func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
 		cfg             Config
 		provider, model string
 	}{
-		{cfg: Config{Provider: "openai"}, provider: "openai", model: "gpt-6-luna"},
+		{cfg: Config{Provider: "openai"}, provider: "openai", model: "gpt-4o"},
 		{cfg: Config{Provider: "gemini"}, provider: "gemini", model: "gemini-3.5-flash-lite"},
 		{cfg: Config{Provider: "ollama", Model: "llama3.1"}, provider: "ollama", model: "llama3.1"},
 		{cfg: Config{Provider: "openai", Model: "gpt-4o"}, provider: "openai", model: "gpt-4o"},

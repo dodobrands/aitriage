@@ -38,6 +38,11 @@ func TestInitConfigTemplateMatchesIgnoreSemantics(t *testing.T) {
 			t.Errorf("generated config does not mention %q:\n%s", want, template)
 		}
 	}
+	// The model comment names each provider's default, and the OpenAI
+	// default that AITriage 1.16 moves to.
+	if want := "# empty: gemini-3.5-flash-lite (gemini), claude-sonnet-5-5 (anthropic), gpt-4o (openai; gpt-6-luna from AITriage 1.16)"; !strings.Contains(template, want) {
+		t.Errorf("generated config does not name the default models %q:\n%s", want, template)
+	}
 }
 
 // The generated .aitriageignore must not take the project's own files out of

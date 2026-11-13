@@ -20,16 +20,73 @@ const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 // The models requests name when the configuration sets none (llm.model,
 // AITRIAGE_LLM_MODEL or --model). Verdicts differ between models, so a change
 // here changes the verdicts of every run that relies on it: the README lists
-// these, and the release notes say when one moves.
+// these, and the release notes say when one moves. A minor release warns the
+// runs that rely on a default before a later one changes it (CONTRIBUTING.md,
+// "Deprecations and default changes"), unless the provider retires the model
+// before a release with the warning could reach users.
 const (
 	DefaultGeminiModel    = "gemini-3.5-flash-lite"
 	DefaultAnthropicModel = "claude-sonnet-5-5"
-	DefaultOpenAIModel    = "gpt-6-luna"
+	DefaultOpenAIModel    = "gpt-4o"
 )
+
+// NextDefaultOpenAIModel is the OpenAI default from AITriage 1.16 on: OpenAI
+// shuts down gpt-4o's snapshots on 2027-01-14 and names gpt-6-luna as their
+// replacement. Until then a run that relies on the default is warned (see
+// DefaultModelNotices).
+const NextDefaultOpenAIModel = "gpt-6-luna"
+
+// openAIDefaultWarning is the warning of a run that relies on the OpenAI
+// default, which changes in AITriage 1.16.
+const openAIDefaultWarning = "No OpenAI model is set, so AITriage uses " + DefaultOpenAIModel +
+	", whose snapshots OpenAI shuts down on 2027-01-14. AITriage 1.16 will default to " +
+	NextDefaultOpenAIModel + "; set llm.model to choose a model."
 
 // ModelFlagUsage is the help text of a --model flag.
 const ModelFlagUsage = "LLM model name (unset: " + DefaultGeminiModel + " for gemini, " +
 	DefaultAnthropicModel + " for anthropic, " + DefaultOpenAIModel + " for openai; groq and ollama need one)"
+
+// DefaultModelReporter is implemented by clients that know whether their
+// requests name the provider's default model because the configuration names
+// none.
+type DefaultModelReporter interface {
+	UsesDefaultModel() bool
+}
+
+// DefaultModelNotices returns what a run prints when client's requests name
+// the provider's default model because no model is configured: info names the
+// model, so the reader always sees which model judged the findings, and
+// warning is set when that default is about to change, as the deprecation
+// policy requires. Both are empty for a configured model and for a client that
+// does not know its model, such as a host agent.
+func DefaultModelNotices(client Client) (info, warning string) {
+	r, ok := client.(DefaultModelReporter)
+	if !ok || !r.UsesDefaultModel() {
+		return "", ""
+	}
+	provider, model := RequestModel(client)
+	if model == "" {
+		return "", ""
+	}
+	info = fmt.Sprintf("No model set; using %s, the default for %s", model, provider)
+	if provider == "openai" && model == DefaultOpenAIModel {
+		warning = openAIDefaultWarning
+	}
+	return info, warning
+}
+
+// PrintDefaultModelNotices writes the DefaultModelNotices of client to w, one
+// line each, and returns the warning, if any, for the run's summary.
+func PrintDefaultModelNotices(w io.Writer, client Client) string {
+	info, warning := DefaultModelNotices(client)
+	if info != "" {
+		_, _ = fmt.Fprintf(w, "   ℹ️ %s\n", info)
+	}
+	if warning != "" {
+		_, _ = fmt.Fprintf(w, "   ⚠️ %s\n", warning)
+	}
+	return warning
+}
 
 const noLLMConfiguredMsg = `no LLM provider configured
 
@@ -45,9 +102,10 @@ Or add to .aitriage.yaml:
 
 // openAIClient wraps the official openai-go SDK.
 type openAIClient struct {
-	client      openai.Client
-	cfg         Config
-	temperature *temperatureControl
+	client       openai.Client
+	cfg          Config
+	temperature  *temperatureControl
+	defaultModel bool // no model configured: requests name the provider default
 }
 
 // openAIModel returns the model an OpenAI-compatible request names.
@@ -65,6 +123,9 @@ func (c *openAIClient) EffectiveTemperature() string { return c.temperature.effe
 func (c *openAIClient) RequestModel() (provider, model string) {
 	return c.cfg.Provider, openAIModel(c.cfg.Model)
 }
+
+// UsesDefaultModel implements DefaultModelReporter.
+func (c *openAIClient) UsesDefaultModel() bool { return c.defaultModel }
 
 func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var oaiMessages []openai.ChatCompletionMessageParamUnion
@@ -153,6 +214,9 @@ func (c *anthropicClientWrapper) EffectiveTemperature() string { return c.temper
 func (c *anthropicClientWrapper) RequestModel() (provider, model string) {
 	return "anthropic", anthropicModel(c.cfg.Model)
 }
+
+// UsesDefaultModel implements DefaultModelReporter.
+func (c *anthropicClientWrapper) UsesDefaultModel() bool { return c.cfg.Model == "" }
 
 func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var systemBlocks []anthropic.TextBlockParam
@@ -307,9 +371,10 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client:      openai.NewClient(opts...),
-			cfg:         Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
-			temperature: newTemperatureControl(cfg, model, log),
+			client:       openai.NewClient(opts...),
+			cfg:          Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
+			temperature:  newTemperatureControl(cfg, model, log),
+			defaultModel: cfg.Model == "",
 		}
 
 	case "openai", "ollama", "groq":
@@ -333,9 +398,10 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client:      openai.NewClient(opts...),
-			cfg:         cfg,
-			temperature: newTemperatureControl(cfg, openAIModel(cfg.Model), log),
+			client:       openai.NewClient(opts...),
+			cfg:          cfg,
+			temperature:  newTemperatureControl(cfg, openAIModel(cfg.Model), log),
+			defaultModel: cfg.Model == "",
 		}
 
 	case "":

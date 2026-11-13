@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,13 @@ var ErrNoLLMClient = errors.New("no LLM client configured: the SecureCoder pipel
 func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 	if llmClient == nil {
 		return ErrNoLLMClient
+	}
+
+	// With no model configured, say which default judges the findings, and
+	// warn when that default is about to change; the summary repeats the
+	// warning.
+	if warning := llm.PrintDefaultModelNotices(os.Stderr, llmClient); warning != "" && !slices.Contains(state.DeprecationWarnings, warning) {
+		state.DeprecationWarnings = append(state.DeprecationWarnings, warning)
 	}
 
 	// Step 0: Gather repository context (reads files from disk, no LLM)
@@ -1195,6 +1203,9 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		if failure.Status == stageStatusDegraded {
 			_, _ = fmt.Fprintf(sb, "> **Note:** %s.\n\n", failure.Reason)
 		}
+	}
+	for _, warning := range state.DeprecationWarnings {
+		_, _ = fmt.Fprintf(sb, "> **Warning:** %s\n\n", warning)
 	}
 
 	verdict := "✅ PASSED"

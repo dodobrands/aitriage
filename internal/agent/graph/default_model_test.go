@@ -2,9 +2,11 @@ package graph
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/dodobrands/aitriage/internal/agent/llm"
+	"github.com/dodobrands/aitriage/internal/report/healthcheck"
 )
 
 // With no model configured, the verdict cache keys on the model the requests
@@ -57,5 +59,46 @@ func TestVerdictCacheKeysOnTheDefaultModelTheRequestsName(t *testing.T) {
 	reported := &AgentState{LLMProvider: "openai", LLMModel: "gpt-4o", LLMRequestProvider: "openai", LLMRequestModel: "gpt-4o", LLMTemperature: "0"}
 	if namespace(configured) != namespace(reported) {
 		t.Fatal("a configured model changed its namespace once the client reported it")
+	}
+}
+
+// defaultModelLLM is a stage stub whose requests name the provider's default
+// model because none is configured.
+type defaultModelLLM struct {
+	*stageLLM
+	provider, model string
+}
+
+func (c defaultModelLLM) RequestModel() (string, string) { return c.provider, c.model }
+
+func (c defaultModelLLM) UsesDefaultModel() bool { return true }
+
+// A run that relies on the OpenAI default, which AITriage 1.16 changes, is
+// warned in the summary as well as on stderr. A run on a default that is not
+// about to change gets no warning.
+func TestRunWarnsInTheSummaryWhenItReliesOnTheOpenAIDefault(t *testing.T) {
+	const warning = "No OpenAI model is set, so AITriage uses gpt-4o, whose snapshots OpenAI shuts down on 2027-01-14. AITriage 1.16 will default to gpt-6-luna; set llm.model to choose a model."
+	for _, tc := range []struct {
+		provider, model string
+		warns           bool
+	}{
+		{provider: "openai", model: llm.DefaultOpenAIModel, warns: true},
+		{provider: "anthropic", model: llm.DefaultAnthropicModel},
+		{provider: "gemini", model: llm.DefaultGeminiModel},
+	} {
+		hermeticRun(t)
+		state := degradedRunState(t, healthcheck.FailOnNever)
+		if err := Run(context.Background(), state, defaultModelLLM{stageLLM: newStageLLM(t), provider: tc.provider, model: tc.model}); err != nil {
+			t.Fatalf("%s: Run() error = %v", tc.provider, err)
+		}
+		if got := strings.Contains(state.SummaryMarkdown, "> **Warning:** "+warning); got != tc.warns {
+			t.Fatalf("%s: summary carries the warning: %v, want %v\n%s", tc.provider, got, tc.warns, state.SummaryMarkdown)
+		}
+		if tc.warns && (len(state.DeprecationWarnings) != 1 || state.DeprecationWarnings[0] != warning) {
+			t.Fatalf("%s: warnings = %q, want the OpenAI default warning once", tc.provider, state.DeprecationWarnings)
+		}
+		if !tc.warns && len(state.DeprecationWarnings) != 0 {
+			t.Fatalf("%s: warnings = %q, want none", tc.provider, state.DeprecationWarnings)
+		}
 	}
 }
