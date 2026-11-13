@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -68,9 +67,15 @@ func DefaultModelNotices(client Client) (info, warning string) {
 	if model == "" {
 		return "", ""
 	}
-	info = fmt.Sprintf("No model set; using %s, the default for %s", model, provider)
-	if provider == "openai" && model == DefaultOpenAIModel {
-		warning = openAIDefaultWarning
+	switch provider {
+	case "groq", "ollama":
+		info = fmt.Sprintf("No model set; sending %s, the OpenAI default, to %s", model, provider)
+		warning = fmt.Sprintf("No model is set for the %s provider, so AITriage asks it for %s, which %s servers do not usually serve. Set llm.model (--model, AITRIAGE_LLM_MODEL) to a model your server has.", provider, model, provider)
+	default:
+		info = fmt.Sprintf("No model set; using %s, the default for %s", model, provider)
+		if provider == "openai" && model == DefaultOpenAIModel {
+			warning = openAIDefaultWarning
+		}
 	}
 	return info, warning
 }
@@ -381,12 +386,10 @@ func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 		if cfg.APIKey == "" && cfg.Provider == "openai" {
 			return nil, errors.New(noLLMConfiguredMsg)
 		}
-		if cfg.Provider != "openai" && strings.TrimSpace(cfg.Model) == "" {
-			// Groq and Ollama serve models of their own. The OpenAI default
-			// would reach them as a model they do not have, so the run would
-			// stop at its first request instead of here.
-			return nil, fmt.Errorf("the %s provider needs a model: set --model, AITRIAGE_LLM_MODEL or llm.model in .aitriage.yaml", cfg.Provider)
-		}
+		// Groq and Ollama serve models of their own, so a run that names no
+		// model sends them the OpenAI default, as earlier releases did: a
+		// gateway that picks the model itself keeps working, and
+		// DefaultModelNotices warns everyone else to set one.
 		opts := []openai_option.RequestOption{}
 		if cfg.APIKey != "" {
 			opts = append(opts, openai_option.WithAPIKey(cfg.APIKey))

@@ -13,8 +13,9 @@ llm:
   # choice: pin one model and re-check a known project before switching.
   # Left unset, the provider's default applies: gemini-3.5-flash-lite
   # (gemini), claude-sonnet-5-5 (anthropic), gpt-4o (openai; gpt-6-luna from
-  # AITriage 1.16); groq and ollama need a model. A default moves when its
-  # provider retires the model.
+  # AITriage 1.16); set one for groq and ollama (without it AITriage sends
+  # them the OpenAI default and warns). A default moves when its provider
+  # retires the model.
   model: gemini-3.5-flash-lite
 
   # NEVER hardcode keys here. Always use environment variables.

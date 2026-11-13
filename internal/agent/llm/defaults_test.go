@@ -93,21 +93,29 @@ func TestDefaultModelNotices(t *testing.T) {
 // Groq and Ollama serve models of their own. A configuration that names none
 // stops when the client is built, with the settings that name a model,
 // instead of sending the OpenAI default to a server that does not have it.
-func TestGroqAndOllamaNeedAModel(t *testing.T) {
+// Groq and Ollama without a model keep working as in earlier releases (a
+// gateway may choose the model itself), and the run warns to set one.
+func TestGroqAndOllamaWithoutAModelWarn(t *testing.T) {
 	for _, provider := range []string{"groq", "ollama"} {
-		for _, model := range []string{"", "  "} {
-			c, err := NewClient(Config{Provider: provider, Model: model, APIKey: "test-key-not-real", BaseURL: "http://127.0.0.1:1/v1"})
-			if err == nil {
-				t.Fatalf("%s with model %q built a client that names %q", provider, model, func() string { _, m := RequestModel(c); return m }())
-			}
-			for _, want := range []string{provider, "--model", "llm.model"} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("%s: error %q does not name %s", provider, err, want)
-				}
+		c, err := NewClient(Config{Provider: provider, APIKey: "test-key-not-real", BaseURL: "http://127.0.0.1:1/v1"})
+		if err != nil {
+			t.Fatalf("%s without a model: %v", provider, err)
+		}
+		if _, model := RequestModel(c); model != DefaultOpenAIModel {
+			t.Errorf("%s without a model requests %q, want %q as before", provider, model, DefaultOpenAIModel)
+		}
+		_, warning := DefaultModelNotices(c)
+		for _, want := range []string{provider, DefaultOpenAIModel, "llm.model", "--model"} {
+			if !strings.Contains(warning, want) {
+				t.Errorf("%s: warning %q does not name %s", provider, warning, want)
 			}
 		}
-		if _, err := NewClient(Config{Provider: provider, Model: "llama-3.3-70b-versatile", APIKey: "test-key-not-real", BaseURL: "http://127.0.0.1:1/v1"}); err != nil {
+		configured, err := NewClient(Config{Provider: provider, Model: "llama-3.3-70b-versatile", APIKey: "test-key-not-real", BaseURL: "http://127.0.0.1:1/v1"})
+		if err != nil {
 			t.Fatalf("%s with a model: %v", provider, err)
+		}
+		if info, warning := DefaultModelNotices(configured); info != "" || warning != "" {
+			t.Errorf("%s with a model printed %q / %q, want nothing", provider, info, warning)
 		}
 	}
 	// OpenAI has a default model.
