@@ -2,11 +2,13 @@ package llm
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,7 +223,35 @@ func temperatureUnsupported(provider, model string, value float64) string {
 	if geminiTakesNoTemperature(model) {
 		return model + " is a Gemini 3 or later model, which takes no temperature"
 	}
+	if r1StyleReasoningModel(model) {
+		return model + " is an R1-style reasoning model, which can repeat itself without end at temperature 0"
+	}
 	return ""
+}
+
+// r1StyleReasoningFamilies name the open reasoning models that degrade at
+// temperature 0: DeepSeek-R1 and its distills (deepseek-r1:14b on Ollama,
+// deepseek-r1-distill-llama-70b), DeepSeek's deepseek-reasoner, and QwQ
+// (qwq:32b, qwen-qwq-32b). Their model cards ask for a temperature of about
+// 0.6 instead of greedy decoding, which makes them repeat themselves or lose
+// coherence; a reply that does not end holds the request until it times out,
+// and the run fails. They get no temperature, so the provider's default
+// applies. The list holds only families known to do this, matched by name
+// wherever they are served: other open models, DeepSeek's chat models
+// (deepseek-chat, deepseek-v3) and Qwen's coder models included, keep the
+// AITriage default.
+var r1StyleReasoningFamilies = []string{"deepseek-r1", "deepseek-reasoner", "qwq", "-r1-distill"}
+
+// r1StyleReasoningModel reports whether model, after any gateway prefix, is of
+// an R1-style reasoning family (see r1StyleReasoningFamilies).
+func r1StyleReasoningModel(model string) bool {
+	m := baseModelName(model)
+	for _, family := range r1StyleReasoningFamilies {
+		if strings.Contains(m, family) {
+			return true
+		}
+	}
+	return false
 }
 
 // geminiTakesNoTemperature reports whether model is Gemini 3 or later
@@ -238,14 +268,28 @@ func geminiTakesNoTemperature(model string) bool {
 	return err == nil && major >= 3
 }
 
-// baseModelName lowercases a model name and drops a gateway prefix such as
-// "openai/", so the rules hold however the model is reached.
+// bedrockAnthropicPrefix matches how Amazon Bedrock starts the name of a Claude
+// model: "anthropic.", after the region of an inference profile if there is
+// one ("us.", "eu.", "global.", "us-gov.").
+var bedrockAnthropicPrefix = regexp.MustCompile(`^(?:[a-z0-9-]+\.)?anthropic\.`)
+
+// bedrockVersionSuffix matches the version Amazon Bedrock ends a model name
+// with: "-v1:0".
+var bedrockVersionSuffix = regexp.MustCompile(`-v\d+:\d+$`)
+
+// baseModelName lowercases a model name and drops what the route to the model
+// adds to it, so the rules hold however the model is reached: a gateway
+// prefix such as "openai/" or "bedrock/", and Amazon Bedrock's "anthropic."
+// with its region and version ("us.anthropic.claude-sonnet-5-5-v1:0" is
+// claude-sonnet-5-5). A Vertex AI date ("claude-sonnet-4-5@20250929") stays:
+// the family checks stop at the "@".
 func baseModelName(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if i := strings.LastIndexByte(m, '/'); i >= 0 {
 		m = m[i+1:]
 	}
-	return m
+	m = bedrockAnthropicPrefix.ReplaceAllString(m, "")
+	return bedrockVersionSuffix.ReplaceAllString(m, "")
 }
 
 // anthropicTakesTemperature reports whether a Claude model accepts a
@@ -323,16 +367,20 @@ func setAnthropicTemperature(params *anthropic.MessageNewParams, temperature *fl
 
 // temperatureRejected reports whether err is an endpoint refusing the
 // temperature parameter: a 400, or the 422 some OpenAI-compatible servers use
-// for request validation, whose error names temperature.
+// for request validation, whose error names temperature as the parameter it
+// refuses (see bodyRefusesTemperature). Any other 400 or 422 is the caller's
+// error and keeps the temperature, also when it repeats the rejected request,
+// temperature included: dropping the temperature would change the sampling
+// of the rest of the run over an error the temperature did not cause.
 func temperatureRejected(err error) bool {
 	var openAIErr *openai.Error
 	if errors.As(err, &openAIErr) {
 		return refusalStatus(openAIErr.StatusCode) &&
-			(namesTemperature(openAIErr.Param, openAIErr.Message, openAIErr.RawJSON()) || namesTemperature(responseBody(openAIErr.Response)))
+			(bodyRefusesTemperature(openAIErr.RawJSON()) || bodyRefusesTemperature(responseBody(openAIErr.Response)))
 	}
 	var anthropicErr *anthropic.Error
 	if errors.As(err, &anthropicErr) {
-		return refusalStatus(anthropicErr.StatusCode) && namesTemperature(anthropicErr.RawJSON())
+		return refusalStatus(anthropicErr.StatusCode) && bodyRefusesTemperature(anthropicErr.RawJSON())
 	}
 	return false
 }
@@ -341,9 +389,106 @@ func refusalStatus(status int) bool {
 	return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
 }
 
-func namesTemperature(details ...string) bool {
-	for _, detail := range details {
-		if strings.Contains(strings.ToLower(detail), "temperature") {
+// bodyRefusesTemperature reports whether an error body refuses the
+// temperature. Three fields can say so, however deep the error format nests
+// them:
+//   - a param naming it, as OpenAI-compatible errors do: "param": "temperature";
+//   - a validation error's loc ending in it, as FastAPI servers answer:
+//     "loc": ["body", "temperature"];
+//   - a message that names it together with a word of refusal (see
+//     refusesTemperature), in "message", "msg", "detail", "error",
+//     "description", or "raw", where a gateway relays the provider's own
+//     error. A message that is itself a JSON error is read the same way.
+//
+// Nothing else in the body counts: a validation error's "input" or a
+// gateway's copy of the request repeats "temperature": 0 whatever the error
+// is about. A body that is not JSON is one message.
+func bodyRefusesTemperature(body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false
+	}
+	var value any
+	if json.Unmarshal([]byte(body), &value) != nil {
+		return refusesTemperature(body)
+	}
+	return errorValueRefusesTemperature(value, "message")
+}
+
+// errorMessageFields are the fields error formats keep their message in.
+var errorMessageFields = map[string]bool{
+	"message": true, "msg": true, "detail": true, "error": true, "description": true, "raw": true,
+}
+
+// errorValueRefusesTemperature walks a decoded error body; field is the name
+// value is kept under.
+func errorValueRefusesTemperature(value any, field string) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		for name, child := range v {
+			name = strings.ToLower(name)
+			if name == "loc" && locNamesTemperature(child) {
+				return true
+			}
+			if errorValueRefusesTemperature(child, name) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if errorValueRefusesTemperature(child, field) {
+				return true
+			}
+		}
+	case string:
+		switch {
+		case field == "param":
+			return namesTemperatureParam(v)
+		case errorMessageFields[field]:
+			return bodyRefusesTemperature(v)
+		}
+	}
+	return false
+}
+
+// namesTemperatureParam reports whether a param names temperature, also as the
+// end of a path: "temperature", "body.temperature".
+func namesTemperatureParam(param string) bool {
+	p := strings.ToLower(strings.TrimSpace(param))
+	return p == "temperature" || strings.HasSuffix(p, ".temperature")
+}
+
+// locNamesTemperature reports whether a validation error's loc, the path to
+// the field it rejects, ends in temperature.
+func locNamesTemperature(loc any) bool {
+	path, ok := loc.([]any)
+	if !ok || len(path) == 0 {
+		return false
+	}
+	last, ok := path[len(path)-1].(string)
+	return ok && namesTemperatureParam(last)
+}
+
+// temperatureRefusals are the words an error refuses a parameter with.
+// "not permitted" is a schema validator's ("Extra inputs are not permitted"),
+// which the Anthropic API also answers a field it does not take with.
+var temperatureRefusals = []string{
+	"unsupported", "not supported", "does not support", "not allowed", "not permitted",
+	"invalid", "only the default", "must be",
+}
+
+// refusesTemperature reports whether an error message names temperature
+// together with a word of refusal: "Unsupported value: 'temperature' does not
+// support 0 with this model", "Parameter `temperature` is invalid",
+// "temperature is not supported for this model". A message that only
+// mentions it ("Parameters received: temperature=0") does not refuse it.
+func refusesTemperature(message string) bool {
+	m := strings.ToLower(message)
+	if !strings.Contains(m, "temperature") {
+		return false
+	}
+	for _, refusal := range temperatureRefusals {
+		if strings.Contains(m, refusal) {
 			return true
 		}
 	}

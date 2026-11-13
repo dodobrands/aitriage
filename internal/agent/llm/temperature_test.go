@@ -341,6 +341,112 @@ func TestGeminiRequestsCarryTheTemperatureUpToGemini2(t *testing.T) {
 	}
 }
 
+func TestR1StyleReasoningModels(t *testing.T) {
+	for _, model := range []string{
+		// deepseek-r1
+		"deepseek-r1", "deepseek-r1:14b", "DeepSeek-R1", "deepseek-ai/DeepSeek-R1-0528",
+		// deepseek-reasoner
+		"deepseek-reasoner", "deepseek/deepseek-reasoner",
+		// qwq
+		"qwq", "qwq:32b", "qwen-qwq-32b", "Qwen/QwQ-32B",
+		// -r1-distill
+		"llama-3.3-70b-r1-distill", "qwen2.5-14b-r1-distill:q4_k_m",
+		// more than one
+		"deepseek-r1-distill-llama-70b",
+	} {
+		if !r1StyleReasoningModel(model) {
+			t.Errorf("%s is an R1-style reasoning model", model)
+		}
+	}
+	for _, model := range []string{"", "deepseek-chat", "deepseek/deepseek-chat", "deepseek-v3", "deepseek-coder-v2", "qwen2.5-coder", "qwen2.5-coder:32b", "Qwen/Qwen2.5-72B-Instruct", "llama-3.3-70b-versatile", "openai/gpt-oss-120b"} {
+		if r1StyleReasoningModel(model) {
+			t.Errorf("%s is not an R1-style reasoning model", model)
+		}
+	}
+}
+
+// R1-style reasoning models can loop at temperature 0, so they get none on
+// any OpenAI-compatible provider, and an explicit setting says so once; their
+// neighbours keep 0.
+func TestR1StyleReasoningModelsGetNoTemperature(t *testing.T) {
+	for _, tc := range []struct {
+		provider, model, setting, want string
+		warns                          bool
+	}{
+		{provider: "ollama", model: "deepseek-r1:14b", want: absent},
+		{provider: "ollama", model: "qwq:32b", want: absent},
+		{provider: "groq", model: "deepseek-r1-distill-llama-70b", setting: "0.6", want: absent, warns: true},
+		{provider: "groq", model: "qwen-qwq-32b", want: absent},
+		{provider: "openai", model: "deepseek-reasoner", want: absent},
+		{provider: "openai", model: "deepseek-ai/DeepSeek-R1", setting: "0", want: absent, warns: true},
+		{provider: "ollama", model: "qwen2.5-coder:32b", want: "0"},
+		{provider: "openai", model: "deepseek-chat", want: "0"},
+	} {
+		f := answering(t, openAIReply)
+		var log bytes.Buffer
+		c := openAICompatible(t, Config{Provider: tc.provider, Model: tc.model, Temperature: tc.setting}, f, &log)
+		if err := chatOnce(t, c); err != nil {
+			t.Fatalf("%s %s: %v", tc.provider, tc.model, err)
+		}
+		if got := f.seen(); !sameTemperatures(got, tc.want) {
+			t.Errorf("%s %q with temperature %q sent %v, want [%s]", tc.provider, tc.model, tc.setting, got, tc.want)
+		}
+		lines := strings.Count(log.String(), "\n")
+		if tc.warns && (lines != 1 || !strings.Contains(log.String(), tc.model)) {
+			t.Errorf("%s with an explicit temperature printed %q, want one line naming the model", tc.model, log.String())
+		}
+		if !tc.warns && lines != 0 {
+			t.Errorf("%s printed %q, want nothing", tc.model, log.String())
+		}
+	}
+}
+
+// Amazon Bedrock names a Claude model with "anthropic.", the region of an
+// inference profile and a version; reached by that name, also behind a
+// gateway prefix, a model follows the rules of its family: Claude 5 takes no
+// temperature and thinks by default, Claude 4.x keeps its temperature and
+// max_tokens. Vertex AI's dated names keep working.
+func TestBedrockClaudeNamesFollowTheirFamily(t *testing.T) {
+	for _, tc := range []struct {
+		model       string
+		temperature bool // takes a temperature
+		thinks      bool // thinks by default, so max_tokens is 16000
+	}{
+		{"anthropic.claude-sonnet-5-5", false, true},
+		{"us.anthropic.claude-sonnet-5-5-v1:0", false, true},
+		{"global.anthropic.claude-sonnet-5-5", false, true},
+		{"bedrock/global.anthropic.claude-sonnet-5-5", false, true},
+		{"eu.anthropic.claude-opus-5-5-v1:0", false, true},
+		{"anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"global.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0", true, false},
+		{"us.anthropic.claude-sonnet-4-20250514-v1:0", true, false},
+		{"apac.anthropic.claude-haiku-4-5-20251001-v1:0", true, false},
+		{"anthropic.claude-opus-4-6-v1", true, false},
+		{"us-gov.anthropic.claude-3-7-sonnet-20250219-v1:0", true, false},
+		{"anthropic.claude-opus-4-v1:0", true, false},
+		{"global.anthropic.claude-opus-4-7", false, false},
+		{"claude-sonnet-4-5@20250929", true, false},
+		{"claude-opus-4@20250514", true, false},
+		{"claude-3-5-sonnet-v2@20241022", true, false},
+	} {
+		if got := anthropicTakesTemperature(tc.model); got != tc.temperature {
+			t.Errorf("anthropicTakesTemperature(%s) = %v, want %v", tc.model, got, tc.temperature)
+		}
+		if got := temperatureUnsupported("openai", tc.model, 0) == ""; got != tc.temperature {
+			t.Errorf("behind a gateway %s takes a temperature: %v, want %v", tc.model, got, tc.temperature)
+		}
+		wantTokens := int64(anthropicReplyTokens)
+		if tc.thinks {
+			wantTokens = anthropicThinkingTokens
+		}
+		if got := anthropicThinksByDefault(tc.model); got != tc.thinks || anthropicMaxTokens(tc.model) != wantTokens {
+			t.Errorf("%s thinks by default: %v, max_tokens %d; want %v, %d", tc.model, got, anthropicMaxTokens(tc.model), tc.thinks, wantTokens)
+		}
+	}
+}
+
 // Clients name the provider and the model their requests carry, the model
 // after the client's own defaults.
 func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
@@ -416,6 +522,8 @@ func TestAnthropicRequestsCarryTheTemperature(t *testing.T) {
 		{model: "claude-sonnet-4-5", setting: "default", want: absent},
 		{model: "claude-opus-4-7", want: absent},
 		{model: "claude-opus-4-7", setting: "0.2", want: absent, warns: true},
+		{model: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", want: "0"},
+		{model: "global.anthropic.claude-sonnet-5-5", want: absent},
 	} {
 		f := answering(t, anthropicReply)
 		var log bytes.Buffer
@@ -437,6 +545,8 @@ func TestClaudeBehindAGatewayFollowsClaudeRules(t *testing.T) {
 	for _, tc := range []struct{ model, want string }{
 		{model: "anthropic/claude-sonnet-4.5", want: "0"},
 		{model: "anthropic/claude-opus-4.7", want: absent},
+		{model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", want: "0"},
+		{model: "bedrock/global.anthropic.claude-sonnet-5-5", want: absent},
 	} {
 		f := answering(t, openAIReply)
 		c := openAICompatible(t, Config{Provider: "openai", Model: tc.model}, f, io.Discard)
@@ -489,7 +599,10 @@ func TestRefusedTemperatureIsDroppedForTheRun(t *testing.T) {
 	}{
 		{"openai error", http.StatusBadRequest, `{"error":{"message":"Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}`},
 		{"unwrapped error", http.StatusBadRequest, `{"object":"error","message":"temperature is not supported for this model","type":"BadRequestError","param":null,"code":400}`},
+		{"parameter check", http.StatusBadRequest, "{\"error\":{\"code\":\"invalid_parameter\",\"message\":\"Parameter `temperature` is invalid\"}}"},
 		{"validation error", http.StatusUnprocessableEntity, `{"detail":[{"type":"extra_forbidden","loc":["body","temperature"],"msg":"Extra inputs are not permitted"}]}`},
+		{"error string", http.StatusUnprocessableEntity, "{\"error\":\"Input validation error: `temperature` must be strictly positive\",\"error_type\":\"validation\"}"},
+		{"relayed provider error", http.StatusBadRequest, `{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\"error\":{\"message\":\"Unsupported parameter: 'temperature' is not supported with this model.\",\"param\":\"temperature\"}}","provider_name":"Upstream"}}}`},
 		{"plain text", http.StatusBadRequest, `Unsupported parameter: temperature`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -523,34 +636,76 @@ func TestRefusedTemperatureIsDroppedForTheRun(t *testing.T) {
 }
 
 func TestAnthropicRefusedTemperatureIsDropped(t *testing.T) {
-	f := refusingTemperature(t, http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"temperature: not supported for this model"}}`, anthropicReply)
-	var log bytes.Buffer
-	c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
-	for range 2 {
-		if err := chatOnce(t, c); err != nil {
-			t.Fatal(err)
+	for _, refusal := range []string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"temperature: not supported for this model"}}`,
+		// A schema validator's answer to a field the endpoint does not take.
+		`{"type":"error","error":{"type":"invalid_request_error","message":"temperature: Extra inputs are not permitted"}}`,
+	} {
+		f := refusingTemperature(t, http.StatusBadRequest, refusal, anthropicReply)
+		var log bytes.Buffer
+		c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
+		for range 2 {
+			if err := chatOnce(t, c); err != nil {
+				t.Fatalf("%s: %v", refusal, err)
+			}
 		}
-	}
-	if got := f.seen(); !sameTemperatures(got, "0", absent, absent) {
-		t.Fatalf("requests sent %v, want [0 %s %s]", got, absent, absent)
-	}
-	if lines := strings.Count(log.String(), "\n"); lines != 1 {
-		t.Fatalf("log = %q, want one line", log.String())
+		if got := f.seen(); !sameTemperatures(got, "0", absent, absent) {
+			t.Fatalf("%s: requests sent %v, want [0 %s %s]", refusal, got, absent, absent)
+		}
+		if lines := strings.Count(log.String(), "\n"); lines != 1 {
+			t.Fatalf("%s: log = %q, want one line", refusal, log.String())
+		}
 	}
 }
 
-// A 400 for another reason is the caller's error: the request is not repeated
-// and the temperature stays.
+// A 400 or 422 for another reason is the caller's error: the request is not
+// repeated and the temperature stays, also when the error repeats the request
+// it rejects, temperature included, or mentions the temperature without
+// refusing it.
 func TestUnrelatedBadRequestKeepsTheTemperature(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"context length", http.StatusBadRequest, `{"error":{"message":"This model's maximum context length is exceeded.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`},
+		{"request echoed", http.StatusBadRequest, `{"error":{"message":"Invalid value for 'messages[1].role': 'tool' is not one of 'system', 'assistant', 'user'.","type":"invalid_request_error","param":"messages[1].role","code":"invalid_value"},"request":{"model":"custom-model","temperature":0}}`},
+		{"validation input echoed", http.StatusUnprocessableEntity, `{"detail":[{"type":"missing","loc":["body","max_tokens"],"msg":"Field required","input":{"model":"custom-model","messages":[{"role":"user","content":"finding"}],"temperature":0}}]}`},
+		{"temperature mentioned", http.StatusBadRequest, `{"error":{"message":"Request failed. Parameters received: temperature=0, model=custom-model.","type":"invalid_request_error","param":null}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeProvider(t, func(w http.ResponseWriter, _ map[string]json.RawMessage) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			var log bytes.Buffer
+			c := openAICompatible(t, Config{Provider: "openai", Model: "custom-model"}, f, &log)
+			if err := chatOnce(t, c); err == nil {
+				t.Fatal("the error must reach the caller")
+			}
+			if got := f.seen(); !sameTemperatures(got, "0") {
+				t.Fatalf("requests sent %v, want one with the temperature", got)
+			}
+			if got := EffectiveTemperature(c); got != "0" || log.Len() != 0 {
+				t.Fatalf("EffectiveTemperature = %q, log %q; want the temperature kept and nothing printed", got, log.String())
+			}
+		})
+	}
+}
+
+// The same holds for Anthropic: an error that only repeats the request's
+// temperature does not refuse it.
+func TestAnthropicUnrelatedBadRequestKeepsTheTemperature(t *testing.T) {
 	f := newFakeProvider(t, func(w http.ResponseWriter, _ map[string]json.RawMessage) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"This model's maximum context length is exceeded.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content: Invalid value"},"request":{"model":"claude-sonnet-4-5","max_tokens":4096,"temperature":0}}`)
 	})
 	var log bytes.Buffer
-	c := openAICompatible(t, Config{Provider: "openai", Model: "custom-model"}, f, &log)
+	c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
 	if err := chatOnce(t, c); err == nil {
-		t.Fatal("a 400 must reach the caller")
+		t.Fatal("the error must reach the caller")
 	}
 	if got := f.seen(); !sameTemperatures(got, "0") {
 		t.Fatalf("requests sent %v, want one with the temperature", got)
