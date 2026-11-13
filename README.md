@@ -363,6 +363,18 @@ aitriage agent . --no-chat
 
 `agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice. It exits `1` when a configured gate fails and `2` when the audit could not complete ([exit codes](#exit-codes)).
 
+When no model is set (`--model`, `AITRIAGE_LLM_MODEL` or `llm.model`), AITriage uses the provider's default, and the run says which one when it starts (`No model set; using gpt-4o, the default for openai`):
+
+| Provider | Default model |
+| :--- | :--- |
+| `gemini` | `gemini-3.5-flash-lite` |
+| `anthropic` | `claude-sonnet-5-5` |
+| `openai` | `gpt-4o` (`gpt-6-luna` from AITriage 1.16) |
+
+OpenAI shuts down the `gpt-4o` snapshots on 2027-01-14, so AITriage 1.16 will default to `gpt-6-luna`; until then a run that relies on the OpenAI default warns about it on stderr and in the summary. Groq and Ollama serve models of their own: without `llm.model` AITriage sends them the OpenAI default, as earlier releases did, and warns that the server probably does not have it; set one. A default moves when its provider retires the model, and the verdicts move with it ([the gate](#why-the-gate-can-fail-with-nothing-confirmed)); to keep a model, set `llm.model`. Claude 5 models think before they answer: AITriage leaves room for that in `max_tokens` and reads only the answer. A reply cut off at `max_tokens`, or one with no text, is never read as an answer: classification asks again in smaller requests, and the report and fix spec fall back to their deterministic form. A request Claude declines (`stop_reason: refusal`) is no answer either: the log names the refusal category, and a declined classification request is split, without using up the retries, until the finding Claude declines is alone. The other findings get their verdicts; the declined one is not sent again and stays `Needs Manual Review (unclassified)` with a rationale that names the refusal, so the run exits `2`. `llm.disable_thinking` (`AITRIAGE_LLM_DISABLE_THINKING`) applies to the `openai`, `groq` and `ollama` providers only, which send it to their OpenAI-compatible endpoint; Anthropic requests never carry it, and Claude 5 models think by default.
+
+AITriage asks the model for temperature 0, so the same finding gets the same verdict on every run; provider defaults, often 1, draw a new answer each time. Set another value from 0 to 2, or `default` to send none, with `--temperature`, `AITRIAGE_LLM_TEMPERATURE` or `llm.temperature` in `.aitriage.yaml`, in that order of precedence. Models that take no temperature get none: OpenAI reasoning models (the o-series, GPT-5 and GPT-6), Gemini 3 and later, and Claude models released after Claude Opus 4.6, also under a gateway prefix or an Amazon Bedrock name (`anthropic/claude-opus-4.7`, `us.anthropic.claude-sonnet-5-5-v1:0`). R1-style reasoning models get none either (DeepSeek-R1 and its distills, `deepseek-reasoner`, QwQ): at temperature 0 they can repeat themselves until the request times out. When any other endpoint refuses the temperature, answering `400` or `422` with an error that names it as the refused parameter (`"param": "temperature"`, or a message that calls it unsupported, not allowed or invalid), AITriage repeats that request without it and sends none for the rest of the run; an error about anything else keeps the temperature, also when it repeats the request's `"temperature": 0`. `llm_usage` in `triage-findings.json` records the provider, model and temperature the requests carried (`provider default` when no temperature, as in an AI IDE run, whose model AITriage does not configure), so verdicts that moved between runs can be traced to a change of model or temperature; the verdict cache keeps verdicts made at different temperatures apart.
+
 To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code).
 
 ## Reports
@@ -438,6 +450,34 @@ left out. The file is read from the repository root wherever AITriage runs, incl
 container. `scanners.trivy.ignore_unfixed` and `scanners.trivy.severity` in `.aitriage.yaml`
 narrow what Trivy reports; see the [configuration example](.aitriage.yaml.example).
 
+### Hardcoded secrets
+
+A hardcoded secret is never dismissed automatically: a person decides. Two kinds of reports
+are kept out of that queue or ranked lower, because they are not live secrets:
+
+- In a Compose file, a password or secret whose value is a default or easily guessed one is
+  reported as `compose_default_credential` (MEDIUM) instead of `compose_hardcoded_secret`
+  (CRITICAL). That is a default account name or a documented default of a common image
+  (`postgres`, `minioadmin`), a sequence (`12345678`), one of those with digits or a password
+  word appended (`admin123`), and, unless the value is random enough to have been generated (the
+  built-in secret detector's own threshold), the name of a service, image, user or database in
+  the same file (`appuser_pass` next to `APP_USER: appuser`) or a placeholder written as a word of
+  its own (`changeme`, `your-password-here`). A value is never ranked lower for being short, or
+  for containing such a word inside a longer one. It is still a hardcoded secret for a person to
+  review. Values Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`), `*_FILE` paths to
+  secret files, and a `yes`/`no`, `true`/`false` or `1`/`0` under the MySQL and MariaDB images'
+  password switches (`MYSQL_RANDOM_ROOT_PASSWORD`, `MYSQL_ALLOW_EMPTY_PASSWORD`,
+  `MARIADB_RANDOM_ROOT_PASSWORD`, `MARIADB_ALLOW_EMPTY_ROOT_PASSWORD`) are not reported.
+  `ignore.rules` entries, inline comments, baseline entries and dismissals written for
+  `compose_hardcoded_secret` still cover default credentials.
+- Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
+  cannot be a credential: it is empty; it is a message about a credential, that is two or more
+  words that name one (`password`, `token`, `secret`, `key`, `username`, `login`…) or hold a
+  format placeholder (`%s`, `{}`), unless one of its words could itself be a credential; or it is
+  the name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`) that the quoted code uses
+  as a cookie, header or mapping key. Every other value, weak ones and passphrases included, is
+  still reported.
+
 ### Silencing rules and findings
 
 | Mechanism | What it silences |
@@ -445,6 +485,12 @@ narrow what Trivy reports; see the [configuration example](.aitriage.yaml.exampl
 | `ignore.rules` in `.aitriage.yaml` | Every finding of a rule, from any source: built-in rules and heuristics, Semgrep, Trivy, Gitleaks, Bandit, NFR, deploy and network checks. A bare ID matches any source; `gitleaks:generic-api-key`, `trivy:CVE-2024-1234` or `semgrep:<check-id>` match one scanner, and `core:`, `nfr:`, `deploy:` or `network:` one of AITriage's own checks |
 | An inline comment | The rules it names, at one place in the source: built-in, external-scanner and deploy findings |
 | `aitriage ignore add` | Findings a person reviewed and dismissed as a false positive, accepted risk or won't-fix, recorded in `.aitriage-suppressions.json` |
+
+A Trivy Kubernetes (`KSV`) or Dockerfile (`DS`) check matches in each spelling Trivy releases
+have used, in `ignore.rules` and in inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012`
+(with or without `trivy:`) name one check, as do `DS002`, `DS-0002` and `AVD-DS-0002`. Every
+other ID compares as written: other Trivy checks (tfsec's `AWS001` is not `AWS-0001`), short
+forms Trivy never reported (`KSV12`), advisories (`CVE-…`, `GHSA-…`) and other scanners' IDs.
 
 Inline directives name the rules they silence. IDs compare whole, text after the list (such
 as a reason) is never read as an ID, and `all` silences every rule only as an ID of its own:
@@ -496,16 +542,36 @@ accumulated debt, and the team learns to override it. Choose deliberately:
 | Setting | Meaning |
 | :--- | :--- |
 | `fail_on: critical` (default) | Active CRITICAL/HIGH findings block |
-| `fail_on: any` | Any active finding blocks, reviewed or not |
+| `fail_on: any` | Any active finding blocks, reviewed or not. Findings reported under `iac_findings: report` (the default) and `quality_findings: report` (when set) are not active: they are listed but never block |
 | `fail_on: confirmed` | Only findings AI triage confirmed block; unreviewed are reported, not blocking. `confirmed_min_severity` (`--confirmed-min-severity`) limits this to confirmed findings at or above `MEDIUM`, `HIGH` or `CRITICAL`; the default `LOW` keeps every confirmed finding blocking |
 | `fail_on: never` | The gate never blocks; the score is informational |
-| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way. A later minor release makes `block` the default |
+| `iac_findings: report` (default) / `block` | IaC misconfigurations from Trivy (Dockerfile, Kubernetes, Terraform). `report` triages and shows them in the summary, the report and `triage-findings.json` but keeps them out of the score and the gate, and the summary says how many; `block` (`--iac-findings block`) gates them like any other finding. A finding another check also reported (for example `DOCKER-NO-USER` and Trivy's `DS-0002`) gates either way, and so does one a `block_sources` or `block_classes` entry names (`block_sources: [trivy]`, `block_classes: [KSV-0012]`). `report` stays the default throughout v1; a default change follows the [compatibility policy](CONTRIBUTING.md#compatibility-and-versioning) |
+| `quality_findings: block` (default) / `report` | Code-quality findings with no security impact, at `LOW` or `INFO`: rules of [subcategory `quality`](rules/README.md#rule-schema) (built in: `ENTR-04`, `ENTR-07`, `ENTR-12`, `ENTR-AI-RESIDUE`, `ENTR-ZOMBIE-CODE`, `FAST-SYNC-ASYNC`) and the NFR check for a missing `.env.example`. A swallowed exception (`FAST-LAZY-EXC`, Bandit's `B110` and `B112`) is not one: `except Exception: pass` around a token check turns a failed check into a pass. `block` scores them and gates on them like any other finding, as before this setting existed. `report` (`--quality-findings report`, on `aitriage agent` and `aitriage scan`) triages and shows them like IaC findings under `iac_findings: report`, but keeps them out of the score and the gate. A finding a security check also reported, a `MEDIUM` or more severe one whatever its rule's subcategory, and one a `block_sources` or `block_classes` entry names gate either way. `block` stays the default throughout v1 |
 | `aitriage baseline create .` | Accept today's findings as the starting line; `aitriage scan . --baseline` then reports and gates only new findings |
 
 Set `fail_on` under `health_check:` in `.aitriage.yaml` or with `--fail-on`. `aitriage scan`,
 including the Action's default `scan` command, uses `critical`; a raw scan confirms nothing, so
 `fail_on: confirmed` alone never blocks it. `aitriage agent` applies a gate only when one is
 configured in `.aitriage.yaml` or passed with `--fail-on`, `--fail-score` or `--health-profile`.
+`iac_findings` and `quality_findings` mean the same wherever a scan is scored: `aitriage scan`,
+the scans the Web UI, the TUI and MCP tools run, `aitriage baseline`, and AI triage. The
+aggregate scores on the Web UI dashboards are an exception: they are computed from stored
+findings without these settings and count every open finding. The `breakdown` of the health
+check counts the findings the settings keep out of the score in `report_only_findings`, the
+total of both, split by setting in `report_only_by_kind` (`iac`, `quality`). A `block_classes`
+entry that names a Trivy Kubernetes or Dockerfile check matches it in each spelling Trivy has
+used (`KSV012`, `KSV-0012`, `AVD-KSV-0012`), as in `ignore.rules`; every other ID compares as
+written.
+
+The score and the gate answer different questions. The score counts every active finding,
+reviewed or not, code-quality findings included unless `quality_findings: report` is set, so a
+project with many unreviewed findings can score low while a gate that blocks only confirmed
+findings passes. When that happens and unreviewed findings cause most of the penalty, the
+summary says so in one line, for example: `Score 68/100: 3 finding(s) await
+review and count in full (all 32 penalty points), but fail_on: confirmed blocks only confirmed
+findings at or above MEDIUM.` Before triage, `aitriage agent` prints the
+`Pre-triage health check (all scanners, nothing reviewed yet)`: every scanner, under the run's
+policy, with every finding unreviewed.
 
 Under `fail_on: confirmed` the gate is only as stable as the model's verdicts, and verdicts
 differ noticeably between models on the same code. Pin one model (`llm.model` or `--model`)
@@ -550,7 +616,7 @@ first move: it keeps every finding visible in reports while the gate judges only
 | :--- | :--- |
 | `0` | The gate passed, or no gate applies |
 | `1` | The security gate failed. Usage errors and setup problems caught before the run starts (Docker not running) also exit `1` |
-| `2` | `aitriage agent` could not complete the audit: no usable LLM provider, a provider failure (rejected key, rate limit, timeout) or replies that classify nothing (empty, malformed, or only rejected verdicts), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
+| `2` | `aitriage agent` could not complete the audit: no usable LLM provider, a provider failure (rejected key, rate limit, timeout) or replies that classify nothing (empty, malformed, declined, or only rejected verdicts), a required scanner that did not run in the container, or a report that could not be written. Re-run once the cause is fixed |
 
 A provider failure no longer discards the run. When triage is cut short, AITriage still writes
 every report: `triage-findings.json` records `triage_status: failed` and the reason, the
@@ -601,8 +667,11 @@ report format. The AI panels report that they are offline instead of failing the
 | Full audit failed | Keep the error visible and repair the runtime; do not present a reduced scan as the final verdict |
 | `aitriage agent` exited `2` | The audit did not complete. If `triage-findings.json` says `triage_status: failed`, its reason names the provider error (key, rate limit, timeout): re-run when the provider is available. If `manifest.json` shows a scanner as missing or failed, repair the runtime |
 | Many findings are `Needs Manual Review (unclassified)` | The model returned no verdict for them. Re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE` |
+| The summary says the model declined to classify findings | Claude declined them (`stop_reason: refusal`), each sent on its own, and the same model is likely to decline them on every run. Review them by hand: fix a real issue, record a false positive or an accepted risk with `aitriage ignore add`, which keeps the finding away from the model, or triage with another model |
 | Semgrep findings in a large file come and go between runs | Semgrep stops analysing a file after repeated rule timeouts, and timeouts depend on machine load. The summary names the files Semgrep analysed only partly, and `manifest.json` lists them under `scanners[].partial_files` with the reason (`timeout`, `parse_error`, `error`). If such a file is generated, exclude it with `ignore.paths` |
 | A warning says an `ignore.paths` pattern no longer excludes a path | Patterns use `.gitignore` syntax now. Add the suggested entry if the path should stay out of scope |
+| Every Kubernetes manifest without `metadata.namespace` is reported as running in the default namespace (Trivy `KSV-0110`) | Trivy reads a missing namespace as `default`; it cannot see a namespace set at deploy time. If your deploy sets one (`kubectl apply -n`, Helm, Kustomize), add `trivy:KSV-0110` to `ignore.rules` (any spelling, such as `KSV110`, matches). Under the default `iac_findings: report` these findings do not gate unless `block_sources` or `block_classes` names them |
+| Images from your own registry are reported as untrusted (Trivy `KSV-0125`) | Trivy trusts only a built-in list of registries. If your cluster policy already restricts registries, add `trivy:KSV-0125` to `ignore.rules` or list it in `.trivyignore` |
 | A dismissed finding still fails CI | Commit `.aitriage-suppressions.json`. A dismissal made in the Web UI or an AI IDE under the container runtime sits in `aitriage-reports/suppressions/…` until you move it into that file. `aitriage agent` applies the file; the raw `aitriage scan` does not |
 
 ## Project documentation
@@ -611,6 +680,7 @@ report format. The AI panels report that they are offline instead of failing the
 - [Security rules](rules/README.md)
 - [GitHub Actions examples](examples/github-actions/)
 - [Contributing](CONTRIBUTING.md)
+- [Compatibility and versioning](CONTRIBUTING.md#compatibility-and-versioning): what a release may change, and what following `@v1` guarantees
 - [Security policy](SECURITY.md)
 
 ## License

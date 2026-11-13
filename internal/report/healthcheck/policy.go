@@ -3,6 +3,8 @@ package healthcheck
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 const (
@@ -39,12 +41,30 @@ const (
 // results, which earlier releases silently dropped) gate.
 const (
 	// IaCFindingsReport triages and reports them, but keeps them out of the
-	// score and the gate verdict. The default for now, so that findings a
-	// minor upgrade starts reporting do not break existing gates; a later
-	// minor release makes block the default.
+	// score and the gate verdict. It is the default throughout v1, so that
+	// findings an upgrade starts reporting do not break existing gates; a
+	// default change is a breaking change (see the compatibility policy in
+	// CONTRIBUTING.md).
 	IaCFindingsReport = "report"
 	// IaCFindingsBlock scores and gates them like any other finding.
 	IaCFindingsBlock = "block"
+)
+
+// Values of quality_findings: whether findings about code quality,
+// maintainability or hygiene with no direct security impact gate. They come
+// from built-in rules with metadata.subcategory quality and from the checks
+// of other scanners listed in qualityChecks.
+const (
+	// QualityFindingsReport triages and reports them, but keeps them out of
+	// the score and the gate verdict: a security score need not move with
+	// the size of a file or a commented-out block. An opt-in throughout v1:
+	// as the default it would let findings that blocked before pass for a
+	// configuration that does not set the key, a breaking change (see the
+	// compatibility policy in CONTRIBUTING.md).
+	QualityFindingsReport = "report"
+	// QualityFindingsBlock scores and gates them like any other finding, as
+	// every release before quality_findings did. The default.
+	QualityFindingsBlock = "block"
 )
 
 // Policy defines the security requirements used to decide whether a repository
@@ -68,9 +88,16 @@ type Policy struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
 	// applies to findings every report of which is an IaC misconfiguration;
-	// a finding another detector also reported gates as before. The caller
-	// marks such findings Finding.ReportOnly.
+	// a finding another detector also reported, or one that BlockSources or
+	// BlockClasses names, gates as before. Assess marks such findings
+	// Finding.ReportOnly (see ReportOnlyKind).
 	IaCFindings string `json:"iac_findings,omitempty"`
+	// QualityFindings is QualityFindingsBlock (the default) or
+	// QualityFindingsReport. It applies to LOW and INFO findings every report
+	// of which is a code-quality finding (see ReportOnlyKind); a finding a
+	// security rule also reported, or one that BlockSources or BlockClasses
+	// names, gates as before.
+	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
 // Verdict is the CI/CD-ready answer to "can this project pass its security policy?".
@@ -209,37 +236,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		})
 	}
 
-	for _, source := range policy.BlockSources {
-		key := normalizeKey(source)
-		if key == "" {
-			continue
-		}
-		if count := res.Breakdown.CountBySource[key]; count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_source",
-				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
-				Source:    key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
-
-	for _, class := range policy.BlockClasses {
-		key := normalizeKey(class)
-		if key == "" {
-			continue
-		}
-		if count := blockedClassCount(res.Breakdown, key); count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_class",
-				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
-				Class:     key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
+	reasons = append(reasons, namedBlockingReasons(res.Breakdown, policy)...)
 
 	if len(reasons) == 0 {
 		return Verdict{
@@ -257,20 +254,85 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 	}
 }
 
+// namedBlockingReasons returns a reason for each block_sources and
+// block_classes entry that names an active finding counted in bd. The gate
+// applies it to the whole project; Assess applies it to one finding at a
+// time, so a finding the gate would block by name is never report-only.
+func namedBlockingReasons(bd Breakdown, policy Policy) []BlockingReason {
+	var reasons []BlockingReason
+	for _, source := range policy.BlockSources {
+		key := normalizeKey(source)
+		if key == "" {
+			continue
+		}
+		if count := bd.CountBySource[key]; count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_source",
+				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
+				Source:    key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+
+	for _, class := range policy.BlockClasses {
+		key := normalizeKey(class)
+		if key == "" {
+			continue
+		}
+		if count := blockedClassCount(bd, key); count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_class",
+				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
+				Class:     key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+	return reasons
+}
+
 // blockedClassCount counts the active findings a block_classes entry names. An
 // entry may be a canonical class ("hardcoded_secret", or "hardcoded-secret" as
 // the configuration examples spell it) or a rule id, which is what classes
 // were before findings of several detectors were merged: a policy written
-// then must keep blocking the findings it blocked.
+// then must keep blocking the findings it blocked. An entry in a spelling
+// Trivy has used for a Kubernetes or Dockerfile check (KSV012, KSV-0012,
+// AVD-KSV-0012) matches the findings Trivy reported under any spelling of
+// that check, so a scanner upgrade that respells it does not relax the gate;
+// every other id compares as written, as in ignore.rules.
 func blockedClassCount(bd Breakdown, key string) int {
 	count := bd.CountByClass[key]
 	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
 		count = bd.CountByClass[c.Key]
 	}
-	if n := bd.CountByRule[key]; n > count {
+	n := bd.CountByRule[key]
+	for _, successor := range ruleSuccessors[key] {
+		n += bd.CountByRule[successor]
+	}
+	if config.IsTrivyCheckID(key) {
+		// Every Trivy report of the check is counted here once, whatever
+		// its spelling, the one in the entry included.
+		if t := bd.trivyChecks[config.NormalizeTrivyCheckID(key)]; t > n {
+			n = t
+		}
+	}
+	if n > count {
 		count = n
 	}
 	return count
+}
+
+// ruleSuccessors maps a rule id that earlier releases reported findings
+// under to the ids those findings carry now. A policy written for the earlier
+// id keeps covering them, so a gate never relaxes because a rule was split:
+// `block_classes: [compose_hardcoded_secret]` still blocks the default Compose
+// credentials that are now reported as compose_default_credential (see
+// deployaudit.PreviousIssue, which suppressions and baselines use the same way).
+var ruleSuccessors = map[string][]string{
+	"compose_hardcoded_secret": {"compose_default_credential"},
 }
 
 func appendThresholdReason(reasons []BlockingReason, code, severity string, count, threshold int) []BlockingReason {
@@ -306,6 +368,7 @@ func normalizePolicy(policy Policy) Policy {
 	policy.BlockClasses = normalizeList(policy.BlockClasses)
 	policy.ConfirmedMinSeverity = NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity)
 	policy.IaCFindings = NormalizeIaCFindings(policy.IaCFindings)
+	policy.QualityFindings = NormalizeQualityFindings(policy.QualityFindings)
 	return policy
 }
 
@@ -329,6 +392,31 @@ func ParseIaCFindings(value string) (string, bool) {
 		return IaCFindingsReport, true
 	case IaCFindingsBlock:
 		return IaCFindingsBlock, true
+	default:
+		return "", false
+	}
+}
+
+// NormalizeQualityFindings returns the canonical quality_findings mode.
+// Empty is the default, block: with the key unset, the score and the gate
+// are those of every release before the setting existed. An unrecognised
+// value becomes block too: a typo must fall back to the strict reading, not
+// the loose one.
+func NormalizeQualityFindings(value string) string {
+	if mode, ok := ParseQualityFindings(value); ok {
+		return mode
+	}
+	return QualityFindingsBlock
+}
+
+// ParseQualityFindings reports whether value names a supported
+// quality_findings mode.
+func ParseQualityFindings(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case QualityFindingsReport:
+		return QualityFindingsReport, true
+	case QualityFindingsBlock:
+		return QualityFindingsBlock, true
 	default:
 		return "", false
 	}
@@ -490,4 +578,44 @@ func unclassifiedClause(bd Breakdown) string {
 		return ""
 	}
 	return fmt.Sprintf(" (%d of them were never classified by the model)", bd.UnclassifiedFindings)
+}
+
+// UnreviewedScoreNote explains a low score next to a gate that passed:
+// unreviewed findings count in full toward the score, while the gate may not
+// block on them at all. It returns "" unless the gate passed and unreviewed
+// findings cause more than half of the penalty.
+func UnreviewedScoreNote(res Result) string {
+	bd := res.Breakdown
+	if !res.Verdict.Passed || bd.NeedsReviewFindings == 0 || bd.Penalty == 0 || 2*bd.NeedsReviewPenalty <= bd.Penalty {
+		return ""
+	}
+	share := fmt.Sprintf("%d of the %d penalty points", bd.NeedsReviewPenalty, bd.Penalty)
+	if bd.NeedsReviewPenalty >= bd.Penalty {
+		share = fmt.Sprintf("all %d penalty points", bd.Penalty)
+	}
+	return fmt.Sprintf("Score %d/100: %d finding(s) await review and count in full (%s), but %s.",
+		res.Score, bd.NeedsReviewFindings, share, passingGateScope(res.Policy, res.Score))
+}
+
+// passingGateScope says what a gate that passed blocks on.
+func passingGateScope(policy Policy, score int) string {
+	policy = normalizePolicy(policy)
+	var scope string
+	switch policy.FailOn {
+	case FailOnNever:
+		return "`fail_on: never` never blocks"
+	case FailOnConfirmed:
+		scope = "`fail_on: confirmed` blocks only confirmed findings"
+		if floor := NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity); floor != SeverityLow {
+			scope += " at or above " + floor
+		}
+	case FailOnCritical:
+		scope = "`fail_on: critical` blocks only CRITICAL and HIGH findings"
+	default:
+		scope = fmt.Sprintf("`fail_on: %s` passed", policy.FailOn)
+	}
+	if policy.MinimumScore > 0 {
+		scope += fmt.Sprintf(", and %d meets `minimum_score: %d`", score, policy.MinimumScore)
+	}
+	return scope
 }

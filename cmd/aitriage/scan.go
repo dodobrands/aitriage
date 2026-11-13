@@ -38,6 +38,8 @@ var (
 	diffRef        string
 	stagedOnly     bool
 	noSummary      bool
+
+	scanQualityFindings string
 )
 
 var scanCmd = &cobra.Command{
@@ -45,6 +47,9 @@ var scanCmd = &cobra.Command{
 	Short: "Scan a directory for security presence checks",
 	Long:  `Scan a directory to identify missing architectural security practices.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateScanFlags(); err != nil {
+			return err
+		}
 		// Arguments and flags are valid by now; a policy failure or a runtime
 		// error must not be followed by the full usage text in CI logs.
 		cmd.SilenceUsage = true
@@ -405,23 +410,35 @@ var scanCmd = &cobra.Command{
 	},
 }
 
+// validateScanFlags rejects flag values that cannot be acted on, before any
+// work starts.
+func validateScanFlags() error {
+	if strings.TrimSpace(scanQualityFindings) != "" {
+		if _, ok := healthcheck.ParseQualityFindings(scanQualityFindings); !ok {
+			return fmt.Errorf("invalid --quality-findings %q: use report or block", scanQualityFindings)
+		}
+	}
+	return nil
+}
+
 func scanPolicyFromFlags(cmd *cobra.Command, report scanner.ScanReport) healthcheck.Policy {
 	policy := healthpolicy.FromConfig(report.Config)
 	return healthpolicy.ApplyOverrides(policy, healthpolicy.Overrides{
-		Profile:         healthProfile,
-		ProfileSet:      cmd.Flags().Changed("health-profile"),
-		FailOn:          failOn,
-		FailOnSet:       cmd.Flags().Changed("fail-on"),
-		MinimumScore:    failScore,
-		MinimumScoreSet: cmd.Flags().Changed("fail-score"),
+		Profile:            healthProfile,
+		ProfileSet:         cmd.Flags().Changed("health-profile"),
+		FailOn:             failOn,
+		FailOnSet:          cmd.Flags().Changed("fail-on"),
+		MinimumScore:       failScore,
+		MinimumScoreSet:    cmd.Flags().Changed("fail-score"),
+		QualityFindings:    scanQualityFindings,
+		QualityFindingsSet: cmd.Flags().Changed("quality-findings"),
 	})
 }
 
+// refreshScanHealthCheck scores the scan under the final policy, through the
+// same healthcheck.Assess the full scan and AI triage use.
 func refreshScanHealthCheck(report *scanner.ScanReport, policy healthcheck.Policy) {
-	hc := healthcheck.ApplyPolicy(
-		healthcheck.Evaluate(healthcheck.FromCoreResults(report.Results)),
-		policy,
-	)
+	hc := healthcheck.Assess(healthcheck.FromCoreResults(report.Results), policy)
 	report.HealthCheck = hc
 	report.HasCriticalFailures = hc.HasCriticalFailures
 	report.SecurityScore = hc.Score
@@ -499,6 +516,12 @@ func writeGitHubActionsSummary(report scanner.ScanReport) {
 	_, _ = fmt.Fprintf(f, "**Health Check:** %d/100 (%s)\n\n", report.SecurityScore, report.SecurityGrade)
 	hb := report.HealthCheck.Breakdown
 	_, _ = fmt.Fprintf(f, "_%d active findings · %d ignored (false positives) · %d deduplicated · penalty %d · bonus %d_\n\n", hb.ActiveFindings, hb.IgnoredFindings, hb.DedupedFindings, hb.Penalty, hb.Bonus)
+	if n := hb.ReportOnlyByKind[healthcheck.ReportOnlyQuality]; n > 0 {
+		_, _ = fmt.Fprintf(f, "_%d code-quality finding(s) reported, not scored and not gating (set `quality_findings: block` to enforce)._\n\n", n)
+	}
+	if note := healthcheck.UnreviewedScoreNote(report.HealthCheck); note != "" {
+		_, _ = fmt.Fprintf(f, "_%s_\n\n", note)
+	}
 	if len(report.HealthCheck.Verdict.BlockingReasons) > 0 {
 		_, _ = f.WriteString("### Blocking Reasons\n\n")
 		for _, reason := range report.HealthCheck.Verdict.BlockingReasons {
@@ -513,7 +536,11 @@ func writeGitHubActionsSummary(report scanner.ScanReport) {
 
 	if report.HealthCheck.Breakdown.ActiveFindings == 0 {
 		_, _ = f.WriteString("No active security issues found.\n")
-		return
+		// Findings the policy only reports are still listed below.
+		if report.HealthCheck.Breakdown.ReportOnlyFindings == 0 {
+			return
+		}
+		_, _ = f.WriteString("\n")
 	}
 
 	var codeFindings []core.CheckResult
@@ -577,6 +604,7 @@ func init() {
 	scanCmd.Flags().StringVar(&failOn, "fail-on", "critical", "When to exit with code 1: critical (default), any, never")
 	scanCmd.Flags().IntVar(&failScore, "fail-score", 0, "Fail if Health Check score is below this threshold (0 = disabled)")
 	scanCmd.Flags().StringVar(&healthProfile, "health-profile", "", "Health Check policy profile: baseline, standard, strict")
+	scanCmd.Flags().StringVar(&scanQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (built-in rules with subcategory quality, e.g. ENTR-12): 'block' (default) scores and gates them like any other finding; 'report' reports them without scoring or gating them")
 	scanCmd.Flags().BoolVar(&noHistory, "no-history", false, "Skip saving scan results to history (disables diff)")
 	scanCmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Launch interactive TUI dashboard")
 	scanCmd.Flags().BoolVar(&useBaseline, "baseline", false, "Report only NEW findings not in the baseline")

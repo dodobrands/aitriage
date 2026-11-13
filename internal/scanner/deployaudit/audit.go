@@ -196,22 +196,29 @@ func auditCompose(path string) ([]DeployFinding, error) {
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, err // invalid yaml
 	}
+	context := composeContextWords(&root)
 
 	walkYamlNode(&root, path, func(key, val *yaml.Node) {
 		lowerKey := strings.ToLower(key.Value)
 
-		// Check for hardcoded secrets
+		// Check for hardcoded secrets: a default or weak value apart from one
+		// that may be a live secret (see credentials.go).
 		if strings.Contains(lowerKey, "password") || strings.Contains(lowerKey, "secret") {
-			if val.Kind == yaml.ScalarNode {
-				valStr := val.Value
-				if valStr != "" && !strings.Contains(valStr, "${") {
-					findings = append(findings, DeployFinding{
-						File: path, Line: key.Line,
-						Issue: "compose_hardcoded_secret", Severity: "CRITICAL",
-						Evidence: fmt.Sprintf("%s: %.20s", key.Value, valStr),
-						Advice:   "Use environment variable substitution: ${MY_PASSWORD}",
-					})
+			if val.Kind == yaml.ScalarNode && composeLiteral(key.Value, val.Value) {
+				finding := DeployFinding{
+					File: path, Line: key.Line,
+					Issue: IssueComposeHardcodedSecret, Severity: "CRITICAL",
+					// Both issues keep this evidence: it is part of a baseline
+					// fingerprint, and a baseline entry written before default
+					// credentials had an issue of their own must still match.
+					Evidence: fmt.Sprintf("%s: %.20s", key.Value, val.Value),
+					Advice:   adviceComposeSecret,
 				}
+				if isWeakCredential(val.Value, context) {
+					finding.Issue, finding.Severity = IssueComposeDefaultCredential, "MEDIUM"
+					finding.Advice = adviceComposeDefaultCredential
+				}
+				findings = append(findings, finding)
 			}
 		}
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,13 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		return ErrNoLLMClient
 	}
 
+	// With no model configured, say which default judges the findings, and
+	// warn when that default is about to change; the summary repeats the
+	// warning.
+	if warning := llm.PrintDefaultModelNotices(os.Stderr, llmClient); warning != "" && !slices.Contains(state.DeprecationWarnings, warning) {
+		state.DeprecationWarnings = append(state.DeprecationWarnings, warning)
+	}
+
 	// Step 0: Gather repository context (reads files from disk, no LLM)
 	fmt.Fprintf(os.Stderr, "📂 Gathering Repository Context...\n")
 	reportRunwayProgress(state, 1, "preparing_context")
@@ -64,6 +72,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.TriageFailureReason = incomplete.Reason
 		state.TriageFailureStage = incomplete.Stage
 		state.TriageFailureCause = incomplete.Cause
+		state.TriageDeclined = incomplete.Declined
 		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
 			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
 	} else {
@@ -366,10 +375,12 @@ func computeHealthCheck(state *AgentState) {
 		}
 	}
 	recorded := recordedDismissals(state)
-	// iac_findings: report keeps findings that are nothing but IaC
-	// misconfigurations out of the score and the gate; they are still
-	// triaged and reported.
-	reportIaC := healthcheck.NormalizeIaCFindings(state.Policy.IaCFindings) == healthcheck.IaCFindingsReport
+	// iac_findings: report (the default) and quality_findings: report (an
+	// opt-in) keep findings that are nothing but IaC misconfigurations or
+	// code-quality reports out of the score and the gate; they are still
+	// triaged and reported. healthcheck.Assess decides from the origins, as
+	// every other path does.
+	subcategories := coreSubcategories(state.CoreFindings)
 
 	in := healthcheck.Input{}
 	for _, r := range state.CoreFindings {
@@ -403,9 +414,11 @@ func computeHealthCheck(state *AgentState) {
 		origins := findingOrigins(f)
 		rules := make([]string, 0, len(origins))
 		sources := make([]string, 0, len(origins))
+		reports := make([]healthcheck.Origin, 0, len(origins))
 		for _, origin := range origins {
 			rules = append(rules, origin.RuleID)
 			sources = append(sources, origin.Source)
+			reports = append(reports, healthOrigin(origin, subcategories))
 		}
 		in.Findings = append(in.Findings, healthcheck.Finding{
 			Source:   source,
@@ -422,11 +435,11 @@ func computeHealthCheck(state *AgentState) {
 			NeedsReview:  isUnreviewed,
 			Unclassified: unclassified[i],
 			TriageFailed: triageFailed[i],
-			ReportOnly:   reportIaC && misconfigurationOnly(f),
+			Origins:      reports,
 		})
 	}
 
-	res := healthcheck.ApplyPolicy(healthcheck.Evaluate(in), state.Policy)
+	res := healthcheck.Assess(in, state.Policy)
 	state.HealthCheck = res
 	state.SecurityScore = res.Score
 	state.SecurityGrade = res.Grade
@@ -507,18 +520,36 @@ func originOf(f EnrichedFinding) FindingOrigin {
 	return FindingOrigin{Type: f.Type, Source: source, RuleID: f.ID, File: f.File, Line: f.Line, Severity: f.Severity, Kind: f.Kind}
 }
 
-// misconfigurationOnly reports whether every scanner report behind a finding
-// is a Trivy IaC misconfiguration. A finding another detector also reported
-// (DOCKER-NO-USER merged with DS-0002) is not: it gated before IaC results
-// were reported, and keeps gating.
-func misconfigurationOnly(f EnrichedFinding) bool {
-	origins := findingOrigins(f)
-	for _, origin := range origins {
-		if origin.Kind != external.KindMisconfiguration || !strings.EqualFold(strings.TrimSpace(origin.Source), "trivy") {
-			return false
-		}
+// healthOrigin describes one scanner report for the health check's
+// report-only rule (healthcheck.ReportOnlyKind). A report of the built-in
+// engine carries the subcategory of its rule, so a code-quality rule can be
+// told from a security rule.
+func healthOrigin(origin FindingOrigin, subcategories map[string]string) healthcheck.Origin {
+	out := healthcheck.Origin{Type: origin.Type, Source: origin.Source, RuleID: origin.RuleID, Kind: origin.Kind}
+	if strings.EqualFold(strings.TrimSpace(origin.Type), "core") {
+		out.Subcategory = subcategories[strings.ToUpper(strings.TrimSpace(origin.RuleID))]
 	}
-	return len(origins) > 0
+	return out
+}
+
+// coreSubcategories maps each rule id of the built-in engine's results to
+// the subcategory of its rule. An id whose results disagree, such as a
+// custom rule that reuses a built-in id, maps to "": such a finding is
+// scored and gated.
+func coreSubcategories(results []core.CheckResult) map[string]string {
+	out := make(map[string]string, len(results))
+	conflicting := map[string]bool{}
+	for _, r := range results {
+		id := strings.ToUpper(strings.TrimSpace(r.ID))
+		if previous, seen := out[id]; seen && previous != r.Subcategory {
+			conflicting[id] = true
+		}
+		out[id] = r.Subcategory
+	}
+	for id := range conflicting {
+		out[id] = ""
+	}
+	return out
 }
 
 func mergeOrigins(groups ...[]FindingOrigin) []FindingOrigin {
@@ -731,7 +762,6 @@ var errThreatModelParse = errors.New("parse threat-model JSON")
 type rawDisposition struct {
 	FindingIndex int
 	FindingID    string
-	Fingerprint  string
 	Disposition  string
 	Confidence   string
 	Rationale    string
@@ -1042,9 +1072,7 @@ func generateReport(ctx context.Context, state *AgentState, llmClient llm.Client
 		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings, hc.Breakdown.UnclassifiedFindings,
 		hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings,
 		hc.Breakdown.Penalty, hc.Breakdown.Bonus)
-	if n := hc.Breakdown.ReportOnlyFindings; n > 0 {
-		healthBlock += fmt.Sprintf("- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
-	}
+	healthBlock += scoreBullets(hc)
 	if len(hc.Verdict.BlockingReasons) > 0 {
 		var reasonLines []string
 		for _, reason := range hc.Verdict.BlockingReasons {
@@ -1143,7 +1171,8 @@ func displayLocation(file string, line int) string {
 }
 
 // policyTerms renders the gate settings a reader needs to interpret the
-// verdict: fail_on, plus the confirmed severity floor when it applies.
+// verdict: fail_on, plus the confirmed severity floor when it applies and
+// each other setting that is not at its default.
 func policyTerms(policy healthcheck.Policy) string {
 	terms := fmt.Sprintf("`fail_on=%s`", policy.FailOn)
 	if policy.FailOn == healthcheck.FailOnConfirmed {
@@ -1154,6 +1183,9 @@ func policyTerms(policy healthcheck.Policy) string {
 	}
 	if healthcheck.NormalizeIaCFindings(policy.IaCFindings) == healthcheck.IaCFindingsBlock {
 		terms += ", `iac_findings=block`"
+	}
+	if healthcheck.NormalizeQualityFindings(policy.QualityFindings) == healthcheck.QualityFindingsReport {
+		terms += ", `quality_findings=report`"
 	}
 	return terms
 }
@@ -1171,6 +1203,9 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		if failure.Status == stageStatusDegraded {
 			_, _ = fmt.Fprintf(sb, "> **Note:** %s.\n\n", failure.Reason)
 		}
+	}
+	for _, warning := range state.DeprecationWarnings {
+		_, _ = fmt.Fprintf(sb, "> **Warning:** %s\n\n", warning)
 	}
 
 	verdict := "✅ PASSED"
@@ -1261,7 +1296,7 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		_, _ = fmt.Fprintf(sb, " · %d duplicates merged", merged)
 	}
 	sb.WriteString("\n\n")
-	if line := iacReportOnlyLine(bd); line != "" {
+	for _, line := range scoreLines(hc) {
 		sb.WriteString(line + "\n\n")
 	}
 	if line := suppressionReasonsLine(state.Suppressions); line != "" {

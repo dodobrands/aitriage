@@ -51,6 +51,7 @@ type verdictCacheKeyContext struct {
 	Model           string   `json:"model"`
 	BaseURLHash     string   `json:"base_url_hash"`
 	DisableThinking bool     `json:"disable_thinking,omitempty"`
+	Temperature     string   `json:"temperature,omitempty"` // what the client sends when the run starts
 	AITriageVersion string   `json:"aitriage_version"`
 	PromptVersion   string   `json:"prompt_version"`
 	RulesDigest     string   `json:"rules_digest"`
@@ -70,28 +71,35 @@ type verdictCacheKeyContext struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings changes the gate the cached report narrates.
 	IaCFindings string `json:"iac_findings,omitempty"`
+	// QualityFindings changes the score and gate the cached report narrates.
+	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
 type verdictCacheOption func(*verdictCacheKeyContext)
 
 // withVerdictCacheLLMIdentity pins the cache namespace to the provider/model
-// that actually serves the run. Env vars stay as fallback for callers that do
+// that actually serves the run: the ones the requests name, which the client
+// reported before the run (RecordLLMSettings), else the configured ones. With
+// no model configured, the configured identity would read "default" whatever
+// default the client applies, and verdicts of one default model would be
+// served as those of the next. Env vars stay as fallback for callers that do
 // not resolve an identity (empty fields never override).
 func withVerdictCacheLLMIdentity(state *AgentState) verdictCacheOption {
 	return func(ctx *verdictCacheKeyContext) {
 		if state == nil {
 			return
 		}
-		if v := strings.TrimSpace(state.LLMProvider); v != "" {
+		if v := strings.TrimSpace(firstNonEmpty(state.LLMRequestProvider, state.LLMProvider)); v != "" {
 			ctx.Provider = v
 		}
-		if v := strings.TrimSpace(state.LLMModel); v != "" {
+		if v := strings.TrimSpace(firstNonEmpty(state.LLMRequestModel, state.LLMModel)); v != "" {
 			ctx.Model = v
 		}
 		if v := strings.TrimSpace(state.LLMBaseURL); v != "" {
 			ctx.BaseURLHash = hashCacheField(v)
 		}
 		ctx.DisableThinking = state.LLMDisableThinking
+		ctx.Temperature = strings.TrimSpace(state.LLMTemperature)
 		ctx.Language = prompts.NormalizeLanguage(state.Language)
 	}
 }
@@ -109,6 +117,7 @@ func withVerdictCachePolicy(policy healthcheck.Policy) verdictCacheOption {
 		ctx.ConfirmedMinSeverity = strings.TrimSpace(policy.ConfirmedMinSeverity)
 		ctx.FPCriticalRequiresHighConfidence = policy.FPCriticalRequiresHighConfidence
 		ctx.IaCFindings = healthcheck.NormalizeIaCFindings(policy.IaCFindings)
+		ctx.QualityFindings = healthcheck.NormalizeQualityFindings(policy.QualityFindings)
 	}
 }
 

@@ -347,8 +347,24 @@ func recordedWithoutEvidence(key string, entry Entry) bool {
 // project-relative, with or without evidence. Existing dismissals must keep
 // working after an upgrade or after the project is checked out in a different
 // directory, and each still covers only the file it was recorded for, never
-// another one that shares its name (see baseline.LegacyPathMatches).
+// another one that shares its name (see baseline.LegacyPathMatches). For the
+// same reason a decision recorded under an id the finding's rule had before it
+// was split from another one still covers it (see baseline.Item).
 func (s *Store) SuppressesInProject(root string, item baseline.Item) (Entry, bool) {
+	if entry, ok := s.suppressesInProjectAs(root, item); ok {
+		return entry, true
+	}
+	if item.PreviousRuleID != "" {
+		previous := item
+		previous.RuleID, previous.PreviousRuleID = item.PreviousRuleID, ""
+		return s.suppressesInProjectAs(root, previous)
+	}
+	return Entry{}, false
+}
+
+// suppressesInProjectAs matches one item, under its own rule id, against every
+// form a decision may have been recorded in.
+func (s *Store) suppressesInProjectAs(root string, item baseline.Item) (Entry, bool) {
 	if entry, ok := s.Suppresses(item); ok {
 		return entry, true
 	}

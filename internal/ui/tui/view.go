@@ -3280,7 +3280,7 @@ func (m DashboardModel) renderConfig(w, h int) string {
 		"Strict Mode (fail on any finding):",
 		"Fail Score Threshold (0-100):",
 		"LLM Provider (gemini/openai/anthropic):",
-		"LLM Model (e.g. gemini-2.5-flash):",
+		"LLM Model (empty: provider default):",
 	}
 
 	for i, label := range labels {

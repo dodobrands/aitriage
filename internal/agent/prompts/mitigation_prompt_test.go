@@ -42,7 +42,8 @@ func TestClassificationPromptStatesHowAMitigationIsTiedToItsFinding(t *testing.T
 	for _, want := range []string{
 		"in the same function as the flagged line, above it and at most 30 lines before it",
 		"code only (no comment or string text)",
-		"names a variable or function the flagged statement uses",
+		"names a variable whose data the flagged statement uses",
+		"a module, package or function name alone (os, path, request) does not tie a check to the finding",
 		"never dismisses a CRITICAL finding",
 		"return Needs Manual Review or True Positive",
 	} {
@@ -62,7 +63,8 @@ func TestClassificationPromptStatesTheShapeOfAMitigation(t *testing.T) {
 		"x = f(x)",
 		"The assignment that produces the value",
 		"a call whose result nothing checks",
-		"a check in another function are not mitigations",
+		"The check must run on every path to the flagged statement",
+		"a check in another function, and a check inside another branch, a loop body or a single switch case are not mitigations",
 		"other than Python, Go, JavaScript and TypeScript",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -78,10 +80,31 @@ func TestClassificationPromptNeverDismissesAHardcodedSecret(t *testing.T) {
 	}
 }
 
+// A verdict is bound to its finding by finding_index and finding_id. The
+// prompt must not ask for the fingerprint: models garble long hex strings,
+// and the validator no longer checks one.
+func TestClassificationPromptBindsVerdictsByFindingID(t *testing.T) {
+	prompt := classificationPromptText()
+	if want := "Echo the exact finding_id from the input for every entry"; !strings.Contains(prompt, want) {
+		t.Errorf("classification prompt does not say %q", want)
+	}
+	if strings.Contains(strings.ToLower(prompt), "fingerprint") {
+		t.Error("classification prompt still asks for the fingerprint")
+	}
+}
+
+// The validator checks one line of evidence.observed: the prompt asks for
+// that line.
+func TestClassificationPromptAsksForTheLineThatHoldsTheMitigation(t *testing.T) {
+	if want := "evidence.observed must be literal text from evidence.line: the single line that holds the mitigation (the first line of a block)"; !strings.Contains(classificationPromptText(), want) {
+		t.Errorf("classification prompt does not say %q", want)
+	}
+}
+
 // The evidence contract changed, so verdicts cached under the previous prompt
 // must not be served under this one.
 func TestPromptVersionWasBumpedForTheEvidenceContract(t *testing.T) {
-	for _, previous := range []string{"securecoder-v3", "securecoder-v4", "securecoder-v5", "securecoder-v6"} {
+	for _, previous := range []string{"securecoder-v3", "securecoder-v4", "securecoder-v5", "securecoder-v6", "securecoder-v7"} {
 		if SecureCoderPromptVersion == previous {
 			t.Errorf("the evidence contract changed but SecureCoderPromptVersion is still %q", previous)
 		}

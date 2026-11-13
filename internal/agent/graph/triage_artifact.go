@@ -9,16 +9,22 @@ import (
 )
 
 // TriageArtifactSchemaVersion is incremented only for incompatible changes to
-// triage-findings.json. Consumers must reject versions they do not understand.
+// triage-findings.json: a field removed or renamed, or a field whose type or
+// meaning changes, such as the form of an identifier, how paths are written
+// or what one entry stands for. Adding a field does not increment it.
+// Consumers must reject versions they do not understand. An increment breaks
+// the public contract, so it ships only in a major release (see
+// "Compatibility and versioning" in CONTRIBUTING.md).
 //
-// Still 1 after findings gained stable_id, class, the dependency fields and
-// per-origin locations, and the artifact gained the scope counts: every
-// change adds a field and none changes a type. Values did change: paths are
-// project-relative, vuln_id has the CS-<CLASS>-<hex> form, one finding may
-// stand for several detectors, and health_check.breakdown.count_by_class is
-// keyed by canonical class (per-rule counts moved to count_by_rule). The only
-// in-tree consumer that parses the file (hostrun approval) compares vuln_id
-// verbatim and is unaffected.
+// Additions such as stable_id, class, the dependency fields, per-origin
+// locations and the scope counts kept version 1. v1.14.0 also changed
+// meanings without an increment, before this rule was written down: paths
+// became project-relative, vuln_id took the CS-<CLASS>-<hex> form, one
+// finding may stand for several detectors, and
+// health_check.breakdown.count_by_class became keyed by canonical class
+// (per-rule counts moved to count_by_rule). Version 1 means the fields as
+// v1.14.0 writes them. The only in-tree consumer that parses the file
+// (hostrun approval) compares vuln_id verbatim and was unaffected.
 const TriageArtifactSchemaVersion = 1
 
 // TriageFindingsArtifact is the canonical, machine-readable record of an AI
@@ -70,6 +76,14 @@ type LLMUsageArtifact struct {
 	Total                llm.Usage            `json:"total"`
 	Stages               map[string]llm.Usage `json:"stages,omitempty"`
 	CacheTelemetryStatus string               `json:"cache_telemetry_status"`
+	// Provider and Model name what served the requests, the model after
+	// defaults, so a change of verdicts between runs can be traced to a
+	// change of model. Never an endpoint or a credential.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Temperature is the sampling temperature the requests carried, such as
+	// "0", or "provider default" when they carried none.
+	Temperature string `json:"temperature,omitempty"`
 }
 
 // TriagedFinding pairs one original scanner finding with its one validated
@@ -174,6 +188,25 @@ func buildClassificationStats(state *AgentState) ClassificationStats {
 	return stats
 }
 
+// RecordLLMSettings notes what client's requests carry, for the verdict cache
+// key and llm_usage in triage-findings.json: the temperature, and the
+// provider and model after the client's defaults. Callers of Run record them
+// before the run and again after it: an endpoint that refuses the temperature
+// makes the client drop it mid-run, and the record must show what the
+// requests carried, while the cache key keeps the starting value, which is
+// the same on every run against that endpoint. A client that does not know
+// its model, such as a host agent, leaves the configured identity in the
+// record and the key.
+func (s *AgentState) RecordLLMSettings(client llm.Client) {
+	if s == nil {
+		return
+	}
+	s.LLMTemperature = llm.EffectiveTemperature(client)
+	if provider, model := llm.RequestModel(client); model != "" {
+		s.LLMRequestProvider, s.LLMRequestModel = provider, model
+	}
+}
+
 func buildLLMUsageArtifact(state *AgentState) LLMUsageArtifact {
 	stages := make(map[string]llm.Usage, len(state.StageUsage))
 	for name, usage := range state.StageUsage {
@@ -195,5 +228,8 @@ func buildLLMUsageArtifact(state *AgentState) LLMUsageArtifact {
 		Total:                state.TotalUsage,
 		Stages:               stages,
 		CacheTelemetryStatus: status,
+		Provider:             firstNonEmpty(state.LLMRequestProvider, state.LLMProvider),
+		Model:                firstNonEmpty(state.LLMRequestModel, state.LLMModel),
+		Temperature:          state.LLMTemperature,
 	}
 }

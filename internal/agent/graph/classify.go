@@ -1,11 +1,13 @@
 package graph
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +92,10 @@ type classifyResult struct {
 	Dispositions     []FindingDisposition
 	Audit            []ClassificationAuditEntry
 	CacheStats       VerdictCacheStats
+
+	// declined holds the unique indices of the findings the model declined
+	// to classify (stop_reason refusal) when a request carried only them.
+	declined map[int]bool
 }
 
 // classifyFindings runs the layered classification. On success the error is
@@ -125,6 +131,9 @@ func classifyFindings(ctx context.Context, req classifyRequest) (classifyResult,
 				incomplete.Unclassified++
 			}
 		}
+		for u := range res.declined {
+			incomplete.Declined += len(groups[u])
+		}
 	}
 
 	logTriageMetrics(req.findings, unique, uniqueDisps)
@@ -147,7 +156,8 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		// moved within its file is not re-classified.
 		if cached, cachedLine, ok := cache.lookup(verdictCacheKey(f)); ok {
 			cached.Evidence = relocateEvidence(cached.Evidence, cachedLine, f)
-			if cachedVerdictUsable(req, f, cached) {
+			if evidence, usable := cachedVerdictUsable(req, f, cached); usable {
+				cached.Evidence = evidence
 				cached.FindingIndex = i
 				cached.DispositionSource = dispositionSourceCache
 				cached.Fingerprint = fp
@@ -211,7 +221,10 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 
 	// Layer 4b + 5: classify the remaining findings against the threat model,
 	// in bounded-concurrency batches with adaptive retry of omitted findings.
-	var unanswered map[int]bool
+	var (
+		unanswered map[int]bool
+		declined   map[int]llm.RefusalError
+	)
 	if failure == nil && len(toLLM) > 0 {
 		classified, audit, outcome, err := classifyWithLLM(ctx, tmSummary, req, unique, toLLM)
 		res.Audit = audit
@@ -233,22 +246,26 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 			// No reply carried a verdict for these findings, after every
 			// retry: they were left out, the replies were unparseable, {} or
 			// null, an error object or an empty list, or their verdicts named
-			// another finding. That is missing output, not a model judgement,
+			// another finding; or the model declined to classify them, sent
+			// on their own. That is missing output, not a model judgement,
 			// and it is judged per finding: whether a batch-mate got a verdict,
 			// or came from the verdict cache, must not decide whether the gate
 			// sees an incomplete triage. Treating these findings as ordinary
 			// NR fallbacks would let a fail_on=confirmed gate pass.
-			unanswered = outcome.unanswered
-			failure = newTriageIncomplete(usageStageClassification, fmt.Errorf(
-				"the provider returned no usable classification for %d finding(s) after %d attempt(s): no reply carried a verdict for them (left out, malformed or empty, or naming another finding)",
-				len(unanswered), classifyMaxRetries()+1))
+			unanswered, declined = outcome.unanswered, outcome.declined
+			failure = newTriageIncomplete(usageStageClassification, errors.New(noVerdictReason(len(unanswered), declined)))
 			failure.Cause = TriageFailureCauseNoVerdict
+			res.declined = make(map[int]bool, len(declined))
+			for i := range declined {
+				res.declined[i] = true
+			}
 		}
 	}
 
 	// Findings the model did not classify: triage-failed when the provider
-	// failed for them or no reply carried their verdict, NR fallback when the
-	// model returned their own verdict and validation rejected it every time.
+	// failed for them, no reply carried their verdict or the model declined
+	// them, NR fallback when the model returned their own verdict and
+	// validation rejected it every time.
 	everyMissingFailed := failure != nil && unanswered == nil
 	for _, i := range toLLM {
 		if result[i] != nil {
@@ -256,10 +273,14 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		}
 		fp := Fingerprint(unique[i])
 		if everyMissingFailed || unanswered[i] {
+			rationale := triageFailedRationale(failure.Reason)
+			if refusal, ok := declined[i]; ok {
+				rationale = declinedRationale(refusal)
+			}
 			result[i] = &FindingDisposition{
 				FindingIndex:      i,
 				Disposition:       "Needs Manual Review",
-				Rationale:         triageFailedRationale(failure.Reason),
+				Rationale:         rationale,
 				Confidence:        "low",
 				DispositionSource: dispositionSourceTriageFailed,
 				Fingerprint:       fp,
@@ -292,19 +313,83 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 
 // cachedVerdictUsable re-checks a cached verdict against the current rules. A
 // cached False Positive is only reused while its evidence still validates and
-// it still satisfies the run's validation policy.
-func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) bool {
+// it still satisfies the run's validation policy. It returns the evidence the
+// reused verdict records: for a False Positive, as validated now, on the line
+// its code is on today.
+func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) (*DispositionEvidence, bool) {
 	if cached.Disposition != "False Positive" {
-		return true
+		return cached.Evidence, true
 	}
-	if err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence); err != nil {
-		return false
+	evidence, err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence)
+	if err != nil || violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence) {
+		return nil, false
 	}
-	return !violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence)
+	return evidence, true
 }
 
 func triageFailedRationale(reason string) string {
 	return "AI triage did not complete: " + reason + ". The model never classified this finding; it stays Needs Manual Review and the gate cannot pass until triage completes."
+}
+
+// declinedRationale is the rationale of a finding the model declined to
+// classify in a request that carried only that finding.
+func declinedRationale(refusal llm.RefusalError) string {
+	return "AI triage did not complete: " + declinedText(refusal, "this finding", nil) +
+		". The model never classified it; it stays Needs Manual Review and the gate cannot pass until triage completes. The same model is likely to decline it again: review it by hand, or triage it with another model."
+}
+
+// declinedText says that the model declined to classify what, with the
+// policy categories it named: the refusal's own, or categories when it
+// describes several refusals at once. For example "claude-sonnet-5-5
+// declined to classify this finding (stop_reason refusal, category cyber)".
+func declinedText(refusal llm.RefusalError, what string, categories []string) string {
+	model := refusal.Model
+	if model == "" {
+		model = "the model"
+	}
+	if len(categories) == 0 {
+		categories = []string{refusal.Category}
+	}
+	named := make([]string, len(categories))
+	for i, category := range categories {
+		named[i] = cmp.Or(category, "none")
+	}
+	label := "category"
+	if len(named) > 1 {
+		label = "categories"
+	}
+	return redactFailureText(fmt.Sprintf("%s declined to classify %s (stop_reason refusal, %s %s)", model, what, label, strings.Join(named, ", ")))
+}
+
+// noVerdictReason is the run's failure reason when unanswered findings have
+// no verdict: the model declined to classify those in declined, and no reply
+// carried a verdict for the rest.
+func noVerdictReason(unanswered int, declined map[int]llm.RefusalError) string {
+	attempts := classifyMaxRetries() + 1
+	if len(declined) == 0 {
+		return fmt.Sprintf("the provider returned no usable classification for %d finding(s) after %d attempt(s): no reply carried a verdict for them (left out, malformed or empty, or naming another finding)",
+			unanswered, attempts)
+	}
+	// One client serves the run, so every refusal names the same model; the
+	// categories can differ.
+	var (
+		first      = -1
+		categories []string
+	)
+	for i, refusal := range declined {
+		if first < 0 || i < first {
+			first = i
+		}
+		if !slices.Contains(categories, refusal.Category) {
+			categories = append(categories, refusal.Category)
+		}
+	}
+	slices.Sort(categories)
+	reason := declinedText(declined[first], fmt.Sprintf("%d finding(s)", len(declined)), categories) + ", each sent on its own"
+	if rest := unanswered - len(declined); rest > 0 {
+		reason += fmt.Sprintf("; no reply carried a verdict for %d other finding(s) after %d attempt(s) (left out, malformed or empty, or naming another finding)", rest, attempts)
+	}
+	return reason
 }
 
 // classifyOutcome reports how the LLM classification stage ended when it was
@@ -316,6 +401,9 @@ type classifyOutcome struct {
 	// carried a verdict of their own for, in any attempt. Only meaningful
 	// when transportErr is nil.
 	unanswered map[int]bool
+	// declined holds the part of unanswered the model declined to classify
+	// in a request that carried only that finding, with the refusal.
+	declined map[int]llm.RefusalError
 }
 
 // classifyWithLLM classifies the given unique-index targets in bounded-concurrency
@@ -337,7 +425,7 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 	defer cancel()
 
 	var (
-		mu           sync.Mutex // guards out and unanswered
+		mu           sync.Mutex // guards out, unanswered and declined
 		usageMu      sync.Mutex // guards req.usage
 		errMu        sync.Mutex // guards abortErr and transportErr
 		abortErr     error
@@ -345,6 +433,7 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 		wg           sync.WaitGroup
 	)
 	unanswered := make(map[int]bool)
+	declined := make(map[int]llm.RefusalError)
 	audit := &classificationAuditCollector{}
 	sem := make(chan struct{}, triageConcurrency())
 
@@ -383,15 +472,19 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 			for li, gi := range batch {
 				subset[li] = unique[gi]
 			}
-			local, rejected := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
+			local := classifyBatchWithRetry(batchCtx, tmSummary, req, subset, batch, addUsageSafe, setErr, audit)
 
 			mu.Lock()
-			for li, d := range local {
+			for li, d := range local.classified {
 				out[batch[li]] = d
 			}
 			for li, gi := range batch {
-				if _, ok := local[li]; !ok && !rejected[li] {
-					unanswered[gi] = true
+				if _, ok := local.classified[li]; ok || local.rejected[li] {
+					continue
+				}
+				unanswered[gi] = true
+				if refusal, ok := local.declined[li]; ok {
+					declined[gi] = refusal
 				}
 			}
 			mu.Unlock()
@@ -408,6 +501,7 @@ func classifyWithLLM(ctx context.Context, tmSummary string, req classifyRequest,
 	outcome := classifyOutcome{transportErr: transportErr}
 	if transportErr == nil && len(unanswered) > 0 {
 		outcome.unanswered = unanswered
+		outcome.declined = declined
 	}
 	return out, audit.snapshot(), outcome, nil
 }
@@ -418,23 +512,51 @@ type passOutcome int
 const (
 	passParsed passOutcome = iota
 	passUnparseable
+	// passDeclined: the model declined the request (stop_reason refusal).
+	passDeclined
 	passFailed
 )
+
+// batchResult is what the requests of one batch got, keyed by LOCAL batch
+// index.
+type batchResult struct {
+	// classified holds the accepted verdicts.
+	classified map[int]FindingDisposition
+	// rejected marks the findings whose own verdict came back at least once
+	// (right index, echoed identity, a supported disposition) and was
+	// rejected by validation.
+	rejected map[int]bool
+	// declined holds the findings the model declined to classify in a
+	// request that carried only that finding, with the refusal.
+	declined map[int]llm.RefusalError
+}
 
 // classifyBatchWithRetry classifies a single batch and retries what is still
 // unclassified up to classifyMaxRetries times. A retry is split in halves when
 // the previous reply was unparseable or omitted more than a quarter of its
 // findings: weaker models drop items from long requests, and resending the
-// same long request tends to fail the same way. It returns a map keyed by
-// LOCAL batch index, and the local indices of the findings whose own verdict
-// came back at least once (right index, echoed identity, a supported
-// disposition) and was rejected by validation. Any other unclassified
-// finding never got a verdict of its own, whatever its batch-mates got.
-func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyRequest, subset []EnrichedFinding, globalIndices []int, addUsageSafe func(llm.Usage), setErr func(error), audit *classificationAuditCollector) (map[int]FindingDisposition, map[int]bool) {
-	res := make(map[int]FindingDisposition)
-	rejected := make(map[int]bool)
+// same long request tends to fail the same way.
+//
+// A request the model declines (stop_reason refusal) classifies nothing, and
+// one finding can be enough for that. It is split in halves at once, within
+// the same attempt, until the declined finding is alone, so it costs its
+// batch-mates neither their verdicts nor an attempt; a finding declined on
+// its own is not sent again. One such finding among n adds at most
+// 2·⌈log₂ n⌉ requests to the first one; a model that declines every request
+// stops after 2n−1, each finding sent on its own once.
+//
+// Any finding left unclassified that is neither rejected nor declined never
+// got a verdict of its own, whatever its batch-mates got.
+func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyRequest, subset []EnrichedFinding, globalIndices []int, addUsageSafe func(llm.Usage), setErr func(error), audit *classificationAuditCollector) batchResult {
+	out := batchResult{
+		classified: make(map[int]FindingDisposition),
+		rejected:   make(map[int]bool),
+		declined:   make(map[int]llm.RefusalError),
+	}
+	res, rejected := out.classified, out.rejected
 
-	pass := func(attempt int, localMap []int) passOutcome {
+	// pass sends one request. A declined request also returns the refusal.
+	pass := func(attempt int, localMap []int) (passOutcome, error) {
 		items := make([]EnrichedFinding, len(localMap))
 		requestIndices := make([]int, len(localMap))
 		for i, localIndex := range localMap {
@@ -448,11 +570,14 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			// A provider error can carry the gateway URL and credentials.
 			entry.ParseError = failureReason(err)
 			audit.record(entry)
-			if errors.Is(err, errThreatModelParse) {
-				return passUnparseable
+			switch {
+			case errors.Is(err, llm.ErrRefused):
+				return passDeclined, err
+			case errors.Is(err, errThreatModelParse):
+				return passUnparseable, nil
 			}
 			setErr(err)
-			return passFailed
+			return passFailed, err
 		}
 		for _, d := range disps {
 			if d.FindingIndex < 0 || d.FindingIndex >= len(items) {
@@ -485,7 +610,7 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 			entry.AcceptedFindingIndices = append(entry.AcceptedFindingIndices, globalIndices[local])
 		}
 		audit.record(entry)
-		return passParsed
+		return passParsed, nil
 	}
 
 	all := make([]int, len(subset))
@@ -495,14 +620,33 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 	chunks := [][]int{all}
 	for attempt := 0; attempt <= classifyMaxRetries() && len(chunks) > 0; attempt++ {
 		var next [][]int
-		for _, chunk := range chunks {
+		for len(chunks) > 0 {
+			chunk := chunks[0]
+			chunks = chunks[1:]
 			if ctx.Err() != nil {
 				// Another batch hit a provider failure, or the run was cancelled.
-				return res, rejected
+				return out
 			}
-			outcome := pass(attempt, chunk)
-			if outcome == passFailed {
-				return res, rejected
+			outcome, err := pass(attempt, chunk)
+			switch outcome {
+			case passFailed:
+				return out
+			case passDeclined:
+				if len(chunk) == 1 {
+					// Declined on its own: no smaller request can help, and
+					// the same one would most likely be declined again.
+					var refusal *llm.RefusalError
+					if !errors.As(err, &refusal) {
+						refusal = &llm.RefusalError{}
+					}
+					out.declined[chunk[0]] = *refusal
+					continue
+				}
+				// Find the declined finding within this attempt: the halves
+				// are sent next, before any other chunk.
+				mid := len(chunk) / 2
+				chunks = append([][]int{chunk[:mid], chunk[mid:]}, chunks...)
+				continue
 			}
 			var missing []int
 			for _, local := range chunk {
@@ -516,14 +660,14 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 		}
 		chunks = next
 	}
-	return res, rejected
+	return out
 }
 
 // verdictNamesFinding reports whether a reply item is a verdict about the
 // finding it is indexed to: it echoes the finding's identity. A verdict that
 // names another finding says nothing about this one.
 func verdictNamesFinding(finding EnrichedFinding, raw rawDisposition) bool {
-	return raw.FindingID == findingIdentity(finding) && raw.Fingerprint == Fingerprint(finding)
+	return raw.FindingID == findingIdentity(finding)
 }
 
 // retryChunks plans the retry of the findings a request left unclassified.
@@ -544,7 +688,6 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 		promptFindings[i] = classificationPromptFinding{
 			FindingIndex: i,
 			FindingID:    findingIdentity(finding),
-			Fingerprint:  Fingerprint(finding),
 			Finding:      finding,
 		}
 	}
@@ -557,6 +700,12 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 	}
 
 	response, u, err := llmClient.Chat(ctx, messages)
+	if errors.Is(err, llm.ErrNoAnswer) {
+		// The provider answered without an answer, such as a request the
+		// model declined: a reply that classifies nothing, retried in smaller
+		// requests like one that cannot be parsed, not a provider failure.
+		return nil, "", u, fmt.Errorf("%w: %w", errThreatModelParse, err)
+	}
 	if err != nil {
 		return nil, "", u, fmt.Errorf("classification LLM call failed: %w", err)
 	}
@@ -574,11 +723,12 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 }
 
 // classificationReplyItem is one entry of a classification reply: a
-// rawDisposition as the model writes it.
+// rawDisposition as the model writes it. A fingerprint the model still
+// echoes, as earlier prompts asked, is dropped by the decoder and never
+// checked (see validateLLMDisposition).
 type classificationReplyItem struct {
 	FindingIndex int                  `json:"finding_index"`
 	FindingID    string               `json:"finding_id"`
-	Fingerprint  string               `json:"fingerprint"`
 	Disposition  string               `json:"disposition"`
 	Confidence   string               `json:"confidence"`
 	Rationale    string               `json:"rationale"`

@@ -45,3 +45,17 @@ health_check:
 		t.Fatalf("iac_findings = %q, want block", got)
 	}
 }
+
+func TestLoadConfigQualityFindingsSetting(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, ".aitriage.yaml", `
+health_check:
+  quality_findings: block
+`)
+	if got := LoadConfig(dir).HealthCheck.QualityFindings; got != "block" {
+		t.Fatalf("quality_findings = %q, want block", got)
+	}
+	if got := LoadConfig(t.TempDir()).HealthCheck.QualityFindings; got != "" {
+		t.Fatalf("quality_findings without a config = %q, want unset", got)
+	}
+}

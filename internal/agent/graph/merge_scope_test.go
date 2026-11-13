@@ -163,3 +163,48 @@ func TestKubernetesRunAsRootIsOneFindingPerContainer(t *testing.T) {
 		t.Fatalf("KSV012 on line 10 disposition = %+v, want the recorded decision applied", d)
 	}
 }
+
+// A swallowed exception the FastAPI rule and Bandit both reported is one
+// finding, and it is not code quality: `except Exception: pass` around a
+// token check turns a failed check into a pass. Under quality_findings:
+// report it is scored and gates, also when a custom rule labels
+// FAST-LAZY-EXC quality: a finding is reported only when every detector
+// behind it is a quality check, and Bandit's B110 is not one. Of the NFR
+// checks, a missing .env.example is code quality and a missing
+// authentication middleware is not.
+func TestSwallowedExceptionGatesUnderQualityReport(t *testing.T) {
+	build := func(subcategory string) *AgentState {
+		state := &AgentState{
+			ProjectPath: t.TempDir(),
+			CoreFindings: []core.CheckResult{
+				{ID: "FAST-LAZY-EXC", Name: "Exception Silently Swallowed", Status: core.Absent, Severity: "LOW", File: "main.py", Line: 13, Evidence: "except: pass", Subcategory: subcategory},
+			},
+			ExternalFindings: []external.UnifiedFinding{
+				{Source: "bandit", RuleID: "B110", Severity: "LOW", File: "main.py", Line: 13, Message: "try_except_pass"},
+			},
+			NFRFindings: []nfr.NFRFinding{
+				{RuleID: "NFR-ENV-001", Name: ".env.example Missing", Severity: "LOW", Message: "No .env.example documents the environment variables"},
+				{RuleID: "NFR-API-003", Name: "Authentication Middleware Missing", Severity: "MEDIUM", Message: "No authentication middleware detected"},
+			},
+			Policy: healthcheck.Policy{FailOn: healthcheck.FailOnAny, QualityFindings: healthcheck.QualityFindingsReport},
+		}
+		enrichFindings(state)
+		scoreWithModelVerdict(state, "True Positive")
+		return state
+	}
+
+	// audit is the catalog's subcategory of FAST-LAZY-EXC.
+	for _, subcategory := range []string{"audit", healthcheck.SubcategoryQuality} {
+		state := build(subcategory)
+		if len(state.EnrichedFindings) != 3 {
+			t.Fatalf("findings = %+v, want the exception merged and both NFR checks", state.EnrichedFindings)
+		}
+		hc := state.HealthCheck
+		bd := hc.Breakdown
+		if hc.Verdict.Passed || bd.ActiveFindings != 2 || bd.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 1 ||
+			bd.CountByRule["b110"] != 1 || bd.CountByRule["fast-lazy-exc"] != 1 || bd.CountByRule["nfr-api-003"] != 1 {
+			t.Fatalf("FAST-LAZY-EXC subcategory %q: verdict %+v, breakdown %+v; want the exception and the missing authentication gating, .env.example reported only",
+				subcategory, hc.Verdict, bd)
+		}
+	}
+}

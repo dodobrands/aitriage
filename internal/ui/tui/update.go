@@ -805,11 +805,12 @@ func (m *DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Lazy-initialize LLM client when coming from browser mode
 			if m.LLMClient == nil && msg.report.Config != nil {
 				m.LLMClient, _ = llm.NewClient(llm.Config{
-					Provider: msg.report.Config.LLM.Provider,
-					Model:    msg.report.Config.LLM.Model,
-					APIKey:   msg.report.Config.LLM.APIKey,
-					BaseURL:  msg.report.Config.LLM.BaseURL,
-					Timeout:  msg.report.Config.LLM.Timeout,
+					Provider:    msg.report.Config.LLM.Provider,
+					Model:       msg.report.Config.LLM.Model,
+					APIKey:      msg.report.Config.LLM.APIKey,
+					BaseURL:     msg.report.Config.LLM.BaseURL,
+					Timeout:     msg.report.Config.LLM.Timeout,
+					Temperature: msg.report.Config.LLM.Temperature,
 				})
 				m.AddLog(LogInfo, "SYSTEM", fmt.Sprintf("LLM Engine initialized: %s/%s", msg.report.Config.LLM.Provider, msg.report.Config.LLM.Model))
 			}
@@ -2326,8 +2327,8 @@ func (m *DashboardModel) initConfigInputs() {
 		m.ConfigInputs[2].SetValue("gemini")
 
 		// 4. LLM Model
-		m.ConfigInputs[3].Placeholder = "gemini-2.5-flash"
-		m.ConfigInputs[3].SetValue("gemini-2.5-flash")
+		m.ConfigInputs[3].Placeholder = llm.DefaultGeminiModel
+		m.ConfigInputs[3].SetValue(llm.DefaultGeminiModel)
 
 		m.ConfigFocusIndex = 0
 		m.ConfigInputs[0].Focus()

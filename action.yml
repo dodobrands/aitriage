@@ -44,7 +44,7 @@ inputs:
     required: false
     default: 'false'
   args:
-    description: 'Freeform extra args appended to the command: the agent gate (--fail-on critical|any|confirmed|never, --fail-score, --health-profile, --confirmed-min-severity, --iac-findings report|block), report paths, or advanced scan flags.'
+    description: 'Freeform extra args appended to the command: the agent gate (--fail-on critical|any|confirmed|never, --fail-score, --health-profile, --confirmed-min-severity, --iac-findings report|block, --quality-findings report|block), report paths, or advanced scan flags (--quality-findings works on scan too).'
     required: false
     default: ''
   summary-file:

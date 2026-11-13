@@ -100,7 +100,17 @@ type ScanSummary struct {
 // result. It is exposed so callers (CLI, MCP) can inspect raw findings and
 // build state without duplicating orchestrator wiring.
 func Scan(ctx context.Context, opts Options) llm.RichScanResult {
-	return orchestrator.RunAllScanners(ctx, scannerOptions(opts))
+	return scoreUnderPolicy(orchestrator.RunAllScanners(ctx, scannerOptions(opts)), opts.Policy)
+}
+
+// scoreUnderPolicy scores a scan again under the run's policy. The scanners
+// scored it under the project configuration alone; the pre-triage score must
+// count the findings the post-triage gate counts, iac_findings and
+// quality_findings set by flags included.
+func scoreUnderPolicy(rich llm.RichScanResult, policy healthcheck.Policy) llm.RichScanResult {
+	rich.Report.HealthCheck.Policy = policy
+	orchestrator.RecomputeHealthCheck(&rich)
+	return rich
 }
 
 // scannerOptions maps the pipeline options onto the scanner orchestrator.
@@ -201,7 +211,13 @@ func RunState(ctx context.Context, state *graph.AgentState, client llm.Client) (
 		return nil, fmt.Errorf("pipeline: nil llm client")
 	}
 
-	if err := graph.Run(ctx, state, client); err != nil {
+	// The client's model and temperature are recorded before the run, where
+	// the temperature joins the verdict cache key, and again after it, in case
+	// the endpoint refused the temperature mid-run.
+	state.RecordLLMSettings(client)
+	err := graph.Run(ctx, state, client)
+	state.RecordLLMSettings(client)
+	if err != nil {
 		return nil, err
 	}
 

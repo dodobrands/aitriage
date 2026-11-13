@@ -24,7 +24,13 @@ import "strings"
 // it through a call (x = f(x)), in the same function as the flagged line; a
 // hardcoded secret is never a False Positive, test files included. Verdicts
 // cached under v6 may rest on a taint source, a log call or a test fixture.
-const SecureCoderPromptVersion = "securecoder-v7"
+//
+// v8: a verdict is bound to its finding by finding_index and finding_id; the
+// prompt no longer asks the model to echo the 32-digit fingerprint, which
+// models often garbled. evidence.observed is the single line that holds the
+// mitigation, and the validator finds it up to 5 lines from evidence.line.
+// The prompt text changed, so verdicts cached under v7 are not reused.
+const SecureCoderPromptVersion = "securecoder-v8"
 
 // The report and fix-spec prompts were rewritten for the same ID change
 // (report-v2, fixspec-v2).
@@ -177,8 +183,8 @@ and the Secure Coding Rules (MUST/MUST NOT) above.
 
 You MUST return exactly one classification for EVERY finding_index provided
 (0-based, matching the input order). Do NOT skip, merge, or omit any finding.
-Echo the exact finding_id and fingerprint from the input for every entry. Never
-reuse identity, rationale, or evidence from another finding.
+Echo the exact finding_id from the input for every entry. Never reuse
+identity, rationale, or evidence from another finding.
 
 For each finding decide:
 - True Positive: a real, exploitable vulnerability given the threat model.
@@ -196,7 +202,8 @@ authorize suppression:
 evidence.file must identify the exact same file as the finding. It may echo the
 finding's absolute in-project path (for example /workspace/project/app.py) or use
 a path relative to the scanned project. Never reference a file outside the
-scanned project. evidence.observed must be literal text from evidence.line.
+scanned project. evidence.observed must be literal text from evidence.line:
+the single line that holds the mitigation (the first line of a block).
 If you cannot provide one of those proofs, return Needs Manual Review instead.
 A hardcoded secret (credential, key, token) is never a False Positive, not
 even in a test file: a committed credential is exposed wherever it sits, and
@@ -211,16 +218,20 @@ tied to the finding:
   flagged line, above it and at most 30 lines before it: code that runs
   before the flagged statement on its path;
 - evidence.observed is code only (no comment or string text) and names a
-  variable or function the flagged statement uses, for example the variable
-  that is validated or escaped before the flagged line passes it on;
+  variable whose data the flagged statement uses, for example the variable
+  that is validated or escaped before the flagged line passes it on; a
+  module, package or function name alone (os, path, request) does not tie
+  a check to the finding;
 - evidence.line is a guard of that variable or a re-assignment of it through
   a call: an if, elif or assert that checks it and exits early (return,
   raise, throw, abort) or encloses the flagged statement, an early exit
-  under such a check, or x = f(x) such as cmd = shlex.quote(cmd). The
-  assignment that produces the value (cmd = "ls " + request.args["dir"],
-  data = request.get_json()), a call whose result nothing checks (a log
-  call, validate(x) on its own line), a sanitiser result stored under a new
-  name, and a check in another function are not mitigations;
+  under such a check, or x = f(x) such as cmd = shlex.quote(cmd). The check
+  must run on every path to the flagged statement. The assignment that
+  produces the value (cmd = "ls " + request.args["dir"], data =
+  request.get_json()), a call whose result nothing checks (a log call,
+  validate(x) on its own line), a sanitiser result stored under a new name,
+  a check in another function, and a check inside another branch, a loop
+  body or a single switch case are not mitigations;
 - code_mitigation never dismisses a CRITICAL finding: a person decides those,
   so return Needs Manual Review or True Positive for them unless the finding
   is test_only. For a HIGH finding in a language other than Python, Go,
@@ -240,7 +251,7 @@ JSON, TOML, INI, .env, Docker Compose, .conf): they contain no code that
 mitigates. For those findings return True Positive or Needs Manual Review.
 
 Return ONLY JSON with this exact shape (no prose, no markdown):
-{"finding_dispositions":[{"finding_index":0,"finding_id":"exact input finding_id","fingerprint":"exact input fingerprint","disposition":"True Positive","confidence":"high","rationale":"...","evidence":{"basis":"code_mitigation","file":"path/file.py","line":12,"observed":"literal source text"}}]}`
+{"finding_dispositions":[{"finding_index":0,"finding_id":"exact input finding_id","disposition":"True Positive","confidence":"high","rationale":"...","evidence":{"basis":"code_mitigation","file":"path/file.py","line":12,"observed":"literal source text"}}]}`
 
 const ClassificationUserPromptTemplate = `## Threat Model
 %s

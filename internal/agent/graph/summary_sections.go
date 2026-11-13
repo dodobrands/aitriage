@@ -11,10 +11,12 @@ import (
 
 // unclassifiedNotes explains the Needs Review findings without an accepted
 // model verdict, with the remedy that fits each cause. A verdict that failed
-// validation (nr-fallback) needs a person. Retries and smaller batches help
-// when the model left findings out of every reply (triage-failed, no
-// verdict); they do nothing when the provider itself failed, and the only
-// remedy then is to run again once it is available.
+// validation (nr-fallback) needs a person, and so does a finding the model
+// declined to classify on its own: the same model is likely to decline it
+// again. Retries and smaller batches help when the model left findings out of
+// every reply (triage-failed, no verdict); they do nothing when the provider
+// itself failed, and the only remedy then is to run again once it is
+// available.
 func unclassifiedNotes(state *AgentState) []string {
 	tally := tallyDispositions(state)
 	rejected := tally.Unclassified - tally.TriageFailed
@@ -24,8 +26,14 @@ func unclassifiedNotes(state *AgentState) []string {
 	}
 	if tally.TriageFailed > 0 {
 		if state.TriageFailureCause == TriageFailureCauseNoVerdict {
-			notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
-				tally.TriageFailed, classifyMaxRetries(), GetBatchSize(state)))
+			declined := min(state.TriageDeclined, tally.TriageFailed)
+			if declined > 0 {
+				notes = append(notes, fmt.Sprintf("%d not triaged: the model declined to classify them (`stop_reason: refusal`), each sent on its own — review them by hand, or triage them with another model; the same model is likely to decline them again", declined))
+			}
+			if rest := tally.TriageFailed - declined; rest > 0 {
+				notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
+					rest, classifyMaxRetries(), GetBatchSize(state)))
+			}
 		} else {
 			notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
 		}
@@ -203,10 +211,53 @@ func partialCoverageNotes(executions []external.ScannerExecution) []string {
 // iacReportOnlyLine says how many IaC misconfiguration findings the policy
 // reported without gating them (iac_findings: report), or returns "".
 func iacReportOnlyLine(bd healthcheck.Breakdown) string {
-	if bd.ReportOnlyFindings == 0 {
+	n := bd.ReportOnlyByKind[healthcheck.ReportOnlyIaC]
+	if n == 0 {
 		return ""
 	}
-	return fmt.Sprintf("_%d IaC misconfiguration finding(s) reported, not gating (set `iac_findings: block` to enforce)._", bd.ReportOnlyFindings)
+	return fmt.Sprintf("_%d IaC misconfiguration finding(s) reported, not gating (set `iac_findings: block` to enforce)._", n)
+}
+
+// qualityReportOnlyLine says how many code-quality findings the policy
+// reported without scoring or gating them (quality_findings: report), or
+// returns "".
+func qualityReportOnlyLine(bd healthcheck.Breakdown) string {
+	n := bd.ReportOnlyByKind[healthcheck.ReportOnlyQuality]
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("_%d code-quality finding(s) reported, not scored and not gating (set `quality_findings: block` to enforce)._", n)
+}
+
+// scoreLines are the deterministic notes printed under the finding counts:
+// what the policy reported without gating, and why a passing gate sits next
+// to a low score.
+func scoreLines(hc healthcheck.Result) []string {
+	var lines []string
+	for _, line := range []string{iacReportOnlyLine(hc.Breakdown), qualityReportOnlyLine(hc.Breakdown)} {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if note := healthcheck.UnreviewedScoreNote(hc); note != "" {
+		lines = append(lines, "_"+note+"_")
+	}
+	return lines
+}
+
+// scoreBullets renders the same notes as Markdown list items for the report.
+func scoreBullets(hc healthcheck.Result) string {
+	var sb strings.Builder
+	if n := hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyIaC]; n > 0 {
+		_, _ = fmt.Fprintf(&sb, "- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
+	}
+	if n := hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality]; n > 0 {
+		_, _ = fmt.Fprintf(&sb, "- **Code-quality findings**: %d reported, not gating and not scored (`quality_findings: report`)\n", n)
+	}
+	if note := healthcheck.UnreviewedScoreNote(hc); note != "" {
+		_, _ = fmt.Fprintf(&sb, "- **Score note**: %s\n", note)
+	}
+	return sb.String()
 }
 
 // ScopeSummary records what the project configuration kept out of the run:

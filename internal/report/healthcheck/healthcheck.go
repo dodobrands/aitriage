@@ -21,6 +21,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 // Finding is a source-agnostic, normalised issue used by the Health Check engine.
@@ -59,10 +61,20 @@ type Finding struct {
 	// policy, because the verdict it would have produced is unknown.
 	TriageFailed bool
 	// ReportOnly marks a finding the policy reports without scoring or
-	// gating it (an IaC misconfiguration under iac_findings: report). It is
-	// counted in Breakdown.ReportOnlyFindings and nowhere else; whatever its
-	// triage outcome, it cannot change the verdict.
+	// gating it (an IaC misconfiguration under iac_findings: report, a
+	// code-quality finding under quality_findings: report). It is counted in
+	// Breakdown.ReportOnlyFindings and nowhere else; whatever its triage
+	// outcome, it cannot change the verdict. Assess sets it from Origins and
+	// the policy.
 	ReportOnly bool
+	// ReportOnlyKind names the setting that made the finding report-only:
+	// ReportOnlyIaC or ReportOnlyQuality. Breakdown.ReportOnlyByKind counts
+	// report-only findings under it.
+	ReportOnlyKind string
+	// Origins describes the scanner reports behind the finding, as far as
+	// the report-only rule needs them (see ReportOnlyKind). Empty means the
+	// finding stands for one report: its Source and Class.
+	Origins []Origin
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -90,6 +102,10 @@ type Breakdown struct {
 	// wonder why a gate failed with nothing proven.
 	ConfirmedFindings   int `json:"confirmed_findings"`
 	NeedsReviewFindings int `json:"needs_review_findings"`
+	// NeedsReviewPenalty is the part of Penalty the unreviewed findings
+	// cause. They count in full until someone confirms or dismisses them, so
+	// a gate that blocks only on confirmed findings can pass with a low score.
+	NeedsReviewPenalty int `json:"needs_review_penalty,omitempty"`
 	// UnclassifiedFindings is the subset of NeedsReviewFindings that never got
 	// a model verdict.
 	UnclassifiedFindings int `json:"unclassified_findings"`
@@ -115,10 +131,21 @@ type Breakdown struct {
 	// written against rule ids keeps matching merged findings.
 	CountByRule map[string]int `json:"count_by_rule,omitempty"`
 
-	// ReportOnlyFindings counts active findings the policy reports without
-	// scoring or gating them (IaC misconfigurations under iac_findings:
-	// report). They are not part of ActiveFindings or any other count.
+	// ReportOnlyFindings is the total of the active findings the policy
+	// reports without scoring or gating them, of every report-only kind (IaC
+	// misconfigurations under iac_findings: report, code-quality findings
+	// under quality_findings: report); report_only_by_kind splits it by
+	// kind. They are not part of ActiveFindings or any other count.
 	ReportOnlyFindings int `json:"report_only_findings,omitempty"`
+	// ReportOnlyByKind splits ReportOnlyFindings by the setting that reports
+	// them: ReportOnlyIaC ("iac") and ReportOnlyQuality ("quality").
+	ReportOnlyByKind map[string]int `json:"report_only_by_kind,omitempty"`
+
+	// trivyChecks counts active findings Trivy reported per Trivy check id
+	// behind them, in the one spelling config.NormalizeTrivyCheckID gives
+	// every spelling of a check. block_classes matches it right after
+	// Evaluate; it is not serialised.
+	trivyChecks map[string]int
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -271,6 +298,65 @@ func sourcesOf(f Finding) []string {
 	return sortedUnique(f.Sources)
 }
 
+// reportingSource is the scanner a finding's penalty is attributed to.
+func reportingSource(f Finding) string {
+	if src := strings.ToLower(strings.TrimSpace(f.Source)); src != "" {
+		return src
+	}
+	return "unknown"
+}
+
+// countNames counts an active finding under every name block_sources and
+// block_classes match against: each scanner and each rule behind it, its
+// class and, for a finding Trivy reported, each Trivy check behind it in
+// its one spelling. Evaluate counts the project with it, and Assess one
+// finding at a time, so both see the same names.
+func (bd *Breakdown) countNames(f Finding) {
+	if bd.CountBySource == nil {
+		bd.CountBySource = map[string]int{}
+	}
+	if bd.CountByRule == nil {
+		bd.CountByRule = map[string]int{}
+	}
+	if bd.CountByClass == nil {
+		bd.CountByClass = map[string]int{}
+	}
+	sources := sourcesOf(f)
+	if len(sources) == 0 {
+		sources = []string{reportingSource(f)}
+	}
+	trivy := false
+	for _, source := range sources {
+		bd.CountBySource[source]++
+		trivy = trivy || source == "trivy"
+	}
+	rules := rulesOf(f)
+	for _, rule := range rules {
+		bd.CountByRule[rule]++
+	}
+	bd.CountByClass[classKeyOf(f)]++
+	if !trivy {
+		return
+	}
+	// As in ignore.rules: a finding that answers to trivy matches a check
+	// under any spelling Trivy has used for it.
+	counted := map[string]bool{}
+	for _, rule := range rules {
+		if !config.IsTrivyCheckID(rule) {
+			continue
+		}
+		id := config.NormalizeTrivyCheckID(rule)
+		if counted[id] {
+			continue
+		}
+		counted[id] = true
+		if bd.trivyChecks == nil {
+			bd.trivyChecks = map[string]int{}
+		}
+		bd.trivyChecks[id]++
+	}
+}
+
 func sortedUnique(values []string) []string {
 	seen := make(map[string]bool, len(values))
 	out := make([]string, 0, len(values))
@@ -358,7 +444,7 @@ func Evaluate(in Input) Result {
 	}
 
 	// 2. Accumulate weighted penalties, skipping ignored (FP / audit-ignored).
-	var rawWeight float64
+	var rawWeight, rawNeedsReview float64
 	rawBySource := map[string]float64{}
 	hasCritical := false
 	for _, f := range deduped {
@@ -368,6 +454,12 @@ func Evaluate(in Input) Result {
 		}
 		if f.ReportOnly {
 			bd.ReportOnlyFindings++
+			if f.ReportOnlyKind != "" {
+				if bd.ReportOnlyByKind == nil {
+					bd.ReportOnlyByKind = map[string]int{}
+				}
+				bd.ReportOnlyByKind[f.ReportOnlyKind]++
+			}
 			continue
 		}
 		sev := strings.ToUpper(strings.TrimSpace(f.Severity))
@@ -392,24 +484,13 @@ func Evaluate(in Input) Result {
 
 		w := effectiveWeight(f)
 		rawWeight += w
-		src := strings.ToLower(strings.TrimSpace(f.Source))
-		if src == "" {
-			src = "unknown"
+		if f.NeedsReview {
+			rawNeedsReview += w
 		}
 		// The penalty is attributed once, to the reporting source; the counts
 		// name every scanner and rule behind the finding.
-		sources := sourcesOf(f)
-		if len(sources) == 0 {
-			sources = []string{src}
-		}
-		for _, source := range sources {
-			bd.CountBySource[source]++
-		}
-		for _, rule := range rulesOf(f) {
-			bd.CountByRule[rule]++
-		}
-		bd.CountByClass[classKeyOf(f)]++
-		rawBySource[src] += w
+		bd.countNames(f)
+		rawBySource[reportingSource(f)] += w
 	}
 
 	// 3. Apply diminishing-returns saturation so heavy repos degrade smoothly
@@ -444,6 +525,7 @@ func Evaluate(in Input) Result {
 		for src, w := range rawBySource {
 			bd.PenaltyBySource[src] = int(math.Round(penalty * (w / rawWeight)))
 		}
+		bd.NeedsReviewPenalty = int(math.Round(penalty * (rawNeedsReview / rawWeight)))
 	}
 
 	res := Result{

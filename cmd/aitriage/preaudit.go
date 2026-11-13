@@ -17,6 +17,7 @@ var (
 	preauditProvider     string
 	preauditModel        string
 	preauditAPIKey       string
+	preauditTemperature  llm.TemperatureFlag
 )
 
 var preauditCmd = &cobra.Command{
@@ -29,8 +30,9 @@ func init() {
 	rootCmd.AddCommand(preauditCmd)
 	preauditCmd.Flags().StringVar(&preauditArchitecture, "arch", "", "Describe the architecture you plan to build (e.g. Next.js, Go API, Postgres)")
 	preauditCmd.Flags().StringVar(&preauditProvider, "provider", "", "LLM provider: gemini, anthropic, openai, ollama, groq (auto-detected from env)")
-	preauditCmd.Flags().StringVar(&preauditModel, "model", "", "LLM model name")
+	preauditCmd.Flags().StringVar(&preauditModel, "model", "", llm.ModelFlagUsage)
 	preauditCmd.Flags().StringVar(&preauditAPIKey, "api-key", "", "LLM API key (or set via env)")
+	preauditCmd.Flags().Var(&preauditTemperature, "temperature", llm.TemperatureFlagUsage)
 }
 
 func runPreaudit(cmd *cobra.Command, args []string) error {
@@ -50,18 +52,21 @@ func runPreaudit(cmd *cobra.Command, args []string) error {
 	if preauditAPIKey != "" {
 		llmCfg.APIKey = preauditAPIKey
 	}
+	llmCfg.Temperature = preauditTemperature.Or(llmCfg.Temperature)
 
 	client, err := llm.NewClient(llm.Config{
-		Provider: llmCfg.Provider,
-		Model:    llmCfg.Model,
-		APIKey:   llmCfg.APIKey,
-		BaseURL:  llmCfg.BaseURL,
-		Timeout:  llmCfg.Timeout,
+		Provider:    llmCfg.Provider,
+		Model:       llmCfg.Model,
+		APIKey:      llmCfg.APIKey,
+		BaseURL:     llmCfg.BaseURL,
+		Timeout:     llmCfg.Timeout,
+		Temperature: llmCfg.Temperature,
 	})
 	if err != nil {
 		cmd.SilenceUsage = true
 		return err
 	}
+	llm.PrintDefaultModelNotices(os.Stderr, client)
 
 	archDesc := preauditArchitecture
 	if archDesc == "" {

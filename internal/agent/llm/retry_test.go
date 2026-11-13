@@ -160,6 +160,10 @@ func TestIsRetryable(t *testing.T) {
 		{"timeout", fmt.Errorf("deadline exceeded"), true},
 		{"auth error", fmt.Errorf("invalid api key"), false},
 		{"parse error", fmt.Errorf("json parse error"), false},
+		// The provider answered: resending the same request ends the same way,
+		// whatever the message happens to contain.
+		{"declined request", fmt.Errorf("anthropic chat error: %w", &RefusalError{Model: "model-503", Category: "cyber"}), false},
+		{"no answer", fmt.Errorf("reply 500 tokens long: %w", ErrNoAnswer), false},
 	}
 
 	for _, tc := range tests {

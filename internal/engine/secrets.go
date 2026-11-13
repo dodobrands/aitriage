@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/dodobrands/aitriage/internal/scanner/secretvalue"
 )
 
 // This file implements deterministic detection of hardcoded secrets and
@@ -634,16 +636,10 @@ func isLikelySecretValue(val string) bool {
 	if (strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")) && !strings.Contains(v, "@") {
 		return false
 	}
-	ent := CalculateShannonEntropy(v)
 	// High-entropy random blob (API key / token) or a reasonably complex
 	// password. Structured vendor tokens are already caught by signatures.
-	if len(v) >= 16 && ent > 3.5 {
-		return true
-	}
-	if len(v) >= 12 && ent > 4.0 {
-		return true
-	}
-	return false
+	// The deploy audit shares the threshold (secretvalue.LooksGenerated).
+	return secretvalue.LooksGenerated(v)
 }
 
 // looksLikeProse reports a value of three or more words with almost no

@@ -30,6 +30,7 @@ var (
 	agentProvider      string
 	agentModel         string
 	agentAPIKey        string
+	agentTemperature   llm.TemperatureFlag
 	agentNoChat        bool
 	agentOutput        string
 	agentProbe         string
@@ -52,6 +53,7 @@ var (
 	agentConfirmedMinSeverity             string
 	agentFPCriticalRequiresHighConfidence bool
 	agentIaCFindings                      string
+	agentQualityFindings                  string
 )
 
 var agentCmd = &cobra.Command{
@@ -65,12 +67,13 @@ The LLM provider is auto-detected from environment variables:
   ANTHROPIC_API_KEY → Anthropic Claude
   OPENAI_API_KEY    → OpenAI GPT
 
-You can also configure it in .aitriage.yaml under the "llm:" section.`,
+You can also configure it in .aitriage.yaml under the "llm:" section.
+With no model set, the provider's default model is used (see --model).`,
 	Example: `  aitriage agent                        # Audit current directory
   aitriage agent ./my-project           # Audit specific path
   aitriage agent --no-chat              # Skip interactive Q&A (CI/CD)
   aitriage agent --provider gemini      # Force specific provider
-  aitriage agent --model gemini-1.5-pro # Use specific model`,
+  aitriage agent --model gemini-3.8-flash # Use a specific model`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgent,
 }
@@ -78,8 +81,9 @@ You can also configure it in .aitriage.yaml under the "llm:" section.`,
 func init() {
 	rootCmd.AddCommand(agentCmd)
 	agentCmd.Flags().StringVar(&agentProvider, "provider", "", "LLM provider: gemini, anthropic, openai, ollama, groq (auto-detected from env)")
-	agentCmd.Flags().StringVar(&agentModel, "model", "", "LLM model name")
+	agentCmd.Flags().StringVar(&agentModel, "model", "", llm.ModelFlagUsage)
 	agentCmd.Flags().StringVar(&agentAPIKey, "api-key", "", "LLM API key (or set via env)")
+	agentCmd.Flags().Var(&agentTemperature, "temperature", llm.TemperatureFlagUsage)
 	agentCmd.Flags().BoolVar(&agentNoChat, "no-chat", false, "Skip interactive Q&A (for CI/CD)")
 	agentCmd.Flags().StringVar(&agentOutput, "output", "text", "Output format: text | json | md")
 	agentCmd.Flags().StringVar(&agentProbe, "probe", "", "Target host to probe for open DBs/Services (e.g. localhost, example.com)")
@@ -101,6 +105,7 @@ func init() {
 	agentCmd.Flags().StringVar(&agentConfirmedMinSeverity, "confirmed-min-severity", "", "With --fail-on confirmed: block only on confirmed findings at or above LOW, MEDIUM, HIGH or CRITICAL (default LOW: every confirmed finding blocks)")
 	agentCmd.Flags().BoolVar(&agentFPCriticalRequiresHighConfidence, "fp-critical-requires-high-confidence", false, "Accept an AI false-positive verdict for a CRITICAL finding only when the model reports high confidence; otherwise keep it for manual review")
 	agentCmd.Flags().StringVar(&agentIaCFindings, "iac-findings", "", "IaC misconfigurations (Trivy config): 'report' (default) triages and reports them without scoring or gating them; 'block' gates them like any other finding")
+	agentCmd.Flags().StringVar(&agentQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (rules with subcategory quality such as ENTR-12, a missing .env.example; never a swallowed exception): 'block' (default) scores and gates them like any other finding; 'report' triages and reports them without scoring or gating them")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
@@ -146,6 +151,11 @@ func validateAgentFlags() error {
 			return fmt.Errorf("invalid --iac-findings %q: use report or block", agentIaCFindings)
 		}
 	}
+	if strings.TrimSpace(agentQualityFindings) != "" {
+		if _, ok := healthcheck.ParseQualityFindings(agentQualityFindings); !ok {
+			return fmt.Errorf("invalid --quality-findings %q: use report or block", agentQualityFindings)
+		}
+	}
 	return nil
 }
 
@@ -172,6 +182,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 	if agentAPIKey != "" {
 		llmCfg.APIKey = agentAPIKey
 	}
+	llmCfg.Temperature = agentTemperature.Or(llmCfg.Temperature)
 
 	// Create LLM client
 	client, err := llm.NewClient(llm.Config{
@@ -181,6 +192,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		BaseURL:         llmCfg.BaseURL,
 		Timeout:         llmCfg.Timeout,
 		DisableThinking: llmCfg.DisableThinking,
+		Temperature:     llmCfg.Temperature,
 	})
 	if err != nil {
 		return auditIncomplete(err)
@@ -263,7 +275,9 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 	if agentProbe != "" || agentProbeCompose {
 		fmt.Fprintf(os.Stderr, "   ✓ Network: %d ports open\n", len(richResult.Network))
 	}
-	fmt.Fprintf(os.Stderr, "   Health Check (pre-AI, core-only): %s (%d/100)\n\n", richResult.Report.SecurityGrade, richResult.Report.SecurityScore)
+	// Every scanner, scored under the run's policy, before anything is
+	// reviewed: every finding still counts in full.
+	fmt.Fprintf(os.Stderr, "   Pre-triage health check (all scanners, nothing reviewed yet): %d/100 (%s)\n\n", richResult.Report.SecurityScore, richResult.Report.SecurityGrade)
 
 	if opts.Target.Enabled() {
 		fmt.Fprintf(os.Stderr, "🎯 Targeted Mode: Focusing on finding %s in %s:%d\n\n", agentRuleID, agentTargetFile, agentTargetLine)
@@ -350,11 +364,14 @@ func writeAgentArtifacts(state *graph.AgentState) error {
 // triage wins over the gate: its verdict is not authoritative, and CI must be
 // able to tell "re-run when the provider is back" (status 2) from "fix the
 // code" (status 1, ErrPolicyViolation). The gate cannot pass on an incomplete
-// triage either way, unless fail_on is never.
+// triage either way, unless fail_on is never. The message names the remedy
+// that fits the cause: waiting for the provider, retrying with more attempts
+// or smaller requests, or reviewing by hand what the model declined.
 func agentOutcome(w io.Writer, state *graph.AgentState, incomplete *graph.TriageIncompleteError) error {
 	if incomplete != nil {
-		_, _ = fmt.Fprintf(w, "\nAI triage did not complete: %s\nArtifacts were written; %d finding(s) without a verdict are marked triage-failed. Re-run once the LLM provider is available.\n",
-			incomplete.Reason, incomplete.Unclassified)
+		remedy := strings.ReplaceAll(incomplete.Remedy(), "`", "")
+		_, _ = fmt.Fprintf(w, "\nAI triage did not complete: %s\nArtifacts were written; %d finding(s) without a verdict are marked triage-failed. %s%s.\n",
+			incomplete.Reason, incomplete.Unclassified, strings.ToUpper(remedy[:1]), remedy[1:])
 		if !state.HealthCheck.Verdict.Passed {
 			printPolicyFailure(w, state.HealthCheck.Verdict)
 		}
@@ -382,6 +399,7 @@ var agentEnvAllowlist = []string{
 	"AITRIAGE_LLM_MODEL",
 	"AITRIAGE_LLM_BASE_URL",
 	"AITRIAGE_LLM_DISABLE_THINKING",
+	"AITRIAGE_LLM_TEMPERATURE",
 	"AITRIAGE_LLM_TIMEOUT",
 	"AITRIAGE_BATCH_SIZE",
 	"AITRIAGE_CLASSIFY_RETRIES",
@@ -488,6 +506,7 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 	}
 	appendStringFlag("--provider", agentProvider)
 	appendStringFlag("--model", agentModel)
+	appendStringFlag("--temperature", string(agentTemperature))
 	if agentNoChat {
 		args = append(args, "--no-chat")
 	}
@@ -541,6 +560,7 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 		args = append(args, "--fp-critical-requires-high-confidence")
 	}
 	appendStringFlag("--iac-findings", agentIaCFindings)
+	appendStringFlag("--quality-findings", agentQualityFindings)
 	args = append(args, ".")
 	return args, nil
 }
@@ -620,6 +640,8 @@ func agentPolicyFromFlags(cmd *cobra.Command, cfg *config.Config) healthcheck.Po
 		FPCriticalRequiresHighConfidenceSet: cmd.Flags().Changed("fp-critical-requires-high-confidence"),
 		IaCFindings:                         agentIaCFindings,
 		IaCFindingsSet:                      cmd.Flags().Changed("iac-findings"),
+		QualityFindings:                     agentQualityFindings,
+		QualityFindingsSet:                  cmd.Flags().Changed("quality-findings"),
 	})
 	if failScoreSet && !failOnSet && policy.FailOn == healthcheck.FailOnNever {
 		policy.FailOn = healthcheck.FailOnCritical

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -13,6 +15,83 @@ import (
 )
 
 const geminiBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+// The models requests name when the configuration sets none (llm.model,
+// AITRIAGE_LLM_MODEL or --model). Verdicts differ between models, so a change
+// here changes the verdicts of every run that relies on it: the README lists
+// these, and the release notes say when one moves. A minor release warns the
+// runs that rely on a default before a later one changes it (CONTRIBUTING.md,
+// "Deprecations and default changes"), unless the provider retires the model
+// before a release with the warning could reach users.
+const (
+	DefaultGeminiModel    = "gemini-3.5-flash-lite"
+	DefaultAnthropicModel = "claude-sonnet-5-5"
+	DefaultOpenAIModel    = "gpt-4o"
+)
+
+// NextDefaultOpenAIModel is the OpenAI default from AITriage 1.16 on: OpenAI
+// shuts down gpt-4o's snapshots on 2027-01-14 and names gpt-6-luna as their
+// replacement. Until then a run that relies on the default is warned (see
+// DefaultModelNotices).
+const NextDefaultOpenAIModel = "gpt-6-luna"
+
+// openAIDefaultWarning is the warning of a run that relies on the OpenAI
+// default, which changes in AITriage 1.16.
+const openAIDefaultWarning = "No OpenAI model is set, so AITriage uses " + DefaultOpenAIModel +
+	", whose snapshots OpenAI shuts down on 2027-01-14. AITriage 1.16 will default to " +
+	NextDefaultOpenAIModel + "; set llm.model to choose a model."
+
+// ModelFlagUsage is the help text of a --model flag.
+const ModelFlagUsage = "LLM model name (unset: " + DefaultGeminiModel + " for gemini, " +
+	DefaultAnthropicModel + " for anthropic, " + DefaultOpenAIModel + " for openai; groq and ollama need one)"
+
+// DefaultModelReporter is implemented by clients that know whether their
+// requests name the provider's default model because the configuration names
+// none.
+type DefaultModelReporter interface {
+	UsesDefaultModel() bool
+}
+
+// DefaultModelNotices returns what a run prints when client's requests name
+// the provider's default model because no model is configured: info names the
+// model, so the reader always sees which model judged the findings, and
+// warning is set when that default is about to change, as the deprecation
+// policy requires. Both are empty for a configured model and for a client that
+// does not know its model, such as a host agent.
+func DefaultModelNotices(client Client) (info, warning string) {
+	r, ok := client.(DefaultModelReporter)
+	if !ok || !r.UsesDefaultModel() {
+		return "", ""
+	}
+	provider, model := RequestModel(client)
+	if model == "" {
+		return "", ""
+	}
+	switch provider {
+	case "groq", "ollama":
+		info = fmt.Sprintf("No model set; sending %s, the OpenAI default, to %s", model, provider)
+		warning = fmt.Sprintf("No model is set for the %s provider, so AITriage asks it for %s, which %s servers do not usually serve. Set llm.model (--model, AITRIAGE_LLM_MODEL) to a model your server has.", provider, model, provider)
+	default:
+		info = fmt.Sprintf("No model set; using %s, the default for %s", model, provider)
+		if provider == "openai" && model == DefaultOpenAIModel {
+			warning = openAIDefaultWarning
+		}
+	}
+	return info, warning
+}
+
+// PrintDefaultModelNotices writes the DefaultModelNotices of client to w, one
+// line each, and returns the warning, if any, for the run's summary.
+func PrintDefaultModelNotices(w io.Writer, client Client) string {
+	info, warning := DefaultModelNotices(client)
+	if info != "" {
+		_, _ = fmt.Fprintf(w, "   ℹ️ %s\n", info)
+	}
+	if warning != "" {
+		_, _ = fmt.Fprintf(w, "   ⚠️ %s\n", warning)
+	}
+	return warning
+}
 
 const noLLMConfiguredMsg = `no LLM provider configured
 
@@ -28,9 +107,30 @@ Or add to .aitriage.yaml:
 
 // openAIClient wraps the official openai-go SDK.
 type openAIClient struct {
-	client openai.Client
-	cfg    Config
+	client       openai.Client
+	cfg          Config
+	temperature  *temperatureControl
+	defaultModel bool // no model configured: requests name the provider default
 }
+
+// openAIModel returns the model an OpenAI-compatible request names.
+func openAIModel(configured string) string {
+	if configured == "" {
+		return DefaultOpenAIModel
+	}
+	return configured
+}
+
+// EffectiveTemperature implements TemperatureReporter.
+func (c *openAIClient) EffectiveTemperature() string { return c.temperature.effective() }
+
+// RequestModel implements ModelReporter.
+func (c *openAIClient) RequestModel() (provider, model string) {
+	return c.cfg.Provider, openAIModel(c.cfg.Model)
+}
+
+// UsesDefaultModel implements DefaultModelReporter.
+func (c *openAIClient) UsesDefaultModel() bool { return c.defaultModel }
 
 func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var oaiMessages []openai.ChatCompletionMessageParamUnion
@@ -45,10 +145,7 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 		}
 	}
 
-	model := c.cfg.Model
-	if model == "" {
-		model = string(openai.ChatModelGPT4o)
-	}
+	model := openAIModel(c.cfg.Model)
 
 	// Build per-request options for reasoning-model control.
 	var reqOpts []openai_option.RequestOption
@@ -59,10 +156,19 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 		reqOpts = append(reqOpts, openai_option.WithJSONSet("thinking", map[string]string{"type": "disabled"}))
 	}
 
-	completion, err := c.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+	params := openai.ChatCompletionNewParams{
 		Messages: oaiMessages,
 		Model:    openai.ChatModel(model),
-	}, reqOpts...)
+	}
+	sent := params
+	temperature := c.temperature.next()
+	if temperature != nil {
+		sent.Temperature = openai.Float(*temperature)
+	}
+	completion, err := c.client.Chat.Completions.New(ctx, sent, reqOpts...)
+	if err != nil && temperature != nil && c.temperature.refused(err) {
+		completion, err = c.client.Chat.Completions.New(ctx, params, reqOpts...)
+	}
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("openai chat error: %w", err)
 	}
@@ -78,9 +184,44 @@ func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Us
 
 // anthropicClientWrapper wraps the official anthropic-sdk-go SDK.
 type anthropicClientWrapper struct {
-	client anthropic.Client
-	cfg    Config
+	client      anthropic.Client
+	cfg         Config
+	temperature *temperatureControl
+	log         io.Writer // a declined request is reported here
 }
+
+// newAnthropicClient builds the Anthropic client from cfg; opts carry the
+// credentials and transport settings.
+func newAnthropicClient(cfg Config, log io.Writer, opts ...option.RequestOption) *anthropicClientWrapper {
+	if log == nil {
+		log = io.Discard
+	}
+	return &anthropicClientWrapper{
+		client:      anthropic.NewClient(opts...),
+		cfg:         cfg,
+		temperature: newTemperatureControl(cfg, anthropicModel(cfg.Model), log),
+		log:         log,
+	}
+}
+
+// anthropicModel returns the model an Anthropic request names.
+func anthropicModel(configured string) string {
+	if configured == "" {
+		return DefaultAnthropicModel
+	}
+	return configured
+}
+
+// EffectiveTemperature implements TemperatureReporter.
+func (c *anthropicClientWrapper) EffectiveTemperature() string { return c.temperature.effective() }
+
+// RequestModel implements ModelReporter.
+func (c *anthropicClientWrapper) RequestModel() (provider, model string) {
+	return "anthropic", anthropicModel(c.cfg.Model)
+}
+
+// UsesDefaultModel implements DefaultModelReporter.
+func (c *anthropicClientWrapper) UsesDefaultModel() bool { return c.cfg.Model == "" }
 
 func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var systemBlocks []anthropic.TextBlockParam
@@ -102,14 +243,17 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		}
 	}
 
-	model := c.cfg.Model
-	if model == "" {
-		model = anthropic.ModelClaudeSonnet4_5
-	}
+	model := anthropicModel(c.cfg.Model)
 
+	// No thinking parameter: each model runs its own default, adaptive
+	// thinking on the Claude 5 generation (see anthropicAnswer), so a model
+	// set in llm.model gets the same request as the default. Turning thinking
+	// off would take {"type": "between_tools"}, which claude-sonnet-5-5 alone
+	// accepts: any other model, or the same model under a gateway's name for
+	// it, would answer 400.
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
-		MaxTokens: 8192,
+		MaxTokens: anthropicMaxTokens(model),
 		Messages:  anthropicMessages,
 	}
 
@@ -117,18 +261,26 @@ func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (
 		params.System = systemBlocks
 	}
 
-	message, err := c.client.Messages.New(ctx, params)
+	sent := params
+	withTemperature := setAnthropicTemperature(&sent, c.temperature.next())
+	message, err := c.client.Messages.New(ctx, sent)
+	if err != nil && withTemperature && c.temperature.refused(err) {
+		message, err = c.client.Messages.New(ctx, params)
+	}
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("anthropic chat error: %w", err)
 	}
 
-	if len(message.Content) == 0 {
-		return "", Usage{}, fmt.Errorf("empty response from anthropic")
-	}
-
 	usage := usageFromAnthropic(message.Usage)
-
-	return message.Content[0].Text, usage, nil
+	answer, err := anthropicAnswer(message, model)
+	if err != nil {
+		var refusal *RefusalError
+		if errors.As(err, &refusal) {
+			_, _ = fmt.Fprintf(c.log, "   ⚠️ %v; the request counts as failed\n", refusal)
+		}
+		return "", usage, err
+	}
+	return answer, usage, nil
 }
 
 func usageFromOpenAI(u openai.CompletionUsage) Usage {
@@ -175,6 +327,17 @@ func defaultedTimeout(seconds int) int {
 // All clients are automatically wrapped with RetryClient (3 retries,
 // exponential backoff) to handle transient 429/5xx/network errors.
 func NewClient(cfg Config) (Client, error) {
+	inner, err := newProviderClient(cfg, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	// Wrap with retry logic: 3 retries with exponential backoff.
+	return NewRetryClient(inner, 3), nil
+}
+
+// newProviderClient builds the provider client NewClient wraps. Notices about
+// the temperature go to log.
+func newProviderClient(cfg Config, log io.Writer) (Client, error) {
 	var inner Client
 	var err error
 
@@ -189,10 +352,7 @@ func NewClient(cfg Config) (Client, error) {
 		if cfg.Timeout > 0 {
 			opts = append(opts, option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
-		inner = &anthropicClientWrapper{
-			client: anthropic.NewClient(opts...),
-			cfg:    cfg,
-		}
+		inner = newAnthropicClient(cfg, log, opts...)
 
 	case "gemini":
 		// Gemini uses the OpenAI-compatible API.
@@ -206,7 +366,7 @@ func NewClient(cfg Config) (Client, error) {
 		}
 		model := cfg.Model
 		if model == "" {
-			model = "gemini-2.5-flash"
+			model = DefaultGeminiModel
 		}
 		opts := []openai_option.RequestOption{
 			openai_option.WithAPIKey(cfg.APIKey),
@@ -216,14 +376,20 @@ func NewClient(cfg Config) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client: openai.NewClient(opts...),
-			cfg:    Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
+			client:       openai.NewClient(opts...),
+			cfg:          Config{Provider: "gemini", Model: model, APIKey: cfg.APIKey, BaseURL: baseURL, Timeout: cfg.Timeout},
+			temperature:  newTemperatureControl(cfg, model, log),
+			defaultModel: cfg.Model == "",
 		}
 
 	case "openai", "ollama", "groq":
 		if cfg.APIKey == "" && cfg.Provider == "openai" {
 			return nil, errors.New(noLLMConfiguredMsg)
 		}
+		// Groq and Ollama serve models of their own, so a run that names no
+		// model sends them the OpenAI default, as earlier releases did: a
+		// gateway that picks the model itself keeps working, and
+		// DefaultModelNotices warns everyone else to set one.
 		opts := []openai_option.RequestOption{}
 		if cfg.APIKey != "" {
 			opts = append(opts, openai_option.WithAPIKey(cfg.APIKey))
@@ -235,8 +401,10 @@ func NewClient(cfg Config) (Client, error) {
 			opts = append(opts, openai_option.WithRequestTimeout(time.Duration(cfg.Timeout)*time.Second))
 		}
 		inner = &openAIClient{
-			client: openai.NewClient(opts...),
-			cfg:    cfg,
+			client:       openai.NewClient(opts...),
+			cfg:          cfg,
+			temperature:  newTemperatureControl(cfg, openAIModel(cfg.Model), log),
+			defaultModel: cfg.Model == "",
 		}
 
 	case "":
@@ -249,7 +417,5 @@ func NewClient(cfg Config) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Wrap with retry logic: 3 retries with exponential backoff.
-	return NewRetryClient(inner, 3), nil
+	return inner, nil
 }

@@ -11,7 +11,12 @@ llm:
   # The model used for deep analysis and remediation. Verdicts differ between
   # models on the same code, so the fail_on: confirmed gate depends on this
   # choice: pin one model and re-check a known project before switching.
-  model: gemini-2.5-flash
+  # Left unset, the provider's default applies: gemini-3.5-flash-lite
+  # (gemini), claude-sonnet-5-5 (anthropic), gpt-4o (openai; gpt-6-luna from
+  # AITriage 1.16); set one for groq and ollama (without it AITriage sends
+  # them the OpenAI default and warns). A default moves when its provider
+  # retires the model.
+  model: gemini-3.5-flash-lite
 
   # NEVER hardcode keys here. Always use environment variables.
   api_key: $GEMINI_API_KEY
@@ -20,6 +25,13 @@ llm:
   # Weaker models drop items from long requests; such batches are retried in halves.
   # batch_size: 40
 
+  # Sampling temperature, 0 to 2 (default 0, so the same finding gets the same
+  # verdict on every run), or "default" to send none and keep the provider's own.
+  # Models that take no temperature get none: OpenAI o-series, GPT-5 and GPT-6,
+  # Gemini 3 and later, Claude models after Opus 4.6. AITRIAGE_LLM_TEMPERATURE
+  # and --temperature win.
+  # temperature: 0
+
 # ─── Ignore Rules ─────────────────────────────────────────────────────────────
 ignore:
   # Rule IDs dropped from every source: built-in rules and heuristics, Semgrep,
@@ -27,7 +39,12 @@ ignore:
   # ignoring case. A bare ID matches any source; a prefix limits it to one:
   # "gitleaks:generic-api-key", "trivy:CVE-2024-1234", "semgrep:<check-id>",
   # "bandit:B105", and "core:", "nfr:", "deploy:", "network:" for AITriage's own
-  # checks (e.g. "deploy:nginx_missing_csp", "network:port-5432").
+  # checks (e.g. "deploy:nginx_missing_csp", "network:port-5432"). A Trivy
+  # Kubernetes or Dockerfile check matches in any spelling Trivy has used:
+  # "KSV012", "KSV-0012" and "AVD-KSV-0012" are one check, as are "DS002",
+  # "DS-0002" and "AVD-DS-0002"; other ids compare as written.
+  # "deploy:compose_default_credential" silences default passwords in Compose
+  # files and keeps the other hardcoded secrets.
   rules: []   # e.g. ["ENTR-12", "gitleaks:generic-api-key"]
 
   # Paths every scanner skips (the built-in engine, Semgrep, Trivy, Gitleaks,
@@ -70,12 +87,29 @@ health_check:
   fp_critical_requires_high_confidence: false
 
   # IaC misconfigurations found by Trivy (Dockerfile, Kubernetes, Terraform):
-  #   report (default in this release): triaged and shown in the summary, the
-  #     report and triage-findings.json, but not scored and not gating;
+  #   report (default): triaged and shown in the summary, the report and
+  #     triage-findings.json, but not scored and not gating;
   #   block: scored and gating like any other finding.
   # A finding that another check also reported (DOCKER-NO-USER and Trivy's
-  # DS-0002) gates either way. A later minor release makes block the default.
+  # DS-0002), or that block_sources or block_classes below names, gates
+  # either way. report stays the default throughout v1; a default change
+  # follows the compatibility policy in CONTRIBUTING.md.
   iac_findings: report
+
+  # Code-quality findings with no security impact, at LOW or INFO: rules of
+  # subcategory quality (built in: ENTR-04 and ENTR-AI-RESIDUE, AI chat
+  # residue in comments; ENTR-ZOMBIE-CODE, commented-out code; ENTR-07;
+  # ENTR-12, file length; FAST-SYNC-ASYNC) and a missing .env.example:
+  #   block (default): scored and gating like any other finding, as before
+  #     this setting existed;
+  #   report: triaged and shown like IaC findings above, but not scored and
+  #     not gating. Also --quality-findings on agent and scan.
+  # A finding that a security check also reported, a MEDIUM or more severe
+  # one whatever its rule's subcategory, and one that block_sources or
+  # block_classes below names gate either way. A swallowed exception
+  # (FAST-LAZY-EXC, Bandit B110/B112) is never code quality: it can turn a
+  # failed security check into a pass. block stays the default throughout v1.
+  quality_findings: block
 
   # Fail if the Health Check score is below this threshold (0 disables score gating)
   minimum_score: 0
@@ -85,7 +119,10 @@ health_check:
   max_high: -1
   max_medium: -1
 
-  # Expose block lists for specific rules/classes/sources
+  # Expose block lists for specific rules/classes/sources. An entry here wins
+  # over iac_findings: report and quality_findings: report for the findings
+  # it names. A Trivy Kubernetes or Dockerfile check matches in each spelling
+  # Trivy has used, as in ignore.rules above.
   block_sources: []  # e.g., ["gitleaks"]
   block_classes: []  # e.g., ["hardcoded-secret"]
 

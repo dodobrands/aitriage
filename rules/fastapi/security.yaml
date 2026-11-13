@@ -62,7 +62,7 @@ rules:
     metadata:
       category: performance
       confidence: medium
-      subcategory: audit
+      subcategory: quality
     suggestion: "A synchronous commit inside an async function blocks the event loop and stalls every other request. Use AsyncSession with await session.commit(), declare the route with def so FastAPI runs it in the threadpool, or wrap the call in run_in_threadpool()."
 
   - id: FAST-AUTH

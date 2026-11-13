@@ -56,6 +56,12 @@ type Item struct {
 	// Evidence is the matched text. It is part of the fingerprint so a finding
 	// survives moving up or down a file but not a change to what it found.
 	Evidence string
+	// PreviousRuleID is the id earlier releases reported the finding under,
+	// when its rule was split from another one (see
+	// deployaudit.PreviousIssue). A baseline entry or a dismissal recorded
+	// under it still covers the finding: an upgrade must not resurface what a
+	// team already accepted. It is not part of the fingerprint.
+	PreviousRuleID string
 }
 
 // FingerprintItem identifies a finding stably across scans. The line number is
@@ -172,13 +178,14 @@ func FromDeploy(findings []deployaudit.DeployFinding) []Item {
 	items := make([]Item, 0, len(findings))
 	for _, f := range findings {
 		items = append(items, Item{
-			Source:   "deploy",
-			RuleID:   f.Issue,
-			File:     f.File,
-			Line:     f.Line,
-			Name:     f.Issue,
-			Severity: f.Severity,
-			Evidence: f.Evidence,
+			Source:         "deploy",
+			RuleID:         f.Issue,
+			File:           f.File,
+			Line:           f.Line,
+			Name:           f.Issue,
+			Severity:       f.Severity,
+			Evidence:       f.Evidence,
+			PreviousRuleID: deployaudit.PreviousIssue(f.Issue),
 		})
 	}
 	return items
@@ -230,6 +237,22 @@ func (b *Baseline) accepts(root string, item Item) bool {
 	if b == nil || len(b.Findings) == 0 {
 		return false
 	}
+	if b.acceptsAs(root, item) {
+		return true
+	}
+	// A finding whose rule was split from another one is still accepted by an
+	// entry recorded under the id it had before.
+	if item.PreviousRuleID != "" {
+		previous := item
+		previous.RuleID, previous.PreviousRuleID = item.PreviousRuleID, ""
+		return b.acceptsAs(root, previous)
+	}
+	return false
+}
+
+// acceptsAs matches one item, under its own rule id, against every baseline
+// format.
+func (b *Baseline) acceptsAs(root string, item Item) bool {
 	if _, ok := b.Findings[FingerprintItem(item)]; ok {
 		return true
 	}

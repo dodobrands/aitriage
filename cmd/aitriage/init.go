@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dodobrands/aitriage/internal/agent/llm"
 	"github.com/spf13/cobra"
 )
 
@@ -298,7 +299,8 @@ func generateAitrageConfig(stacks []detectedStack) string {
 	sb.WriteString("# Verdicts differ between models, and so does fail_on: confirmed: pin one model.\n")
 	sb.WriteString("llm:\n")
 	sb.WriteString("  provider: \"\"  # auto-detected from env\n")
-	sb.WriteString("  model: \"\"\n\n")
+	sb.WriteString("  model: \"\"  # empty: " + llm.DefaultGeminiModel + " (gemini), " + llm.DefaultAnthropicModel + " (anthropic), " + llm.DefaultOpenAIModel + " (openai; " + llm.NextDefaultOpenAIModel + " from AITriage 1.16)\n")
+	sb.WriteString("  # temperature: 0  # 0 to 2, or default to send none; 0 keeps verdicts repeatable\n\n")
 
 	// CI section
 	sb.WriteString("# CI/CD settings\n")
@@ -315,6 +317,8 @@ func generateAitrageConfig(stacks []detectedStack) string {
 	sb.WriteString("  max_medium: -1\n")
 	sb.WriteString("  block_sources: []  # e.g. [gitleaks]\n")
 	sb.WriteString("  block_classes: []  # e.g. [hardcoded-secret]\n")
+	sb.WriteString("  # quality_findings: report  # code-quality findings such as ENTR-12: block (default)\n")
+	sb.WriteString("  #   scores and gates them like any other; report lists them, not scored or gating\n")
 
 	// Detected stacks comment
 	if len(stacks) > 0 {

@@ -42,7 +42,8 @@ Reply again with ONLY that JSON object: no prose, no markdown fences, no comment
 //
 //   - the model and threatModelSourceLLM on success;
 //   - nil, threatModelSourceFailedParse and a nil error when every reply was
-//     malformed: the run continues without a threat model;
+//     malformed, or the model declined the request: the run continues
+//     without a threat model;
 //   - a non-nil error for a provider failure (transport, auth, rate limit).
 func buildThreatModelWithRepair(ctx context.Context, repoContextText, projectPath, language string, sample []EnrichedFinding, llmClient llm.Client, usage *llm.Usage, maxRetries int) (*ThreatModel, string, string, error) {
 	messages := threatModelMessages(repoContextText, projectPath, language, sample)
@@ -54,6 +55,12 @@ func buildThreatModelWithRepair(ctx context.Context, repoContextText, projectPat
 		}
 		if !errors.Is(err, errThreatModelParse) {
 			return nil, "", "", err
+		}
+		var refusal *llm.RefusalError
+		if errors.As(err, &refusal) {
+			// A repair request would send the declined content again.
+			issue := redactFailureText(refusal.Error()) + "; classification ran without a threat model"
+			return nil, threatModelSourceFailedParse, issue, nil
 		}
 		lastParseErr = err
 		messages = withRepairRequest(messages, response, err)
@@ -104,6 +111,11 @@ func withRepairRequest(messages []llm.Message, response string, parseErr error) 
 func threatModelLLMCall(ctx context.Context, messages []llm.Message, llmClient llm.Client, usage *llm.Usage) (*ThreatModel, string, error) {
 	response, u, err := llmClient.Chat(ctx, messages)
 	addUsage(usage, u)
+	if errors.Is(err, llm.ErrNoAnswer) {
+		// The provider answered without a threat model, such as a request
+		// the model declined: an unusable reply, not a provider failure.
+		return nil, "", fmt.Errorf("%w: %w", errThreatModelParse, err)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("threat model LLM call failed: %w", err)
 	}

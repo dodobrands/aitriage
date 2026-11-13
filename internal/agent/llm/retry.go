@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -53,6 +54,19 @@ func (r *RetryClient) Chat(ctx context.Context, messages []Message) (string, Usa
 	return "", Usage{}, fmt.Errorf("LLM call failed after %d retries: %w", r.maxRetries, lastErr)
 }
 
+// EffectiveTemperature reports the temperature of the wrapped client.
+func (r *RetryClient) EffectiveTemperature() string { return EffectiveTemperature(r.inner) }
+
+// RequestModel reports the provider and model of the wrapped client.
+func (r *RetryClient) RequestModel() (provider, model string) { return RequestModel(r.inner) }
+
+// UsesDefaultModel reports whether the wrapped client names the provider's
+// default model.
+func (r *RetryClient) UsesDefaultModel() bool {
+	d, ok := r.inner.(DefaultModelReporter)
+	return ok && d.UsesDefaultModel()
+}
+
 // retryDelay returns an exponential backoff duration with jitter.
 // Base delay: 1s, factor: 2x. Max delay capped at 30s.
 func retryDelay(attempt int) time.Duration {
@@ -78,6 +92,12 @@ func retryDelay(attempt int) time.Duration {
 // isRetryable checks whether an error is transient and worth retrying.
 func isRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	// The provider answered, without an answer to use: the same request
+	// would end the same way, so callers decide what to do with it.
+	if errors.Is(err, ErrNoAnswer) {
 		return false
 	}
 
