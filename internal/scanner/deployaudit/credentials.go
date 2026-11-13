@@ -3,8 +3,9 @@ package deployaudit
 import (
 	"regexp"
 	"strings"
-	"unicode/utf8"
+	"unicode"
 
+	"github.com/dodobrands/aitriage/internal/scanner/secretvalue"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,22 +21,26 @@ import (
 // A value is reported as compose_default_credential (MEDIUM) when it falls in a
 // category of the blocklist NIST SP 800-63B asks password verifiers to check
 // new passwords against:
-//   - shorter than eight characters, the shortest password the guideline
-//     allows, and the shortest value the built-in secret detector considers;
-//   - a context-specific word: the name of a service or an image in the file,
-//     or a user or database name it sets ("DB_PASSWORD: inventory" next to
-//     "DB_USER: inventory");
 //   - a dictionary or default word: a default account name, a documented
 //     default of a widely used image, a placeholder word or the top of public
-//     breached-password lists;
-//   - such a word with a password word or a short run of digits or symbols
-//     appended ("admin123", "inventory_pass");
-//   - a documentation placeholder ("your-password-here", "<password>", "xxxx");
-//   - repetitive or sequential characters ("aaaaaaaa", "12345678").
+//     breached-password lists, also with a password word or a short run of
+//     digits or symbols appended ("admin123", "guestpass");
+//   - repetitive or sequential characters ("aaaaaaaa", "12345678");
+//   - a context-specific word: the name of a service or an image in the file,
+//     or a user or database name it sets ("DB_PASSWORD: inventory" next to
+//     "DB_USER: inventory"), also with such a suffix ("inventory_pass");
+//   - a documentation placeholder: a placeholder word as a whole word of the
+//     value ("your-password-here", "change_me"), "<password>", "xxxx".
 //
-// Every other literal value is reported as compose_hardcoded_secret, CRITICAL,
-// as before. Values the stack resolves when it starts (${DB_PASSWORD},
-// $DB_PASSWORD) and paths of files that hold the secret are not reported.
+// The last two never apply to a value random enough to have been generated,
+// by the threshold the built-in secret detector uses (see
+// secretvalue.LooksGenerated): a random user name repeated as the password,
+// or a random string that happens to contain a placeholder word, is a secret.
+// Nor is a value weak for being short: a short random password is still a
+// credential. Every other literal value is reported as
+// compose_hardcoded_secret, CRITICAL, as before. Values the stack resolves
+// when it starts (${DB_PASSWORD}, $DB_PASSWORD) and paths of files that hold
+// the secret are not reported.
 
 // Issue ids of the Compose secret checks.
 const (
@@ -61,13 +66,9 @@ const (
 	adviceComposeDefaultCredential = "A default or easily guessed value (a stock default, a placeholder, or a name used elsewhere in the file). Acceptable only for a stack that runs on a developer's machine; anywhere else, read a strong value from the environment (${MY_PASSWORD}) or a Docker secret."
 )
 
-// minCredentialLength is the shortest password NIST SP 800-63B allows.
-const minCredentialLength = 8
-
 // defaultCredentialWords are the default and dictionary values weak
-// credentials are made of, lower-cased. A word shorter than
-// minCredentialLength is weak on its own; it is listed as the base of longer
-// values ("admin123", "guestpass").
+// credentials are made of, lower-cased: on their own or as the base of a
+// longer value ("admin123", "guestpass").
 var defaultCredentialWords = map[string]bool{
 	// Default account names, the ones the built-in rule ENTR-19 recognises as
 	// default credentials in a connection URL.
@@ -80,9 +81,10 @@ var defaultCredentialWords = map[string]bool{
 	"postgres": true, "mysecretpassword": true, "my-secret-pw": true, "minioadmin": true,
 	"yourstrong@passw0rd": true, "yourstrong(!)password": true,
 	// Placeholder words, which the built-in secret detector does not report at
-	// all. Other placeholders are matched by placeholderCredential.
+	// all (see also placeholderWords).
 	"password": true, "passwd": true, "pass": true, "pwd": true, "secret": true,
 	"test": true, "demo": true, "default": true,
+	"example": true, "sample": true, "dummy": true, "placeholder": true, "changeme": true, "fake": true,
 	// The top of public breached-password lists.
 	"qwerty": true, "letmein": true, "welcome": true, "passw0rd": true, "p@ssw0rd": true, "1234567890": true,
 }
@@ -95,9 +97,14 @@ var credentialWords = []string{"password", "passwd", "secret", "pass", "pwd", "p
 // word: a year or a counter and a punctuation mark or two ("2024!").
 const maxWeakSuffix = 6
 
-// placeholderCredential matches the documentation stand-ins the built-in secret
-// detector also rejects in a token. Values are matched lower-cased.
-var placeholderCredential = regexp.MustCompile(`example|sample|dummy|placeholder|redacted|fake|change[_-]?me|your[_-]|replace[_-]|insert[_-]|^<.*>$|x{4,}|\*{3,}|\.{3,}`)
+// placeholderWords are the words documentation puts where a value belongs
+// ("your-password-here", "replace_me", "example"), the stand-ins the built-in
+// secret detector also rejects. They count only as whole words of a value:
+// "exchangemeter" holds no "changeme" and "NoFakeNews" no "fake".
+var placeholderWords = map[string]bool{
+	"example": true, "sample": true, "dummy": true, "placeholder": true, "redacted": true,
+	"fake": true, "changeme": true, "your": true, "replace": true, "insert": true,
+}
 
 // composeVariable matches a value that is one Compose variable, "$DB_PASSWORD".
 // Compose substitutes it when the stack starts, as it does "${DB_PASSWORD}"; a
@@ -122,18 +129,42 @@ func composeLiteral(key, value string) bool {
 // credential rather than a secret someone generated. context holds the
 // lower-cased context-specific words of the file (see composeContextWords).
 func isWeakCredential(value string, context map[string]bool) bool {
-	v := strings.ToLower(strings.TrimSpace(value))
-	if utf8.RuneCountInString(v) < minCredentialLength {
-		return true
-	}
-	if placeholderCredential.MatchString(v) || repetitiveOrSequential(v) {
-		return true
-	}
-	if defaultCredentialWords[v] || context[v] {
-		return true
-	}
+	value = strings.TrimSpace(value)
+	v := strings.ToLower(value)
 	stem := credentialStem(v)
-	return stem != "" && (defaultCredentialWords[stem] || context[stem])
+	if defaultCredentialWords[v] || defaultCredentialWords[stem] || repetitiveOrSequential(v) {
+		return true
+	}
+	// A name from the file or a placeholder word inside a value random
+	// enough to have been generated does not make it weak.
+	if secretvalue.LooksGenerated(value) {
+		return false
+	}
+	return context[v] || (stem != "" && context[stem]) || isPlaceholder(v)
+}
+
+// isPlaceholder reports whether a lower-cased value is a documentation
+// stand-in: "<…>" as a whole, or a placeholder word, "change me", a run of
+// four or more "x" or of three or more "*" as a whole word of it.
+func isPlaceholder(v string) bool {
+	if strings.HasPrefix(v, "<") && strings.HasSuffix(v, ">") {
+		return true
+	}
+	words := strings.FieldsFunc(v, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '*'
+	})
+	for i, word := range words {
+		switch {
+		case placeholderWords[word]:
+			return true
+		case word == "change" && i+1 < len(words) && words[i+1] == "me":
+			return true
+		case len(word) >= 4 && strings.Trim(word, "x") == "",
+			len(word) >= 3 && strings.Trim(word, "*") == "":
+			return true
+		}
+	}
+	return false
 }
 
 // credentialStem returns the base word of a lower-cased value: without a
@@ -158,10 +189,11 @@ func isWeakSuffixByte(b byte) bool {
 	return b >= '0' && b <= '9' || strings.IndexByte("!@#$%^&*?+=~._-", b) >= 0
 }
 
-// repetitiveOrSequential reports a value made of one repeated character or of
-// characters that rise or fall by one: "aaaaaaaa", "12345678", "87654321".
+// repetitiveOrSequential reports a value of three or more characters, one
+// repeated or each rising or falling by one: "aaaaaaaa", "12345678",
+// "87654321".
 func repetitiveOrSequential(v string) bool {
-	if len(v) < 2 {
+	if len(v) < 3 {
 		return false
 	}
 	step := int(v[1]) - int(v[0])

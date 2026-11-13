@@ -1,31 +1,17 @@
 package engine
 
 import (
-	"math"
 	"strings"
 	"unicode"
+
+	"github.com/dodobrands/aitriage/internal/scanner/secretvalue"
 )
 
 // CalculateShannonEntropy calculates the Shannon entropy of a string.
-// It returns a value representing the "randomness" of the string.
+// It returns a value representing the "randomness" of the string. The
+// computation lives in secretvalue, which the deploy audit shares.
 func CalculateShannonEntropy(data string) float64 {
-	if len(data) == 0 {
-		return 0
-	}
-
-	charCounts := make(map[rune]int)
-	for _, char := range data {
-		charCounts[char]++
-	}
-
-	var entropy float64
-	length := float64(len(data))
-	for _, count := range charCounts {
-		p := float64(count) / length
-		entropy -= p * math.Log2(p)
-	}
-
-	return entropy
+	return secretvalue.ShannonEntropy(data)
 }
 
 // IsHighEntropy returns true if the string looks like a potential secret (high entropy + specific length).

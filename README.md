@@ -457,14 +457,16 @@ are kept out of that queue or ranked lower, because they are not live secrets:
 
 - In a Compose file, a password or secret whose value is a default or easily guessed one is
   reported as `compose_default_credential` (MEDIUM) instead of `compose_hardcoded_secret`
-  (CRITICAL). That is a value shorter than eight characters, a default account name or a
-  documented default of a common image (`postgres`, `minioadmin`), a placeholder
-  (`changeme`, `your-password-here`), a sequence (`12345678`), the name of a service, image,
-  user or database in the same file, or one of those with digits or a password word appended
-  (`admin123`, `appuser_pass`). It is still a hardcoded secret for a person to review. Values
-  Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`) and `*_FILE` paths to secret files are
-  not reported. `ignore.rules` entries, inline comments, baseline entries and dismissals written
-  for `compose_hardcoded_secret` still cover default credentials.
+  (CRITICAL). That is a default account name or a documented default of a common image
+  (`postgres`, `minioadmin`), a sequence (`12345678`), one of those with digits or a password
+  word appended (`admin123`), and, unless the value is random enough to have been generated (the
+  built-in secret detector's own threshold), the name of a service, image, user or database in
+  the same file (`appuser_pass` next to `APP_USER: appuser`) or a placeholder written as a word of
+  its own (`changeme`, `your-password-here`). A value is never ranked lower for being short, or
+  for containing such a word inside a longer one. It is still a hardcoded secret for a person to
+  review. Values Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`) and `*_FILE` paths to
+  secret files are not reported. `ignore.rules` entries, inline comments, baseline entries and
+  dismissals written for `compose_hardcoded_secret` still cover default credentials.
 - Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
   cannot be a credential: it is empty, it is a sentence such as an error message, or it is the
   name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`). Every other value, weak
@@ -478,9 +480,11 @@ are kept out of that queue or ranked lower, because they are not live secrets:
 | An inline comment | The rules it names, at one place in the source: built-in, external-scanner and deploy findings |
 | `aitriage ignore add` | Findings a person reviewed and dismissed as a false positive, accepted risk or won't-fix, recorded in `.aitriage-suppressions.json` |
 
-A Trivy check matches in every spelling Trivy releases have used, in `ignore.rules` and in
-inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012` (with or without `trivy:`) name one
-check. Advisory IDs (`CVE-…`, `GHSA-…`) and the IDs of other scanners compare as written.
+A Trivy Kubernetes (`KSV`) or Dockerfile (`DS`) check matches in each spelling Trivy releases
+have used, in `ignore.rules` and in inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012`
+(with or without `trivy:`) name one check, as do `DS002`, `DS-0002` and `AVD-DS-0002`. Every
+other ID compares as written: other Trivy checks (tfsec's `AWS001` is not `AWS-0001`), short
+forms Trivy never reported (`KSV12`), advisories (`CVE-…`, `GHSA-…`) and other scanners' IDs.
 
 Inline directives name the rules they silence. IDs compare whole, text after the list (such
 as a reason) is never read as an ID, and `all` silences every rule only as an ID of its own:
