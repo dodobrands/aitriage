@@ -417,7 +417,7 @@ func TestClassifyFindingsRejectsSelfCitingEvalFalsePositive(t *testing.T) {
 func dismissAll(batch []classificationPromptFinding, evidence string) string {
 	var entries []string
 	for i, f := range batch {
-		entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":"False Positive","confidence":"high","rationale":"mitigated","evidence":%s}`, i, f.FindingID, f.Fingerprint, evidence))
+		entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"disposition":"False Positive","confidence":"high","rationale":"mitigated","evidence":%s}`, i, f.FindingID, evidence))
 	}
 	return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`
 }

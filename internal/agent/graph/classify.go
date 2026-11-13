@@ -523,7 +523,7 @@ func classifyBatchWithRetry(ctx context.Context, tmSummary string, req classifyR
 // finding it is indexed to: it echoes the finding's identity. A verdict that
 // names another finding says nothing about this one.
 func verdictNamesFinding(finding EnrichedFinding, raw rawDisposition) bool {
-	return raw.FindingID == findingIdentity(finding) && raw.Fingerprint == Fingerprint(finding)
+	return raw.FindingID == findingIdentity(finding)
 }
 
 // retryChunks plans the retry of the findings a request left unclassified.
@@ -544,7 +544,6 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 		promptFindings[i] = classificationPromptFinding{
 			FindingIndex: i,
 			FindingID:    findingIdentity(finding),
-			Fingerprint:  Fingerprint(finding),
 			Finding:      finding,
 		}
 	}
@@ -574,11 +573,12 @@ func classifyBatchLLM(ctx context.Context, tmSummary, language string, batch []E
 }
 
 // classificationReplyItem is one entry of a classification reply: a
-// rawDisposition as the model writes it.
+// rawDisposition as the model writes it. A fingerprint the model still
+// echoes, as earlier prompts asked, is dropped by the decoder and never
+// checked (see validateLLMDisposition).
 type classificationReplyItem struct {
 	FindingIndex int                  `json:"finding_index"`
 	FindingID    string               `json:"finding_id"`
-	Fingerprint  string               `json:"fingerprint"`
 	Disposition  string               `json:"disposition"`
 	Confidence   string               `json:"confidence"`
 	Rationale    string               `json:"rationale"`

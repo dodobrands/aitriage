@@ -164,7 +164,7 @@ func TestModelDismissalCitingTheTaintSourceIsRejected(t *testing.T) {
 	project := shapeFixture(t)
 	finding := EnrichedFinding{ID: "B602", Type: "external", Source: "bandit", Severity: "HIGH", File: "handler.py", Line: 5, Message: "[bandit] subprocess call with shell=True", VulnID: "CS-CMDI-ABC123"}
 	raw := rawDisposition{
-		FindingID: finding.VulnID, Fingerprint: Fingerprint(finding), Disposition: "False Positive", Confidence: "high",
+		FindingID: finding.VulnID, Disposition: "False Positive", Confidence: "high",
 		Rationale: "cmd is built from a constant prefix",
 		Evidence:  &DispositionEvidence{Basis: "code_mitigation", File: "handler.py", Line: 4, Observed: "cmd ="},
 	}

@@ -534,8 +534,8 @@ func (m *fallbackRunLLM) Chat(ctx context.Context, messages []llm.Message) (stri
 			if disposition == "" {
 				continue
 			}
-			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"fingerprint":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
-				item.FindingIndex, item.FindingID, item.Fingerprint, disposition))
+			entries = append(entries, fmt.Sprintf(`{"finding_index":%d,"finding_id":%q,"disposition":%q,"confidence":"high","rationale":"r"}`,
+				item.FindingIndex, item.FindingID, disposition))
 		}
 		return `{"finding_dispositions":[` + strings.Join(entries, ",") + `]}`, llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, nil
 	}

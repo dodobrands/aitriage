@@ -14,11 +14,12 @@ import (
 
 // classificationPromptFinding binds a model-visible batch position to a stable
 // finding identity. A model cannot safely reuse an answer from another finding
-// without echoing this identity back.
+// without echoing this identity back. The display id is that identity: it is
+// unique within a run, and models echo it faithfully (see
+// validateLLMDisposition).
 type classificationPromptFinding struct {
 	FindingIndex int             `json:"finding_index"`
 	FindingID    string          `json:"finding_id"`
-	Fingerprint  string          `json:"fingerprint"`
 	Finding      EnrichedFinding `json:"finding"`
 }
 
@@ -66,12 +67,17 @@ func findingIdentity(f EnrichedFinding) string {
 // defaults to Needs Manual Review. A non-empty note means the verdict was
 // accepted in a weaker form, such as a False Positive kept for manual review
 // by policy; the note is recorded in the classification audit.
+//
+// A verdict is bound to its finding by finding_index, which the caller
+// resolves, and finding_id: display ids are unique within a run
+// (assignVulnIDs), so the pair names exactly one finding. The fingerprint is
+// neither asked for nor checked. Models echo a short display id faithfully
+// but often garble a 32-digit hex string (truncated, unrelated digits, the
+// neighbouring finding's), and rejecting those verdicts only bought retries
+// whose answers could differ from the first.
 func validateLLMDisposition(projectPath string, finding EnrichedFinding, raw rawDisposition, policy validationPolicy) (FindingDisposition, string, string) {
 	if raw.FindingID != findingIdentity(finding) {
 		return FindingDisposition{}, "finding_id does not match requested finding", ""
-	}
-	if raw.Fingerprint != Fingerprint(finding) {
-		return FindingDisposition{}, "fingerprint does not match requested finding", ""
 	}
 	confidence := normalizeConfidence(raw.Confidence)
 	if raw.Disposition == "False Positive" {
