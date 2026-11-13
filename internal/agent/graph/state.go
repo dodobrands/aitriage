@@ -38,8 +38,9 @@ type AgentState struct {
 	// LLMTemperature is the temperature the client sends ("0", or "provider
 	// default" when it sends none). LLMRequestProvider and LLMRequestModel
 	// are the provider and model its requests name, the model after defaults;
-	// they go to the run record only, never into a cache key.
-	// RecordLLMSettings sets all three from the client.
+	// the run record and the verdict cache key take them over the configured
+	// identity, so verdicts of one default model are never served as those
+	// of another. RecordLLMSettings sets all three from the client.
 	LLMProvider        string
 	LLMModel           string
 	LLMBaseURL         string

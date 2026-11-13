@@ -57,7 +57,7 @@ func TestRunStateRecordsTheClientModelAndTemperature(t *testing.T) {
 				t.Fatalf("llm_usage = %+v, want openai, gpt-4o, temperature %q", u, tc.want)
 			}
 			if state.LLMModel != "" {
-				t.Fatalf("the cache-key model changed to %q", state.LLMModel)
+				t.Fatalf("the configured model changed to %q", state.LLMModel)
 			}
 		})
 	}
