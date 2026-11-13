@@ -54,6 +54,12 @@ type HealthCheckPolicyConfig struct {
 	// (Trivy config results) count toward the score and the gate. report,
 	// the default for now, triages and reports them without gating.
 	IaCFindings string `yaml:"iac_findings,omitempty"`
+	// QualityFindings (report | block) decides whether code-quality
+	// findings with no direct security impact (rules with subcategory
+	// quality, Bandit B110/B112, a missing .env.example) count toward the
+	// score and the gate. report, the default, triages and reports them
+	// without scoring or gating them.
+	QualityFindings string `yaml:"quality_findings,omitempty"`
 }
 
 // DefaultLLMBatchSize is how many findings one classification request carries

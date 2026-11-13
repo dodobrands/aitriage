@@ -127,9 +127,7 @@ func deterministicGateSection(state *AgentState) string {
 	_, _ = fmt.Fprintf(&sb, "- **Findings**: %d active (%d confirmed, %d needs review, %d of them unclassified), %d ignored, %d deduplicated\n",
 		hc.Breakdown.ActiveFindings, hc.Breakdown.ConfirmedFindings, hc.Breakdown.NeedsReviewFindings,
 		hc.Breakdown.UnclassifiedFindings, hc.Breakdown.IgnoredFindings, hc.Breakdown.DedupedFindings)
-	if n := hc.Breakdown.ReportOnlyFindings; n > 0 {
-		_, _ = fmt.Fprintf(&sb, "- **IaC misconfigurations**: %d reported, not gating and not scored (`iac_findings: report`)\n", n)
-	}
+	sb.WriteString(scoreBullets(hc))
 	for _, reason := range hc.Verdict.BlockingReasons {
 		_, _ = fmt.Fprintf(&sb, "- Blocking `%s`: %s\n", reason.Code, reason.Message)
 	}

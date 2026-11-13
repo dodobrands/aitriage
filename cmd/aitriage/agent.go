@@ -52,6 +52,7 @@ var (
 	agentConfirmedMinSeverity             string
 	agentFPCriticalRequiresHighConfidence bool
 	agentIaCFindings                      string
+	agentQualityFindings                  string
 )
 
 var agentCmd = &cobra.Command{
@@ -101,6 +102,7 @@ func init() {
 	agentCmd.Flags().StringVar(&agentConfirmedMinSeverity, "confirmed-min-severity", "", "With --fail-on confirmed: block only on confirmed findings at or above LOW, MEDIUM, HIGH or CRITICAL (default LOW: every confirmed finding blocks)")
 	agentCmd.Flags().BoolVar(&agentFPCriticalRequiresHighConfidence, "fp-critical-requires-high-confidence", false, "Accept an AI false-positive verdict for a CRITICAL finding only when the model reports high confidence; otherwise keep it for manual review")
 	agentCmd.Flags().StringVar(&agentIaCFindings, "iac-findings", "", "IaC misconfigurations (Trivy config): 'report' (default) triages and reports them without scoring or gating them; 'block' gates them like any other finding")
+	agentCmd.Flags().StringVar(&agentQualityFindings, "quality-findings", "", "Code-quality findings with no direct security impact (rules with subcategory quality such as ENTR-12, Bandit B110/B112, a missing .env.example): 'report' (default) triages and reports them without scoring or gating them; 'block' scores and gates them like any other finding")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
@@ -144,6 +146,11 @@ func validateAgentFlags() error {
 	if strings.TrimSpace(agentIaCFindings) != "" {
 		if _, ok := healthcheck.ParseIaCFindings(agentIaCFindings); !ok {
 			return fmt.Errorf("invalid --iac-findings %q: use report or block", agentIaCFindings)
+		}
+	}
+	if strings.TrimSpace(agentQualityFindings) != "" {
+		if _, ok := healthcheck.ParseQualityFindings(agentQualityFindings); !ok {
+			return fmt.Errorf("invalid --quality-findings %q: use report or block", agentQualityFindings)
 		}
 	}
 	return nil
@@ -263,7 +270,9 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 	if agentProbe != "" || agentProbeCompose {
 		fmt.Fprintf(os.Stderr, "   ✓ Network: %d ports open\n", len(richResult.Network))
 	}
-	fmt.Fprintf(os.Stderr, "   Health Check (pre-AI, core-only): %s (%d/100)\n\n", richResult.Report.SecurityGrade, richResult.Report.SecurityScore)
+	// Every scanner, scored under the run's policy, before anything is
+	// reviewed: every finding still counts in full.
+	fmt.Fprintf(os.Stderr, "   Pre-triage health check (all scanners, nothing reviewed yet): %d/100 (%s)\n\n", richResult.Report.SecurityScore, richResult.Report.SecurityGrade)
 
 	if opts.Target.Enabled() {
 		fmt.Fprintf(os.Stderr, "🎯 Targeted Mode: Focusing on finding %s in %s:%d\n\n", agentRuleID, agentTargetFile, agentTargetLine)
@@ -541,6 +550,7 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 		args = append(args, "--fp-critical-requires-high-confidence")
 	}
 	appendStringFlag("--iac-findings", agentIaCFindings)
+	appendStringFlag("--quality-findings", agentQualityFindings)
 	args = append(args, ".")
 	return args, nil
 }
@@ -620,6 +630,8 @@ func agentPolicyFromFlags(cmd *cobra.Command, cfg *config.Config) healthcheck.Po
 		FPCriticalRequiresHighConfidenceSet: cmd.Flags().Changed("fp-critical-requires-high-confidence"),
 		IaCFindings:                         agentIaCFindings,
 		IaCFindingsSet:                      cmd.Flags().Changed("iac-findings"),
+		QualityFindings:                     agentQualityFindings,
+		QualityFindingsSet:                  cmd.Flags().Changed("quality-findings"),
 	})
 	if failScoreSet && !failOnSet && policy.FailOn == healthcheck.FailOnNever {
 		policy.FailOn = healthcheck.FailOnCritical

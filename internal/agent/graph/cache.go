@@ -70,6 +70,8 @@ type verdictCacheKeyContext struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings changes the gate the cached report narrates.
 	IaCFindings string `json:"iac_findings,omitempty"`
+	// QualityFindings changes the score and gate the cached report narrates.
+	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
 type verdictCacheOption func(*verdictCacheKeyContext)
@@ -109,6 +111,7 @@ func withVerdictCachePolicy(policy healthcheck.Policy) verdictCacheOption {
 		ctx.ConfirmedMinSeverity = strings.TrimSpace(policy.ConfirmedMinSeverity)
 		ctx.FPCriticalRequiresHighConfidence = policy.FPCriticalRequiresHighConfidence
 		ctx.IaCFindings = healthcheck.NormalizeIaCFindings(policy.IaCFindings)
+		ctx.QualityFindings = healthcheck.NormalizeQualityFindings(policy.QualityFindings)
 	}
 }
 

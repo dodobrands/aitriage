@@ -176,8 +176,10 @@ above locally before opening a pull request.
 AITriage follows [Semantic Versioning](https://semver.org/). A pipeline either
 pins a release (`v1.14.0`) or follows a major version: the Action as `@v1` and
 the `:v1` scanner image, which move to every new stable `v1` release. Following
-`v1` must be safe: minor and patch releases add and fix, they never break a
-pipeline that worked.
+`v1` must be safe: minor and patch releases add and fix, and they keep the
+contract below. What a scan finds and how triage judges it can still change in
+a minor release, always with release notes (see
+[Rules, severities and verdicts](#rules-severities-and-verdicts)).
 
 ### The public contract
 

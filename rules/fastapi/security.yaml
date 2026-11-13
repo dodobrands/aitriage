@@ -33,13 +33,15 @@ rules:
     exclude_tests: true
     # A bare or broad except whose only statement is pass/... . Bandit rates
     # the same pattern LOW (B110): a reliability defect, not an exploitable flaw.
+    # Subcategory quality, like Bandit's B110 and B112: one defect class, so a
+    # report of both detectors is treated alike.
     pattern: '(?m)^[ \t]*except(?:\s+(?:Exception|BaseException)(?:\s+as\s+\w+)?)?\s*:[ \t]*(?:#[^\r\n]*)?\r?\n[ \t]*(?:pass|\.\.\.)[ \t]*(?:#[^\r\n]*)?\r?$'
     severity: LOW
     metadata:
       cwe: "CWE-703"
       owasp: "A10:2025"
       confidence: high
-      subcategory: audit
+      subcategory: quality
     suggestion: "A broad except block that only passes hides failures, including security checks that raised. Catch the specific exception you expect, and log or re-raise everything else."
 
   - id: FAST-SYNC-ASYNC
@@ -62,7 +64,7 @@ rules:
     metadata:
       category: performance
       confidence: medium
-      subcategory: audit
+      subcategory: quality
     suggestion: "A synchronous commit inside an async function blocks the event loop and stalls every other request. Use AsyncSession with await session.commit(), declare the route with def so FastAPI runs it in the threadpool, or wrap the call in run_in_threadpool()."
 
   - id: FAST-AUTH

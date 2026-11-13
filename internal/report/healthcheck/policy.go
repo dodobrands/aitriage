@@ -39,12 +39,27 @@ const (
 // results, which earlier releases silently dropped) gate.
 const (
 	// IaCFindingsReport triages and reports them, but keeps them out of the
-	// score and the gate verdict. The default for now, so that findings a
-	// minor upgrade starts reporting do not break existing gates; a later
-	// minor release makes block the default.
+	// score and the gate verdict. It is the default throughout v1, so that
+	// findings an upgrade starts reporting do not break existing gates; a
+	// default change is a breaking change (see the compatibility policy in
+	// CONTRIBUTING.md).
 	IaCFindingsReport = "report"
 	// IaCFindingsBlock scores and gates them like any other finding.
 	IaCFindingsBlock = "block"
+)
+
+// Values of quality_findings: whether findings about code quality,
+// maintainability or hygiene with no direct security impact gate. They come
+// from built-in rules with metadata.subcategory quality and from the checks
+// of other scanners listed in qualityChecks.
+const (
+	// QualityFindingsReport triages and reports them, but keeps them out of
+	// the score and the gate verdict. The default: a security score should
+	// not move with the size of a file or a swallowed exception.
+	QualityFindingsReport = "report"
+	// QualityFindingsBlock scores and gates them like any other finding,
+	// as every release before quality_findings did.
+	QualityFindingsBlock = "block"
 )
 
 // Policy defines the security requirements used to decide whether a repository
@@ -68,9 +83,14 @@ type Policy struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
 	// applies to findings every report of which is an IaC misconfiguration;
-	// a finding another detector also reported gates as before. The caller
-	// marks such findings Finding.ReportOnly.
+	// a finding another detector also reported gates as before. Assess marks
+	// such findings Finding.ReportOnly.
 	IaCFindings string `json:"iac_findings,omitempty"`
+	// QualityFindings is QualityFindingsReport (the default) or
+	// QualityFindingsBlock. It applies to findings every report of which is
+	// a code-quality finding (see ReportOnlyKind); a finding a security rule
+	// also reported gates as before.
+	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
 // Verdict is the CI/CD-ready answer to "can this project pass its security policy?".
@@ -306,6 +326,7 @@ func normalizePolicy(policy Policy) Policy {
 	policy.BlockClasses = normalizeList(policy.BlockClasses)
 	policy.ConfirmedMinSeverity = NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity)
 	policy.IaCFindings = NormalizeIaCFindings(policy.IaCFindings)
+	policy.QualityFindings = NormalizeQualityFindings(policy.QualityFindings)
 	return policy
 }
 
@@ -329,6 +350,32 @@ func ParseIaCFindings(value string) (string, bool) {
 		return IaCFindingsReport, true
 	case IaCFindingsBlock:
 		return IaCFindingsBlock, true
+	default:
+		return "", false
+	}
+}
+
+// NormalizeQualityFindings returns the canonical quality_findings mode.
+// Empty is the default, report. An unrecognised value becomes block: a typo
+// must fall back to the strict reading, not the loose one.
+func NormalizeQualityFindings(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return QualityFindingsReport
+	}
+	if mode, ok := ParseQualityFindings(value); ok {
+		return mode
+	}
+	return QualityFindingsBlock
+}
+
+// ParseQualityFindings reports whether value names a supported
+// quality_findings mode.
+func ParseQualityFindings(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case QualityFindingsReport:
+		return QualityFindingsReport, true
+	case QualityFindingsBlock:
+		return QualityFindingsBlock, true
 	default:
 		return "", false
 	}
@@ -490,4 +537,44 @@ func unclassifiedClause(bd Breakdown) string {
 		return ""
 	}
 	return fmt.Sprintf(" (%d of them were never classified by the model)", bd.UnclassifiedFindings)
+}
+
+// UnreviewedScoreNote explains a low score next to a gate that passed:
+// unreviewed findings count in full toward the score, while the gate may not
+// block on them at all. It returns "" unless the gate passed and unreviewed
+// findings cause more than half of the penalty.
+func UnreviewedScoreNote(res Result) string {
+	bd := res.Breakdown
+	if !res.Verdict.Passed || bd.NeedsReviewFindings == 0 || bd.Penalty == 0 || 2*bd.NeedsReviewPenalty <= bd.Penalty {
+		return ""
+	}
+	share := fmt.Sprintf("%d of the %d penalty points", bd.NeedsReviewPenalty, bd.Penalty)
+	if bd.NeedsReviewPenalty >= bd.Penalty {
+		share = fmt.Sprintf("all %d penalty points", bd.Penalty)
+	}
+	return fmt.Sprintf("Score %d/100: %d finding(s) await review and count in full (%s), but %s.",
+		res.Score, bd.NeedsReviewFindings, share, passingGateScope(res.Policy, res.Score))
+}
+
+// passingGateScope says what a gate that passed blocks on.
+func passingGateScope(policy Policy, score int) string {
+	policy = normalizePolicy(policy)
+	var scope string
+	switch policy.FailOn {
+	case FailOnNever:
+		return "`fail_on: never` never blocks"
+	case FailOnConfirmed:
+		scope = "`fail_on: confirmed` blocks only confirmed findings"
+		if floor := NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity); floor != SeverityLow {
+			scope += " at or above " + floor
+		}
+	case FailOnCritical:
+		scope = "`fail_on: critical` blocks only CRITICAL and HIGH findings"
+	default:
+		scope = fmt.Sprintf("`fail_on: %s` passed", policy.FailOn)
+	}
+	if policy.MinimumScore > 0 {
+		scope += fmt.Sprintf(", and %d meets `minimum_score: %d`", score, policy.MinimumScore)
+	}
+	return scope
 }

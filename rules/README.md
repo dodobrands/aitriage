@@ -88,12 +88,22 @@ Each rule is a YAML object with the following fields:
     cwe: "CWE-89"           # Required for subcategory vuln
     owasp: "A05:2025"       # OWASP Top 10 2025 (Axx:2025) or LLM Top 10 2025 (LLMxx:2025); required for vuln
     confidence: high        # high | medium | low: how likely a match is a real issue
-    subcategory: vuln       # vuln | audit (worth a look) | policy (a required control is absent)
+    subcategory: vuln       # vuln | audit (worth a look) | policy (a required control is absent) | quality (no security impact)
   suggestion: "Fix advice"  # Remediation shown with the finding
 ```
 
 Findings carry the rule's CWE and OWASP category, and SARIF rule descriptors
 get the `external/cwe/cwe-<n>` tag used by GitHub code scanning.
+
+`subcategory: quality` marks a rule about code quality, maintainability or
+hygiene that has no security impact in any project: `ENTR-04`,
+`ENTR-AI-RESIDUE` and `ENTR-ZOMBIE-CODE` (comments), `ENTR-07` (TypeScript
+type checks), `ENTR-12` (file length), `FAST-LAZY-EXC` (swallowed exception,
+the same defect as Bandit `B110`) and `FAST-SYNC-ASYNC` (a blocking call in an
+async function). Their findings carry the subcategory, and under the default
+`quality_findings: report` they are triaged and reported but neither scored nor
+gating; `quality_findings: block` restores gating. A quality rule must be `LOW`
+and is listed with its reason in `catalog_strict_test.go`.
 
 A rule runs only when its `stack` is `universal` or matches the detected (or
 `--stack`) stack. Every built-in rule declares its severity in `severity:`

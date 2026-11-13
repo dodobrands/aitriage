@@ -39,7 +39,7 @@ rules:
     metadata:
       cwe: "CWE-710"
       confidence: medium
-      subcategory: audit
+      subcategory: quality
     suggestion: "@ts-ignore, @ts-nocheck and the any type turn off type checking, so type errors around request data go unnoticed. Use precise types, unknown with a runtime check, or @ts-expect-error with a reason. This is a code-quality signal, not a vulnerability."
 
   - id: ENTR-09

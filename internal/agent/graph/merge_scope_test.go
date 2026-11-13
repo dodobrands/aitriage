@@ -163,3 +163,46 @@ func TestKubernetesRunAsRootIsOneFindingPerContainer(t *testing.T) {
 		t.Fatalf("KSV012 on line 10 disposition = %+v, want the recorded decision applied", d)
 	}
 }
+
+// A swallowed exception the FastAPI rule and Bandit both reported is one
+// finding, reported without scoring only when every detector behind it is a
+// code-quality check. A report of the rule id without the quality
+// subcategory, such as a custom rule reusing it, keeps the finding gating.
+// Of the NFR checks, a missing .env.example is code quality and a missing
+// authentication middleware is not.
+func TestReportOnlyQualityNeedsEveryDetectorToBeQuality(t *testing.T) {
+	build := func(subcategory string) *AgentState {
+		state := &AgentState{
+			ProjectPath: t.TempDir(),
+			CoreFindings: []core.CheckResult{
+				{ID: "FAST-LAZY-EXC", Name: "Exception Silently Swallowed", Status: core.Absent, Severity: "LOW", File: "main.py", Line: 13, Evidence: "except: pass", Subcategory: subcategory},
+			},
+			ExternalFindings: []external.UnifiedFinding{
+				{Source: "bandit", RuleID: "B110", Severity: "LOW", File: "main.py", Line: 13, Message: "try_except_pass"},
+			},
+			NFRFindings: []nfr.NFRFinding{
+				{RuleID: "NFR-ENV-001", Name: ".env.example Missing", Severity: "LOW", Message: "No .env.example documents the environment variables"},
+				{RuleID: "NFR-API-003", Name: "Authentication Middleware Missing", Severity: "MEDIUM", Message: "No authentication middleware detected"},
+			},
+			Policy: healthcheck.Policy{FailOn: healthcheck.FailOnCritical},
+		}
+		enrichFindings(state)
+		scoreWithModelVerdict(state, "Needs Manual Review")
+		return state
+	}
+
+	quality := build(healthcheck.SubcategoryQuality)
+	if len(quality.EnrichedFindings) != 3 {
+		t.Fatalf("findings = %+v, want the exception merged and both NFR checks", quality.EnrichedFindings)
+	}
+	bd := quality.HealthCheck.Breakdown
+	if bd.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 2 || bd.ActiveFindings != 1 || bd.CountByRule["nfr-api-003"] != 1 {
+		t.Fatalf("breakdown = %+v, want the exception and .env.example reported only, the missing authentication counted", bd)
+	}
+
+	mixed := build("")
+	bd = mixed.HealthCheck.Breakdown
+	if bd.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 1 || bd.ActiveFindings != 2 || bd.CountByRule["b110"] != 1 || bd.CountByRule["fast-lazy-exc"] != 1 {
+		t.Fatalf("breakdown = %+v, want the exception gating because one of its detectors is not a quality check", bd)
+	}
+}

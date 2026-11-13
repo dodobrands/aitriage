@@ -398,6 +398,10 @@ func RecomputeHealthCheck(result *llm.RichScanResult) {
 	applyFullHealthCheck(result)
 }
 
+// applyFullHealthCheck scores every finding under the policy the scan carries
+// (the project configuration). Findings that policy reports without scoring
+// or gating them, IaC misconfigurations and code-quality findings by default,
+// are decided by healthcheck.Assess, the same rule AI triage applies.
 func applyFullHealthCheck(result *llm.RichScanResult) {
 	in := healthcheck.FromCoreResults(result.Report.Results)
 
@@ -417,6 +421,7 @@ func applyFullHealthCheck(result *llm.RichScanResult) {
 			File:        f.File,
 			Line:        f.Line,
 			NeedsReview: true,
+			Origins:     []healthcheck.Origin{{Type: "external", Source: source, RuleID: f.RuleID, Kind: f.Kind}},
 		})
 	}
 
@@ -426,6 +431,7 @@ func applyFullHealthCheck(result *llm.RichScanResult) {
 			Class:       f.RuleID,
 			Severity:    f.Severity,
 			NeedsReview: true,
+			Origins:     []healthcheck.Origin{{Type: "nfr", Source: "nfr", RuleID: f.RuleID}},
 		})
 	}
 
@@ -437,10 +443,11 @@ func applyFullHealthCheck(result *llm.RichScanResult) {
 			File:        f.File,
 			Line:        f.Line,
 			NeedsReview: true,
+			Origins:     []healthcheck.Origin{{Type: "deploy", Source: "deploy", RuleID: f.Issue}},
 		})
 	}
 
-	evaluated := healthcheck.ApplyPolicy(healthcheck.Evaluate(in), result.Report.HealthCheck.Policy)
+	evaluated := healthcheck.Assess(in, result.Report.HealthCheck.Policy)
 	result.Report.HealthCheck = evaluated
 	result.Report.SecurityScore = evaluated.Score
 	result.Report.SecurityGrade = evaluated.Grade

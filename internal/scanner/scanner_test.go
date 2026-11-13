@@ -117,6 +117,52 @@ health_check:
 	}
 }
 
+// A file over 1,500 lines (ENTR-12) is a code-quality finding: under
+// quality_findings: report, the default, it is reported but neither scored
+// nor gating; under block it counts like any other finding.
+func TestScanAppliesQualityFindingsConfig(t *testing.T) {
+	scan := func(config string) scanner.ScanReport {
+		t.Helper()
+		dir := t.TempDir()
+		var source []byte
+		for i := 0; i < 1600; i++ {
+			source = append(source, "value = compute()\n"...)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "service.py"), source, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".aitriage.yaml"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		report, err := scanner.Scan(context.Background(), dir, scanner.ScanOptions{})
+		if err != nil {
+			t.Fatalf("Scan failed: %v", err)
+		}
+		return report
+	}
+
+	gate := "health_check:\n  profile: strict\n  fail_on: any\n"
+	reported := scan(gate)
+	found := false
+	for _, r := range reported.Results {
+		if r.ID == "ENTR-12" {
+			found = r.Subcategory == healthcheck.SubcategoryQuality
+		}
+	}
+	if !found {
+		t.Fatalf("results = %+v, want ENTR-12 with subcategory quality", reported.Results)
+	}
+	hc := reported.HealthCheck
+	if !hc.Verdict.Passed || hc.Score != 100 || hc.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 1 {
+		t.Fatalf("score %d, verdict %+v, breakdown %+v; want ENTR-12 reported only", hc.Score, hc.Verdict, hc.Breakdown)
+	}
+
+	blocked := scan(gate + "  quality_findings: block\n").HealthCheck
+	if blocked.Verdict.Passed || blocked.Score == 100 || blocked.Breakdown.CountByRule["entr-12"] != 1 {
+		t.Fatalf("under block: score %d, verdict %+v; want ENTR-12 to gate", blocked.Score, blocked.Verdict)
+	}
+}
+
 func TestCoreScannerSettingsAffectScan(t *testing.T) {
 	root := t.TempDir()
 	generated := filepath.Join(root, "generated")

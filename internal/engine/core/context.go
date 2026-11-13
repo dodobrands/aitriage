@@ -41,6 +41,9 @@ type CheckResult struct {
 	OWASPMapping   string      `json:"owasp_mapping,omitempty"`
 	CWE            string      `json:"cwe,omitempty"`
 	ReasoningChain []string    `json:"reasoning_chain,omitempty"`
+	// Subcategory is the rule's metadata.subcategory: vuln, audit, policy
+	// or quality. Empty for the built-in heuristics, which have no rule.
+	Subcategory string `json:"subcategory,omitempty"`
 }
 
 // FileInfo holds metadata and cached content for a single file.

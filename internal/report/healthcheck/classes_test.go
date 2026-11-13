@@ -161,3 +161,33 @@ func TestBlockClassesMatchesClassesAndRules(t *testing.T) {
 		t.Error("block_sources [bandit] did not block a finding bandit reported")
 	}
 }
+
+// The core-only scan path tells a code-quality rule from a security rule by
+// the subcategory the engine put on each result: under quality_findings:
+// report (the default) the quality finding is reported but neither scored
+// nor gating, and under block it counts like any other.
+func TestCoreOnlyHealthCheckReportsQualityRules(t *testing.T) {
+	results := []core.CheckResult{
+		{ID: "ENTR-12", Status: core.Absent, Severity: "LOW", File: "app/views.py", Line: 1, Subcategory: SubcategoryQuality},
+		{ID: "FAST-LAZY-EXC", Status: core.Absent, Severity: "LOW", File: "app/jobs.py", Line: 4, Subcategory: SubcategoryQuality},
+		{ID: "PY-SUBPROCESS", Status: core.Absent, Severity: "HIGH", File: "app/run.py", Line: 7, Subcategory: "audit"},
+		// The same id without the subcategory, as from a custom rule: it gates.
+		{ID: "ENTR-12", Status: core.Absent, Severity: "LOW", File: "app/models.py", Line: 1},
+	}
+	in := FromCoreResults(results)
+	if got := in.Findings[0].Origins; len(got) != 1 || got[0].Subcategory != SubcategoryQuality || got[0].RuleID != "ENTR-12" {
+		t.Fatalf("origins = %+v, want the rule and its subcategory", got)
+	}
+
+	reported := Assess(in, Policy{FailOn: FailOnCritical})
+	if bd := reported.Breakdown; bd.ActiveFindings != 2 || bd.ReportOnlyByKind[ReportOnlyQuality] != 2 || bd.CountByRule["entr-12"] != 1 {
+		t.Fatalf("breakdown = %+v, want the two quality findings reported only", bd)
+	}
+	blocked := Assess(in, Policy{FailOn: FailOnCritical, QualityFindings: QualityFindingsBlock})
+	if bd := blocked.Breakdown; bd.ActiveFindings != 4 || bd.ReportOnlyFindings != 0 || blocked.Score >= reported.Score {
+		t.Fatalf("under block: score %d (report: %d), breakdown %+v; want every finding scored", blocked.Score, reported.Score, bd)
+	}
+	if _, score := Calculate(results); score != reported.Score {
+		t.Fatalf("Calculate = %d, want the default policy's %d", score, reported.Score)
+	}
+}

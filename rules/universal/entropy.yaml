@@ -103,7 +103,7 @@ rules:
     metadata:
       cwe: "CWE-1080"
       confidence: high
-      subcategory: policy
+      subcategory: quality
     suggestion: "File exceeds 1500 lines. Split it into smaller modules; this is a maintainability signal, not a vulnerability."
 
   - id: ENTR-13

@@ -308,6 +308,7 @@ func (e *Engine) Run(ctx *core.ProjectContext) []core.CheckResult {
 						File:         f.Path,
 						CWE:          rule.Metadata["cwe"],
 						OWASPMapping: rule.Metadata["owasp"],
+						Subcategory:  rule.Metadata["subcategory"],
 					})
 					mu.Unlock()
 				}
@@ -393,7 +394,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "No lockfile for " + strings.Join(missing, ", ") + " in " + ctx.RootPath,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
-				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"], Subcategory: rule.Metadata["subcategory"],
 			})
 			mu.Unlock()
 		}
@@ -422,7 +423,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Missing required file matching: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
-				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"], Subcategory: rule.Metadata["subcategory"],
 			})
 			mu.Unlock()
 		}
@@ -478,7 +479,7 @@ func (e *Engine) evaluateProjectRule(rule Rule, ctx *core.ProjectContext, result
 				ID: rule.ID, Name: rule.Name, Status: core.Absent,
 				Evidence:   "Required pattern not found: " + rule.Pattern,
 				Suggestion: rule.Suggestion, Framework: rule.Stack, Severity: rule.Severity,
-				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"],
+				CWE: rule.Metadata["cwe"], OWASPMapping: rule.Metadata["owasp"], Subcategory: rule.Metadata["subcategory"],
 			})
 			mu.Unlock()
 		}

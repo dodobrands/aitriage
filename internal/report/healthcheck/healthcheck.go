@@ -59,10 +59,20 @@ type Finding struct {
 	// policy, because the verdict it would have produced is unknown.
 	TriageFailed bool
 	// ReportOnly marks a finding the policy reports without scoring or
-	// gating it (an IaC misconfiguration under iac_findings: report). It is
-	// counted in Breakdown.ReportOnlyFindings and nowhere else; whatever its
-	// triage outcome, it cannot change the verdict.
+	// gating it (an IaC misconfiguration under iac_findings: report, a
+	// code-quality finding under quality_findings: report). It is counted in
+	// Breakdown.ReportOnlyFindings and nowhere else; whatever its triage
+	// outcome, it cannot change the verdict. Assess sets it from Origins and
+	// the policy.
 	ReportOnly bool
+	// ReportOnlyKind names the setting that made the finding report-only:
+	// ReportOnlyIaC or ReportOnlyQuality. Breakdown.ReportOnlyByKind counts
+	// report-only findings under it.
+	ReportOnlyKind string
+	// Origins describes the scanner reports behind the finding, as far as
+	// the report-only rule needs them (see ReportOnlyKind). Empty means the
+	// finding stands for one report: its Source and Class.
+	Origins []Origin
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -90,6 +100,10 @@ type Breakdown struct {
 	// wonder why a gate failed with nothing proven.
 	ConfirmedFindings   int `json:"confirmed_findings"`
 	NeedsReviewFindings int `json:"needs_review_findings"`
+	// NeedsReviewPenalty is the part of Penalty the unreviewed findings
+	// cause. They count in full until someone confirms or dismisses them, so
+	// a gate that blocks only on confirmed findings can pass with a low score.
+	NeedsReviewPenalty int `json:"needs_review_penalty,omitempty"`
 	// UnclassifiedFindings is the subset of NeedsReviewFindings that never got
 	// a model verdict.
 	UnclassifiedFindings int `json:"unclassified_findings"`
@@ -117,8 +131,12 @@ type Breakdown struct {
 
 	// ReportOnlyFindings counts active findings the policy reports without
 	// scoring or gating them (IaC misconfigurations under iac_findings:
-	// report). They are not part of ActiveFindings or any other count.
+	// report, code-quality findings under quality_findings: report). They are
+	// not part of ActiveFindings or any other count.
 	ReportOnlyFindings int `json:"report_only_findings,omitempty"`
+	// ReportOnlyByKind splits ReportOnlyFindings by the setting that reports
+	// them: ReportOnlyIaC ("iac") and ReportOnlyQuality ("quality").
+	ReportOnlyByKind map[string]int `json:"report_only_by_kind,omitempty"`
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -358,7 +376,7 @@ func Evaluate(in Input) Result {
 	}
 
 	// 2. Accumulate weighted penalties, skipping ignored (FP / audit-ignored).
-	var rawWeight float64
+	var rawWeight, rawNeedsReview float64
 	rawBySource := map[string]float64{}
 	hasCritical := false
 	for _, f := range deduped {
@@ -368,6 +386,12 @@ func Evaluate(in Input) Result {
 		}
 		if f.ReportOnly {
 			bd.ReportOnlyFindings++
+			if f.ReportOnlyKind != "" {
+				if bd.ReportOnlyByKind == nil {
+					bd.ReportOnlyByKind = map[string]int{}
+				}
+				bd.ReportOnlyByKind[f.ReportOnlyKind]++
+			}
 			continue
 		}
 		sev := strings.ToUpper(strings.TrimSpace(f.Severity))
@@ -392,6 +416,9 @@ func Evaluate(in Input) Result {
 
 		w := effectiveWeight(f)
 		rawWeight += w
+		if f.NeedsReview {
+			rawNeedsReview += w
+		}
 		src := strings.ToLower(strings.TrimSpace(f.Source))
 		if src == "" {
 			src = "unknown"
@@ -444,6 +471,7 @@ func Evaluate(in Input) Result {
 		for src, w := range rawBySource {
 			bd.PenaltyBySource[src] = int(math.Round(penalty * (w / rawWeight)))
 		}
+		bd.NeedsReviewPenalty = int(math.Round(penalty * (rawNeedsReview / rawWeight)))
 	}
 
 	res := Result{
