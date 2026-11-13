@@ -287,10 +287,24 @@ func blockedClassCount(bd Breakdown, key string) int {
 	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
 		count = bd.CountByClass[c.Key]
 	}
-	if n := bd.CountByRule[key]; n > count {
+	n := bd.CountByRule[key]
+	for _, successor := range ruleSuccessors[key] {
+		n += bd.CountByRule[successor]
+	}
+	if n > count {
 		count = n
 	}
 	return count
+}
+
+// ruleSuccessors maps a rule id that earlier releases reported findings
+// under to the ids those findings carry now. A policy written for the earlier
+// id keeps covering them, so a gate never relaxes because a rule was split:
+// `block_classes: [compose_hardcoded_secret]` still blocks the default Compose
+// credentials that are now reported as compose_default_credential (see
+// deployaudit.PreviousIssue, which suppressions and baselines use the same way).
+var ruleSuccessors = map[string][]string{
+	"compose_hardcoded_secret": {"compose_default_credential"},
 }
 
 func appendThresholdReason(reasons []BlockingReason, code, severity string, count, threshold int) []BlockingReason {
