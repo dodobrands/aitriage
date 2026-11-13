@@ -6,28 +6,35 @@ import (
 	"testing"
 )
 
-// reportingLLM is a client that knows the temperature its requests carry.
+// reportingLLM is a client that knows the model and temperature its requests
+// carry.
 type reportingLLM struct {
 	stageUsageMockLLM
-	temperature string
+	provider, model, temperature string
 }
 
 func (c reportingLLM) EffectiveTemperature() string { return c.temperature }
 
-func TestRecordLLMTemperature(t *testing.T) {
-	state := &AgentState{}
-	state.RecordLLMTemperature(reportingLLM{temperature: "0.4"})
-	if state.LLMTemperature != "0.4" {
-		t.Fatalf("recorded %q, want the client's 0.4", state.LLMTemperature)
+func (c reportingLLM) RequestModel() (string, string) { return c.provider, c.model }
+
+func TestRecordLLMSettings(t *testing.T) {
+	state := &AgentState{LLMProvider: "gemini"}
+	state.RecordLLMSettings(reportingLLM{provider: "gemini", model: "gemini-2.5-flash", temperature: "0.4"})
+	if state.LLMTemperature != "0.4" || state.LLMRequestProvider != "gemini" || state.LLMRequestModel != "gemini-2.5-flash" {
+		t.Fatalf("recorded %q %q %q, want the client's gemini, gemini-2.5-flash, 0.4", state.LLMRequestProvider, state.LLMRequestModel, state.LLMTemperature)
 	}
-	// A client that sets no temperature, such as a host agent, leaves the
-	// provider default.
-	state.RecordLLMTemperature(stageUsageMockLLM{})
-	if state.LLMTemperature != "provider default" {
-		t.Fatalf("recorded %q, want provider default", state.LLMTemperature)
+	if state.LLMProvider != "gemini" || state.LLMModel != "" {
+		t.Fatalf("the cache-key identity changed to %q %q", state.LLMProvider, state.LLMModel)
+	}
+	// A client that sets no temperature and does not know its model, such as
+	// a host agent, leaves the provider default and the configured identity.
+	host := &AgentState{}
+	host.RecordLLMSettings(stageUsageMockLLM{})
+	if host.LLMTemperature != "provider default" || host.LLMRequestProvider != "" || host.LLMRequestModel != "" {
+		t.Fatalf("recorded %q %q %q, want provider default and no model", host.LLMRequestProvider, host.LLMRequestModel, host.LLMTemperature)
 	}
 	var none *AgentState
-	none.RecordLLMTemperature(reportingLLM{temperature: "0"}) // must not panic
+	none.RecordLLMSettings(reportingLLM{temperature: "0"}) // must not panic
 }
 
 // Verdicts sampled at one temperature are not served to a run at another.
@@ -68,10 +75,27 @@ func TestVerdictCacheNamespaceFollowsTheTemperature(t *testing.T) {
 	}
 }
 
-// triage-findings.json says which temperature the requests carried.
-func TestTriageArtifactRecordsTheTemperature(t *testing.T) {
-	for _, temperature := range []string{"0", "provider default"} {
-		artifact, err := BuildTriageFindingsArtifact(&AgentState{LLMTemperature: temperature})
+// triage-findings.json says which provider, model and temperature served the
+// requests, and never names the endpoint.
+func TestTriageArtifactRecordsTheModelAndTemperature(t *testing.T) {
+	const endpoint = "https://llm.example.test/v1"
+	for _, tc := range []struct {
+		name                         string
+		state                        AgentState
+		provider, model, temperature string
+	}{
+		{
+			name:     "what the client reported",
+			state:    AgentState{LLMProvider: "openai", LLMBaseURL: endpoint, LLMRequestProvider: "openai", LLMRequestModel: "gpt-4o", LLMTemperature: "0"},
+			provider: "openai", model: "gpt-4o", temperature: "0",
+		},
+		{
+			name:     "the configured identity when the client does not know its model",
+			state:    AgentState{LLMProvider: "anthropic", LLMModel: "configured-model", LLMBaseURL: endpoint, LLMTemperature: "provider default"},
+			provider: "anthropic", model: "configured-model", temperature: "provider default",
+		},
+	} {
+		artifact, err := BuildTriageFindingsArtifact(&tc.state)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -80,22 +104,26 @@ func TestTriageArtifactRecordsTheTemperature(t *testing.T) {
 			t.Fatal(err)
 		}
 		var decoded struct {
-			LLMUsage struct {
-				Temperature *string `json:"temperature"`
-			} `json:"llm_usage"`
+			LLMUsage map[string]json.RawMessage `json:"llm_usage"`
 		}
 		if err := json.Unmarshal(data, &decoded); err != nil {
 			t.Fatal(err)
 		}
-		if decoded.LLMUsage.Temperature == nil || *decoded.LLMUsage.Temperature != temperature {
-			t.Fatalf("llm_usage.temperature = %v, want %q", decoded.LLMUsage.Temperature, temperature)
+		for field, want := range map[string]string{"provider": tc.provider, "model": tc.model, "temperature": tc.temperature} {
+			var got string
+			if err := json.Unmarshal(decoded.LLMUsage[field], &got); err != nil || got != want {
+				t.Errorf("%s: llm_usage.%s = %s, want %q", tc.name, field, decoded.LLMUsage[field], want)
+			}
+		}
+		if strings.Contains(string(data), "llm.example.test") {
+			t.Errorf("%s: the artifact names the endpoint", tc.name)
 		}
 	}
 	artifact, err := BuildTriageFindingsArtifact(&AgentState{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if artifact.LLMUsage.Temperature != "" {
-		t.Fatalf("an unrecorded temperature became %q", artifact.LLMUsage.Temperature)
+	if u := artifact.LLMUsage; u.Temperature != "" || u.Provider != "" || u.Model != "" {
+		t.Fatalf("an unrecorded run reports %+v", u)
 	}
 }

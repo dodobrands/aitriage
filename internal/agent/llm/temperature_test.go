@@ -285,6 +285,85 @@ func TestReasoningModelsGetNoTemperature(t *testing.T) {
 	}
 }
 
+func TestGeminiGenerations(t *testing.T) {
+	for _, model := range []string{"gemini-3", "gemini-3-pro-preview", "gemini-3.1-pro", "gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-4-ultra", "google/gemini-3.6-flash", "models/gemini-3-flash", "Gemini-3.6-Flash"} {
+		if !geminiTakesNoTemperature(model) {
+			t.Errorf("%s is Gemini 3 or later", model)
+		}
+	}
+	for _, model := range []string{"", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-pro", "gemini-flash-latest", "google/gemini-2.5-flash", "gemma-3-27b-it"} {
+		if geminiTakesNoTemperature(model) {
+			t.Errorf("%s is not Gemini 3 or later", model)
+		}
+	}
+}
+
+// Gemini 3 and later deprecate the temperature (later generations reject it),
+// so they get none, also behind a gateway; Gemini 2.x keeps 0.
+func TestGeminiRequestsCarryTheTemperatureUpToGemini2(t *testing.T) {
+	for _, tc := range []struct {
+		provider, model, setting, want string
+		warns                          bool
+	}{
+		{provider: "gemini", model: "", want: "0"}, // the client's default, gemini-2.5-flash
+		{provider: "gemini", model: "gemini-2.5-flash", want: "0"},
+		{provider: "gemini", model: "gemini-2.5-pro", setting: "0.4", want: "0.4"},
+		{provider: "gemini", model: "gemini-3.6-flash", want: absent},
+		{provider: "gemini", model: "gemini-3.1-pro-preview", setting: "0.4", want: absent, warns: true},
+		{provider: "openai", model: "google/gemini-3.6-flash", want: absent},
+		{provider: "openai", model: "google/gemini-2.5-flash", want: "0"},
+	} {
+		f := answering(t, openAIReply)
+		var log bytes.Buffer
+		c := openAICompatible(t, Config{Provider: tc.provider, Model: tc.model, Temperature: tc.setting}, f, &log)
+		if err := chatOnce(t, c); err != nil {
+			t.Fatalf("%s %s: %v", tc.provider, tc.model, err)
+		}
+		if got := f.seen(); !sameTemperatures(got, tc.want) {
+			t.Errorf("%s %q with temperature %q sent %v, want [%s]", tc.provider, tc.model, tc.setting, got, tc.want)
+		}
+		lines := strings.Count(log.String(), "\n")
+		if tc.warns && (lines != 1 || !strings.Contains(log.String(), tc.model)) {
+			t.Errorf("%s with an explicit temperature printed %q, want one line naming the model", tc.model, log.String())
+		}
+		if !tc.warns && lines != 0 {
+			t.Errorf("%s printed %q, want nothing", tc.model, log.String())
+		}
+		wantRecorded := tc.want
+		if tc.want == absent {
+			wantRecorded = ProviderDefaultTemperature
+		}
+		if got := EffectiveTemperature(c); got != wantRecorded {
+			t.Errorf("%s EffectiveTemperature = %q, want %q", tc.model, got, wantRecorded)
+		}
+	}
+}
+
+// Clients name the provider and the model their requests carry, the model
+// after the client's own defaults.
+func TestRequestModelNamesTheModelAfterDefaults(t *testing.T) {
+	f := answering(t, openAIReply)
+	for _, tc := range []struct {
+		cfg             Config
+		provider, model string
+	}{
+		{cfg: Config{Provider: "openai"}, provider: "openai", model: "gpt-4o"},
+		{cfg: Config{Provider: "gemini"}, provider: "gemini", model: "gemini-2.5-flash"},
+		{cfg: Config{Provider: "ollama", Model: "llama3.1"}, provider: "ollama", model: "llama3.1"},
+	} {
+		c := NewRetryClient(openAICompatible(t, tc.cfg, f, io.Discard), 3)
+		if provider, model := RequestModel(c); provider != tc.provider || model != tc.model {
+			t.Errorf("RequestModel(%+v) = %q, %q; want %q, %q", tc.cfg, provider, model, tc.provider, tc.model)
+		}
+	}
+	if provider, model := RequestModel(claude(Config{}, f, io.Discard)); provider != "anthropic" || model != "claude-sonnet-4-5" {
+		t.Errorf("Anthropic RequestModel = %q, %q; want anthropic, claude-sonnet-4-5", provider, model)
+	}
+	if provider, model := RequestModel(&mockClient{}); provider != "" || model != "" {
+		t.Errorf("a client that does not know its model reports %q, %q", provider, model)
+	}
+}
+
 // Turning thinking off for OpenAI-compatible reasoning endpoints does not
 // change the temperature they get.
 func TestDisableThinkingKeepsTheTemperature(t *testing.T) {

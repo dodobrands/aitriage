@@ -70,6 +70,11 @@ type LLMUsageArtifact struct {
 	Total                llm.Usage            `json:"total"`
 	Stages               map[string]llm.Usage `json:"stages,omitempty"`
 	CacheTelemetryStatus string               `json:"cache_telemetry_status"`
+	// Provider and Model name what served the requests, the model after
+	// defaults, so a change of verdicts between runs can be traced to a
+	// change of model. Never an endpoint or a credential.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 	// Temperature is the sampling temperature the requests carried, such as
 	// "0", or "provider default" when they carried none.
 	Temperature string `json:"temperature,omitempty"`
@@ -177,15 +182,21 @@ func buildClassificationStats(state *AgentState) ClassificationStats {
 	return stats
 }
 
-// RecordLLMTemperature notes the temperature client sends, for the verdict
-// cache key and llm_usage in triage-findings.json. Callers of Run record it
-// before the run and again after it: an endpoint that refuses the temperature
-// makes the client drop it mid-run, and the record must show what the
-// requests carried, while the cache key keeps the starting value, which is
-// the same on every run against that endpoint.
-func (s *AgentState) RecordLLMTemperature(client llm.Client) {
-	if s != nil {
-		s.LLMTemperature = llm.EffectiveTemperature(client)
+// RecordLLMSettings notes what client's requests carry: the temperature, for
+// the verdict cache key and llm_usage in triage-findings.json, and the
+// provider and model, for llm_usage only. Callers of Run record them before
+// the run and again after it: an endpoint that refuses the temperature makes
+// the client drop it mid-run, and the record must show what the requests
+// carried, while the cache key keeps the starting value, which is the same on
+// every run against that endpoint. A client that does not know its model, such
+// as a host agent, leaves the configured identity in the record.
+func (s *AgentState) RecordLLMSettings(client llm.Client) {
+	if s == nil {
+		return
+	}
+	s.LLMTemperature = llm.EffectiveTemperature(client)
+	if provider, model := llm.RequestModel(client); model != "" {
+		s.LLMRequestProvider, s.LLMRequestModel = provider, model
 	}
 }
 
@@ -210,6 +221,8 @@ func buildLLMUsageArtifact(state *AgentState) LLMUsageArtifact {
 		Total:                state.TotalUsage,
 		Stages:               stages,
 		CacheTelemetryStatus: status,
+		Provider:             firstNonEmpty(state.LLMRequestProvider, state.LLMProvider),
+		Model:                firstNonEmpty(state.LLMRequestModel, state.LLMModel),
 		Temperature:          state.LLMTemperature,
 	}
 }

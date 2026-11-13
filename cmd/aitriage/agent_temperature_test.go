@@ -152,11 +152,19 @@ func TestAgentTemperatureReachesTheProvider(t *testing.T) {
 		}
 		var artifact struct {
 			LLMUsage struct {
+				Provider    string `json:"provider"`
+				Model       string `json:"model"`
 				Temperature string `json:"temperature"`
 			} `json:"llm_usage"`
 		}
 		if err := json.Unmarshal(data, &artifact); err != nil {
 			t.Fatal(err)
+		}
+		if artifact.LLMUsage.Provider != "openai" || artifact.LLMUsage.Model != "test-model" {
+			t.Fatalf("llm_usage names %q %q, want openai test-model", artifact.LLMUsage.Provider, artifact.LLMUsage.Model)
+		}
+		if strings.Contains(string(data), server.URL) || strings.Contains(string(data), "test-key-not-real") {
+			t.Fatal("triage-findings.json names the endpoint or the key")
 		}
 		return api.take(), artifact.LLMUsage.Temperature
 	}

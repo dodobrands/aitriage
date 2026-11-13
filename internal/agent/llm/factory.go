@@ -46,6 +46,11 @@ func openAIModel(configured string) string {
 // EffectiveTemperature implements TemperatureReporter.
 func (c *openAIClient) EffectiveTemperature() string { return c.temperature.effective() }
 
+// RequestModel implements ModelReporter.
+func (c *openAIClient) RequestModel() (provider, model string) {
+	return c.cfg.Provider, openAIModel(c.cfg.Model)
+}
+
 func (c *openAIClient) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var oaiMessages []openai.ChatCompletionMessageParamUnion
 	for _, m := range messages {
@@ -123,6 +128,11 @@ func anthropicModel(configured string) string {
 
 // EffectiveTemperature implements TemperatureReporter.
 func (c *anthropicClientWrapper) EffectiveTemperature() string { return c.temperature.effective() }
+
+// RequestModel implements ModelReporter.
+func (c *anthropicClientWrapper) RequestModel() (provider, model string) {
+	return "anthropic", anthropicModel(c.cfg.Model)
+}
 
 func (c *anthropicClientWrapper) Chat(ctx context.Context, messages []Message) (string, Usage, error) {
 	var systemBlocks []anthropic.TextBlockParam

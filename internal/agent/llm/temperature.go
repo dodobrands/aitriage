@@ -49,6 +49,23 @@ func EffectiveTemperature(client Client) string {
 	return ProviderDefaultTemperature
 }
 
+// ModelReporter is implemented by clients that know which provider and model
+// their requests name.
+type ModelReporter interface {
+	// RequestModel returns the provider and the model requests name, the
+	// model after defaults. Never an endpoint or a credential.
+	RequestModel() (provider, model string)
+}
+
+// RequestModel reports the provider and model client's requests name, or two
+// empty strings for a client that does not know them, such as a host agent.
+func RequestModel(client Client) (provider, model string) {
+	if r, ok := client.(ModelReporter); ok {
+		return r.RequestModel()
+	}
+	return "", ""
+}
+
 // TemperatureFlagUsage is the help text of a --temperature flag.
 const TemperatureFlagUsage = `LLM sampling temperature, 0 to 2, or "default" to send none and keep the provider's own (default 0; left out for models that take none)`
 
@@ -201,7 +218,24 @@ func temperatureUnsupported(provider, model string, value float64) string {
 	if openAIReasoningModel(model) {
 		return model + " is a reasoning model and takes only its default temperature"
 	}
+	if geminiTakesNoTemperature(model) {
+		return model + " is a Gemini 3 or later model, which takes no temperature"
+	}
 	return ""
+}
+
+// geminiTakesNoTemperature reports whether model is Gemini 3 or later
+// (gemini-3-pro, gemini-3.6-flash, also behind a gateway prefix such as
+// "google/"). Google deprecated temperature, top_p and top_k for Gemini 3,
+// which ignores them, and later generations answer 400 when they are sent.
+// Gemini 2.x and older still take a temperature.
+func geminiTakesNoTemperature(model string) bool {
+	rest, ok := strings.CutPrefix(baseModelName(model), "gemini-")
+	if !ok {
+		return false
+	}
+	major, err := strconv.Atoi(leadingDigits(rest))
+	return err == nil && major >= 3
 }
 
 // baseModelName lowercases a model name and drops a gateway prefix such as

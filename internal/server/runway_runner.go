@@ -88,9 +88,9 @@ func (s *Server) runRunwaySession(session *models.RunwaySession, product *models
 	}
 
 	client := s.getLLMClient()
-	state.RecordLLMTemperature(client)
+	state.RecordLLMSettings(client)
 	err = graph.Run(ctx, state, client)
-	state.RecordLLMTemperature(client)
+	state.RecordLLMSettings(client)
 	if err != nil {
 		s.markRunwayFailed(ctx, session, err)
 		return
