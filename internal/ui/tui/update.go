@@ -805,11 +805,12 @@ func (m *DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Lazy-initialize LLM client when coming from browser mode
 			if m.LLMClient == nil && msg.report.Config != nil {
 				m.LLMClient, _ = llm.NewClient(llm.Config{
-					Provider: msg.report.Config.LLM.Provider,
-					Model:    msg.report.Config.LLM.Model,
-					APIKey:   msg.report.Config.LLM.APIKey,
-					BaseURL:  msg.report.Config.LLM.BaseURL,
-					Timeout:  msg.report.Config.LLM.Timeout,
+					Provider:    msg.report.Config.LLM.Provider,
+					Model:       msg.report.Config.LLM.Model,
+					APIKey:      msg.report.Config.LLM.APIKey,
+					BaseURL:     msg.report.Config.LLM.BaseURL,
+					Timeout:     msg.report.Config.LLM.Timeout,
+					Temperature: msg.report.Config.LLM.Temperature,
 				})
 				m.AddLog(LogInfo, "SYSTEM", fmt.Sprintf("LLM Engine initialized: %s/%s", msg.report.Config.LLM.Provider, msg.report.Config.LLM.Model))
 			}

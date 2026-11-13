@@ -87,7 +87,11 @@ func (s *Server) runRunwaySession(session *models.RunwaySession, product *models
 		return
 	}
 
-	if err := graph.Run(ctx, state, s.getLLMClient()); err != nil {
+	client := s.getLLMClient()
+	state.RecordLLMSettings(client)
+	err = graph.Run(ctx, state, client)
+	state.RecordLLMSettings(client)
+	if err != nil {
 		s.markRunwayFailed(ctx, session, err)
 		return
 	}

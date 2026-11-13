@@ -363,6 +363,8 @@ aitriage agent . --no-chat
 
 `agent` uses the full container scanner bundle by default and runs the same SecureCoder pipeline used by CI. Without extra output flags it writes a run bundle to `aitriage-reports/` (see [Reports](#reports)). Provider variables include `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GROQ_API_KEY`; `--provider` and `--model` override the auto-detected choice. It exits `1` when a configured gate fails and `2` when the audit could not complete ([exit codes](#exit-codes)).
 
+AITriage asks the model for temperature 0, so the same finding gets the same verdict on every run; provider defaults, often 1, draw a new answer each time. Set another value from 0 to 2, or `default` to send none, with `--temperature`, `AITRIAGE_LLM_TEMPERATURE` or `llm.temperature` in `.aitriage.yaml`, in that order of precedence. Models that take no temperature get none: OpenAI reasoning models (the o-series and GPT-5), Gemini 3 and later, and Claude models released after Claude Opus 4.6. When any other endpoint answers `400` naming the parameter, AITriage repeats that request without it and sends none for the rest of the run. `llm_usage` in `triage-findings.json` records the provider, model and temperature the requests carried (`provider default` when no temperature, as in an AI IDE run, whose model AITriage does not configure), so verdicts that moved between runs can be traced to a change of model or temperature; the verdict cache keeps verdicts made at different temperatures apart.
+
 To use a Codex or Claude subscription instead of an API key, use the [AI IDE integration](#2-ai-ide-codex-claude-code-cursor-antigravity-vs-code).
 
 ## Reports

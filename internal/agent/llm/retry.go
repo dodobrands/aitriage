@@ -53,6 +53,12 @@ func (r *RetryClient) Chat(ctx context.Context, messages []Message) (string, Usa
 	return "", Usage{}, fmt.Errorf("LLM call failed after %d retries: %w", r.maxRetries, lastErr)
 }
 
+// EffectiveTemperature reports the temperature of the wrapped client.
+func (r *RetryClient) EffectiveTemperature() string { return EffectiveTemperature(r.inner) }
+
+// RequestModel reports the provider and model of the wrapped client.
+func (r *RetryClient) RequestModel() (provider, model string) { return RequestModel(r.inner) }
+
 // retryDelay returns an exponential backoff duration with jitter.
 // Base delay: 1s, factor: 2x. Max delay capped at 30s.
 func retryDelay(attempt int) time.Duration {

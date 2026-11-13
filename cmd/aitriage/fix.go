@@ -70,11 +70,12 @@ func runFix(cmd *cobra.Command, args []string) error {
 
 	// Initialize LLM client
 	client, err := llm.NewClient(llm.Config{
-		Provider: cfg.LLM.Provider,
-		Model:    cfg.LLM.Model,
-		APIKey:   cfg.LLM.APIKey,
-		BaseURL:  cfg.LLM.BaseURL,
-		Timeout:  cfg.LLM.Timeout,
+		Provider:    cfg.LLM.Provider,
+		Model:       cfg.LLM.Model,
+		APIKey:      cfg.LLM.APIKey,
+		BaseURL:     cfg.LLM.BaseURL,
+		Timeout:     cfg.LLM.Timeout,
+		Temperature: cfg.LLM.Temperature,
 	})
 	if err != nil {
 		return fmt.Errorf("LLM client required for fix mode: %w\nSet GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY", err)

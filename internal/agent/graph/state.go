@@ -35,10 +35,18 @@ type AgentState struct {
 	// provider/model that actually produced the verdicts; env vars alone miss
 	// configurations coming from CLI flags, yaml config, or API-key
 	// auto-detection. Empty fields fall back to the env-derived defaults.
+	// LLMTemperature is the temperature the client sends ("0", or "provider
+	// default" when it sends none). LLMRequestProvider and LLMRequestModel
+	// are the provider and model its requests name, the model after defaults;
+	// they go to the run record only, never into a cache key.
+	// RecordLLMSettings sets all three from the client.
 	LLMProvider        string
 	LLMModel           string
 	LLMBaseURL         string
 	LLMDisableThinking bool
+	LLMTemperature     string
+	LLMRequestProvider string
+	LLMRequestModel    string
 
 	// Deterministic Go findings
 	CoreFindings      []core.CheckResult

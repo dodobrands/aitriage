@@ -32,4 +32,8 @@ type Config struct {
 	BaseURL         string `yaml:"base_url"`         // for ollama and openai-compatible endpoints
 	Timeout         int    `yaml:"timeout"`          // seconds, default 600 (see NewClient)
 	DisableThinking bool   `yaml:"disable_thinking"` // Send thinking:{type:disabled} for reasoning models
+	// Temperature is the sampling temperature: empty for DefaultTemperature,
+	// a number from 0 to 2, or "default" to send none. Models that cannot take
+	// one get none (see temperature.go).
+	Temperature string `yaml:"temperature,omitempty"`
 }

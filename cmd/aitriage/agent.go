@@ -30,6 +30,7 @@ var (
 	agentProvider      string
 	agentModel         string
 	agentAPIKey        string
+	agentTemperature   llm.TemperatureFlag
 	agentNoChat        bool
 	agentOutput        string
 	agentProbe         string
@@ -81,6 +82,7 @@ func init() {
 	agentCmd.Flags().StringVar(&agentProvider, "provider", "", "LLM provider: gemini, anthropic, openai, ollama, groq (auto-detected from env)")
 	agentCmd.Flags().StringVar(&agentModel, "model", "", "LLM model name")
 	agentCmd.Flags().StringVar(&agentAPIKey, "api-key", "", "LLM API key (or set via env)")
+	agentCmd.Flags().Var(&agentTemperature, "temperature", llm.TemperatureFlagUsage)
 	agentCmd.Flags().BoolVar(&agentNoChat, "no-chat", false, "Skip interactive Q&A (for CI/CD)")
 	agentCmd.Flags().StringVar(&agentOutput, "output", "text", "Output format: text | json | md")
 	agentCmd.Flags().StringVar(&agentProbe, "probe", "", "Target host to probe for open DBs/Services (e.g. localhost, example.com)")
@@ -179,6 +181,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 	if agentAPIKey != "" {
 		llmCfg.APIKey = agentAPIKey
 	}
+	llmCfg.Temperature = agentTemperature.Or(llmCfg.Temperature)
 
 	// Create LLM client
 	client, err := llm.NewClient(llm.Config{
@@ -188,6 +191,7 @@ func runAgentNative(cmd *cobra.Command, args []string) error {
 		BaseURL:         llmCfg.BaseURL,
 		Timeout:         llmCfg.Timeout,
 		DisableThinking: llmCfg.DisableThinking,
+		Temperature:     llmCfg.Temperature,
 	})
 	if err != nil {
 		return auditIncomplete(err)
@@ -391,6 +395,7 @@ var agentEnvAllowlist = []string{
 	"AITRIAGE_LLM_MODEL",
 	"AITRIAGE_LLM_BASE_URL",
 	"AITRIAGE_LLM_DISABLE_THINKING",
+	"AITRIAGE_LLM_TEMPERATURE",
 	"AITRIAGE_LLM_TIMEOUT",
 	"AITRIAGE_BATCH_SIZE",
 	"AITRIAGE_CLASSIFY_RETRIES",
@@ -497,6 +502,7 @@ func agentContainerCommandArgs(hostRoot string) ([]string, error) {
 	}
 	appendStringFlag("--provider", agentProvider)
 	appendStringFlag("--model", agentModel)
+	appendStringFlag("--temperature", string(agentTemperature))
 	if agentNoChat {
 		args = append(args, "--no-chat")
 	}
