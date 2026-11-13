@@ -27,8 +27,9 @@ import "strings"
 //
 // v8: a verdict is bound to its finding by finding_index and finding_id; the
 // prompt no longer asks the model to echo the 32-digit fingerprint, which
-// models often garbled. The prompt text changed, so verdicts cached under v7
-// are not reused.
+// models often garbled. evidence.observed is the single line that holds the
+// mitigation, and the validator finds it up to 5 lines from evidence.line.
+// The prompt text changed, so verdicts cached under v7 are not reused.
 const SecureCoderPromptVersion = "securecoder-v8"
 
 // The report and fix-spec prompts were rewritten for the same ID change
@@ -201,7 +202,8 @@ authorize suppression:
 evidence.file must identify the exact same file as the finding. It may echo the
 finding's absolute in-project path (for example /workspace/project/app.py) or use
 a path relative to the scanned project. Never reference a file outside the
-scanned project. evidence.observed must be literal text from evidence.line.
+scanned project. evidence.observed must be literal text from evidence.line:
+the single line that holds the mitigation (the first line of a block).
 If you cannot provide one of those proofs, return Needs Manual Review instead.
 A hardcoded secret (credential, key, token) is never a False Positive, not
 even in a test file: a committed credential is exposed wherever it sits, and

@@ -189,7 +189,7 @@ func TestCodeMitigationRejectsAbsoluteOutsideProjectEvidence(t *testing.T) {
 	}
 	finding := EnrichedFinding{ID: "R-1", VulnID: "CS-AUTH-001", File: projectPath, Line: 1}
 	evidence := &DispositionEvidence{Basis: "code_mitigation", File: outsidePath, Line: 1, Observed: "verify_token()"}
-	if err := validateFalsePositiveEvidence(project, finding, evidence); err == nil || !strings.Contains(err.Error(), "escapes project root") {
+	if _, err := validateFalsePositiveEvidence(project, finding, evidence); err == nil || !strings.Contains(err.Error(), "escapes project root") {
 		t.Fatalf("outside evidence error = %v, want project-root rejection", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestCodeMitigationRejectsSymlinkEscape(t *testing.T) {
 	}
 	finding := EnrichedFinding{ID: "R-1", VulnID: "CS-AUTH-001", File: link, Line: 1}
 	evidence := &DispositionEvidence{Basis: "code_mitigation", File: link, Line: 1, Observed: "verify_token()"}
-	if err := validateFalsePositiveEvidence(project, finding, evidence); err == nil || !strings.Contains(err.Error(), "escapes project root") {
+	if _, err := validateFalsePositiveEvidence(project, finding, evidence); err == nil || !strings.Contains(err.Error(), "escapes project root") {
 		t.Fatalf("symlink evidence error = %v, want project-root rejection", err)
 	}
 }
@@ -287,5 +287,35 @@ func TestClassificationVerdictIsBoundByIndexAndFindingID(t *testing.T) {
 				t.Fatalf("audit = %+v, want one accepted request that still records each finding's fingerprint", audit)
 			}
 		})
+	}
+}
+
+// End to end: a model that quotes a guard together with its raise and cites
+// a line a little below it has the dismissal accepted on the first attempt,
+// and the disposition cites the guard's own line.
+func TestClassifyFindingsAcceptsAGuardCitedAFewLinesOff(t *testing.T) {
+	pinConcurrency(t)
+	t.Setenv("AITRIAGE_CACHE_DIR", "")
+	t.Setenv("AITRIAGE_VERDICT_CACHE_DIR", "")
+	project := lineDriftFixture(t)
+	findings := []EnrichedFinding{{ID: "PY-SSRF", VulnID: "CS-SSRF-001", Type: "core", Severity: "HIGH", File: "preview.py", Line: driftFlaggedLine, Message: "request to a URL from user input"}}
+	evidence := `{"basis":"code_mitigation","file":"preview.py","line":` + strconv.Itoa(driftGuardLine+2) + `,"observed":` + strconv.Quote(driftGuard+"\n"+driftGuardExit) + `}`
+	mock := &fakeLLM{t: t, classifyHandler: func(int, []EnrichedFinding) (string, error) {
+		return `{"finding_dispositions":[{"finding_index":0,"disposition":"False Positive","confidence":"high","rationale":"the host is checked on entry","evidence":` + evidence + `}]}`, nil
+	}}
+	var usage llm.Usage
+	_, disps, audit, _, err := ClassifyFindingsWithAudit(context.Background(), "", project, "", findings, mock, &usage, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := disps[0]
+	if d.Disposition != "False Positive" || d.DispositionSource != dispositionSourceLLM {
+		t.Fatalf("disposition = %+v, want the model's False Positive", d)
+	}
+	if d.Evidence == nil || d.Evidence.Line != driftGuardLine || d.Evidence.Observed != driftGuard {
+		t.Fatalf("evidence = %+v, want the guard on line %d", d.Evidence, driftGuardLine)
+	}
+	if mock.classifyCalls != 1 || len(audit) != 1 || len(audit[0].Rejected) != 0 {
+		t.Fatalf("classify calls = %d, audit = %+v; want the verdict accepted on the first attempt", mock.classifyCalls, audit)
 	}
 }

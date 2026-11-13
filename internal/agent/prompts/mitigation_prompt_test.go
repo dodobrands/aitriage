@@ -91,6 +91,14 @@ func TestClassificationPromptBindsVerdictsByFindingID(t *testing.T) {
 	}
 }
 
+// The validator checks one line of evidence.observed: the prompt asks for
+// that line.
+func TestClassificationPromptAsksForTheLineThatHoldsTheMitigation(t *testing.T) {
+	if want := "evidence.observed must be literal text from evidence.line: the single line that holds the mitigation (the first line of a block)"; !strings.Contains(classificationPromptText(), want) {
+		t.Errorf("classification prompt does not say %q", want)
+	}
+}
+
 // The evidence contract changed, so verdicts cached under the previous prompt
 // must not be served under this one.
 func TestPromptVersionWasBumpedForTheEvidenceContract(t *testing.T) {

@@ -147,7 +147,8 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 		// moved within its file is not re-classified.
 		if cached, cachedLine, ok := cache.lookup(verdictCacheKey(f)); ok {
 			cached.Evidence = relocateEvidence(cached.Evidence, cachedLine, f)
-			if cachedVerdictUsable(req, f, cached) {
+			if evidence, usable := cachedVerdictUsable(req, f, cached); usable {
+				cached.Evidence = evidence
 				cached.FindingIndex = i
 				cached.DispositionSource = dispositionSourceCache
 				cached.Fingerprint = fp
@@ -292,15 +293,18 @@ func classifyUnique(ctx context.Context, req classifyRequest, unique []EnrichedF
 
 // cachedVerdictUsable re-checks a cached verdict against the current rules. A
 // cached False Positive is only reused while its evidence still validates and
-// it still satisfies the run's validation policy.
-func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) bool {
+// it still satisfies the run's validation policy. It returns the evidence the
+// reused verdict records: for a False Positive, as validated now, on the line
+// its code is on today.
+func cachedVerdictUsable(req classifyRequest, f EnrichedFinding, cached FindingDisposition) (*DispositionEvidence, bool) {
 	if cached.Disposition != "False Positive" {
-		return true
+		return cached.Evidence, true
 	}
-	if err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence); err != nil {
-		return false
+	evidence, err := validateFalsePositiveEvidence(req.projectPath, f, cached.Evidence)
+	if err != nil || violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence) {
+		return nil, false
 	}
-	return !violatesCriticalConfidencePolicy(req.policy, f, cached.Confidence)
+	return evidence, true
 }
 
 func triageFailedRationale(reason string) string {
