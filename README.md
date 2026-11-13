@@ -440,9 +440,19 @@ narrow what Trivy reports; see the [configuration example](.aitriage.yaml.exampl
 
 ### Hardcoded secrets
 
-A hardcoded secret is never dismissed automatically: a person decides. Reports that cannot be
-a live secret are kept out of that queue:
+A hardcoded secret is never dismissed automatically: a person decides. Two kinds of reports
+are kept out of that queue or ranked lower, because they are not live secrets:
 
+- In a Compose file, a password or secret whose value is a default or easily guessed one is
+  reported as `compose_default_credential` (MEDIUM) instead of `compose_hardcoded_secret`
+  (CRITICAL). That is a value shorter than eight characters, a default account name or a
+  documented default of a common image (`postgres`, `minioadmin`), a placeholder
+  (`changeme`, `your-password-here`), a sequence (`12345678`), the name of a service, image,
+  user or database in the same file, or one of those with digits or a password word appended
+  (`admin123`, `appuser_pass`). It is still a hardcoded secret for a person to review. Values
+  Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`) and `*_FILE` paths to secret files are
+  not reported. `ignore.rules` entries, inline comments, baseline entries and dismissals written
+  for `compose_hardcoded_secret` still cover default credentials.
 - Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
   cannot be a credential: it is empty, it is a sentence such as an error message, or it is the
   name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`). Every other value, weak

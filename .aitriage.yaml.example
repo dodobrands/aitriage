@@ -29,7 +29,8 @@ ignore:
   # "bandit:B105", and "core:", "nfr:", "deploy:", "network:" for AITriage's own
   # checks (e.g. "deploy:nginx_missing_csp", "network:port-5432"). A Trivy
   # check matches in any spelling Trivy has used: "KSV012", "KSV-0012" and
-  # "AVD-KSV-0012" are one check.
+  # "AVD-KSV-0012" are one check. "deploy:compose_default_credential" silences
+  # default passwords in Compose files and keeps the other hardcoded secrets.
   rules: []   # e.g. ["ENTR-12", "gitleaks:generic-api-key"]
 
   # Paths every scanner skips (the built-in engine, Semgrep, Trivy, Gitleaks,

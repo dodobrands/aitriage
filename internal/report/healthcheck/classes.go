@@ -148,6 +148,9 @@ var classRules = map[string][]string{
 		"DOCKER-SECRET-ARG", "LLM-API-KEY-EXPOSED",
 		"B105", "B106", "B107",
 		"dockerfile_hardcoded_secret", "compose_hardcoded_secret", "makefile_hardcoded_secret",
+		// A default or weak value committed for a Compose password: MEDIUM,
+		// like ENTR-19, and still a committed credential a person reviews.
+		"compose_default_credential",
 	},
 	ClassCommandInjection: {
 		"FAST-SUBPROCESS", "PY-SUBPROCESS", "PY-OS-SHELL", "LLM-TOOL-SHELL-EXEC", "EXPRESS-CHILD-PROC", "GO-CMD-INJECTION", "JS-COMMAND-INJECTION",

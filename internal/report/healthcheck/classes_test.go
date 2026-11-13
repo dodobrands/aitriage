@@ -15,6 +15,7 @@ func TestClassifyRuleMapsEveryDetectorOfADefectToOneClass(t *testing.T) {
 		{RuleRef{Type: "external", Source: "bandit", RuleID: "B105"}, ClassHardcodedSecret},
 		{RuleRef{Type: "external", Source: "gitleaks", RuleID: "generic-api-key"}, ClassHardcodedSecret},
 		{RuleRef{Type: "external", Source: "semgrep", RuleID: "generic.secrets.security.detected-generic-secret.detected-generic-secret"}, ClassHardcodedSecret},
+		{RuleRef{Type: "deploy", Source: "aitriage", RuleID: "compose_default_credential"}, ClassHardcodedSecret},
 		{RuleRef{Type: "core", Source: "aitriage", RuleID: "FAST-SUBPROCESS"}, ClassCommandInjection},
 		{RuleRef{Type: "core", Source: "aitriage", RuleID: "PY-SUBPROCESS"}, ClassCommandInjection},
 		{RuleRef{Type: "external", Source: "bandit", RuleID: "B602"}, ClassCommandInjection},
