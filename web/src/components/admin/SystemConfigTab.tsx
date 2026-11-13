@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../hooks/useAdmin';
 
-// Models offered for the Web engine: the current default model of each
-// provider (internal/agent/llm/factory.go). A model saved earlier that is not
-// on this list is still shown, so the form always displays the stored value.
+// Models listed in the engine settings: the current default model of each
+// provider, kept in step by hand with internal/agent/llm/factory.go. The
+// setting is display only (the engine and chat read .aitriage.yaml and the
+// AITRIAGE_LLM_* variables); a model saved earlier that is not on this list
+// is still shown, so the form always displays the stored value.
 const ENGINE_MODELS = [
   { value: 'gemini-3.5-flash-lite', label: 'admin.gemini35FlashLite' },
   { value: 'claude-sonnet-5-5', label: 'admin.claudeSonnet55' },
-  { value: 'gpt-6-luna', label: 'admin.gpt6Luna' },
+  { value: 'gpt-4o', label: 'admin.gpt4o' },
 ];
 
 export const SystemConfigTab: React.FC = () => {
@@ -189,6 +191,7 @@ export const SystemConfigTab: React.FC = () => {
             <div className="p-4 bg-ai-accent/5 border border-ai-accent/10 text-[9px] text-ai-accent uppercase leading-relaxed font-mono relative">
               <div className="absolute top-0 left-0 w-full h-[1px] bg-ai-accent/20" />
               {t('admin.privacyGatewayNotice')}
+              <p className="mt-2">{t('admin.llmSettingsNotice')}</p>
             </div>
           </div>
         </div>
