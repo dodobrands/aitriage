@@ -34,6 +34,9 @@ type ScannerExecution struct {
 	Findings   int           `json:"findings"`
 	DurationMs int64         `json:"duration_ms"`
 	Error      string        `json:"error,omitempty"`
+	// PartialFiles lists the files a completed scanner analysed only partly,
+	// so findings in them may be missing (see PartialFile).
+	PartialFiles []PartialFile `json:"partial_files,omitempty"`
 }
 
 // versionArgs maps a scanner to the argument that prints its version.
@@ -45,7 +48,9 @@ var versionArgs = map[string][]string{
 }
 
 // ToolVersion returns a best-effort version string for a scanner binary. It
-// never fails the run; an empty string means "version unknown".
+// never fails the run; an empty string means "version unknown". The limit
+// allows for Semgrep, whose Python start alone takes about five seconds; it is
+// asked only when a run did not print its version with the results.
 //
 // Only stdout is read: the bundled scanners print their version there, while
 // stderr carries notices (Semgrep's "A new version of Semgrep is available")
@@ -55,7 +60,7 @@ func ToolVersion(ctx context.Context, name string) string {
 	if !ok {
 		args = []string{"--version"}
 	}
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	out, err := toolCommand(cctx, name, args...).Output()
 	if err != nil {

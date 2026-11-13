@@ -1202,6 +1202,9 @@ func writeHumanSummary(sb *strings.Builder, state *AgentState, actionable []acti
 		}
 		sb.WriteString("\n")
 		sb.WriteString(rawResultsNote(state) + "\n\n")
+		for _, note := range partialCoverageNotes(state.ScannerExecutions) {
+			sb.WriteString(note + "\n\n")
+		}
 	}
 
 	// ── Blocking Reasons ──────────────────────────────────────────────
