@@ -12,10 +12,11 @@ import (
 // Trivy has reported one check as KSV012, AVD-KSV-0012 and KSV-0012 in
 // different releases, and ignore.rules and inline directives compared ids as
 // written: an entry stopped matching when the scanner was upgraded.
-// Advisories and the ids of other sources still compare as written.
+// Advisories, other Trivy check families, ids Trivy never used and the ids of
+// other sources still compare as written.
 func TestTrivyCheckSpellingsMatchIgnoreRulesAndInlineDirectives(t *testing.T) {
 	root := writeFixture(t, map[string]string{
-		".aitriage.yaml": "ignore:\n  rules:\n    - trivy:DS002\n    - AVD-KSV-0017\n    - CVE-2024-0042\n",
+		".aitriage.yaml": "ignore:\n  rules:\n    - trivy:DS002\n    - AVD-KSV-0017\n    - CVE-2024-0042\n    - AWS001\n    - KSV12\n",
 		"k8s/pod.yaml": `apiVersion: v1
 kind: Pod
 spec:
@@ -36,6 +37,10 @@ spec:
 			misconfiguration("KSV017", "k8s/pod.yaml", 5),
 			misconfiguration("KSV012", "k8s/pod.yaml", 7),
 			misconfiguration("KSV-0014", "k8s/pod.yaml", 7),
+			// Neither tfsec's legacy AWS001 nor the short KSV12 is a
+			// spelling of these checks.
+			misconfiguration("AWS-0001", "main.tf", 3),
+			misconfiguration("KSV-0012", "k8s/deployment.yaml", 9),
 			{Source: "trivy", RuleID: "CVE-2024-0042", Package: "requests", File: "requirements.txt"},
 			{Source: "trivy", RuleID: "CVE-2024-42", Package: "requests", File: "requirements.txt"},
 			{Source: "semgrep", RuleID: "KSV-0017", File: filepath.Join(root, "k8s/pod.yaml"), Line: 5},
@@ -48,7 +53,7 @@ spec:
 	for _, f := range result.External {
 		kept = append(kept, f.Source+":"+f.RuleID)
 	}
-	if want := []string{"trivy:KSV-0014", "trivy:CVE-2024-42", "semgrep:KSV-0017"}; !reflect.DeepEqual(kept, want) {
+	if want := []string{"trivy:KSV-0014", "trivy:AWS-0001", "trivy:KSV-0012", "trivy:CVE-2024-42", "semgrep:KSV-0017"}; !reflect.DeepEqual(kept, want) {
 		t.Errorf("kept %v; want %v", kept, want)
 	}
 	if want := map[string]int{"trivy:DS002": 2, "AVD-KSV-0017": 1, "CVE-2024-0042": 1}; !reflect.DeepEqual(result.IgnoredByConfig, want) {

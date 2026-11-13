@@ -478,9 +478,11 @@ are kept out of that queue or ranked lower, because they are not live secrets:
 | An inline comment | The rules it names, at one place in the source: built-in, external-scanner and deploy findings |
 | `aitriage ignore add` | Findings a person reviewed and dismissed as a false positive, accepted risk or won't-fix, recorded in `.aitriage-suppressions.json` |
 
-A Trivy check matches in every spelling Trivy releases have used, in `ignore.rules` and in
-inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012` (with or without `trivy:`) name one
-check. Advisory IDs (`CVE-…`, `GHSA-…`) and the IDs of other scanners compare as written.
+A Trivy Kubernetes (`KSV`) or Dockerfile (`DS`) check matches in each spelling Trivy releases
+have used, in `ignore.rules` and in inline comments: `KSV012`, `KSV-0012` and `AVD-KSV-0012`
+(with or without `trivy:`) name one check, as do `DS002`, `DS-0002` and `AVD-DS-0002`. Every
+other ID compares as written: other Trivy checks (tfsec's `AWS001` is not `AWS-0001`), short
+forms Trivy never reported (`KSV12`), advisories (`CVE-…`, `GHSA-…`) and other scanners' IDs.
 
 Inline directives name the rules they silence. IDs compare whole, text after the list (such
 as a reason) is never read as an ID, and `all` silences every rule only as an ID of its own:

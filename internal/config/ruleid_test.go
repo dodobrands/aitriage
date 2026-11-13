@@ -4,14 +4,24 @@ import "testing"
 
 func TestNormalizeTrivyCheckID(t *testing.T) {
 	cases := map[string]string{
-		"KSV012":              "KSV-0012",
-		"KSV-0012":            "KSV-0012",
-		"AVD-KSV-0012":        "KSV-0012",
-		"avd-ksv-0012":        "KSV-0012",
-		" ksv12 ":             "KSV-0012",
-		"DS002":               "DS-0002",
-		"AVD-AWS-0107":        "AWS-0107",
-		"AWS-0107":            "AWS-0107",
+		// The spellings Trivy has used for its KSV and DS checks.
+		"KSV012":       "KSV-0012",
+		"KSV-0012":     "KSV-0012",
+		"AVD-KSV-0012": "KSV-0012",
+		"avd-ksv-0012": "KSV-0012",
+		" ksv012 ":     "KSV-0012",
+		"KSV110":       "KSV-0110",
+		"DS002":        "DS-0002",
+		"DS-0026":      "DS-0026",
+		"AVD-DS-0002":  "DS-0002",
+		// Anything else comes back as written, upper-cased.
+		"KSV12":               "KSV12",
+		"KSV0012":             "KSV0012",
+		"KSV-012":             "KSV-012",
+		"DS26":                "DS26",
+		"AWS001":              "AWS001",
+		"AWS-0001":            "AWS-0001",
+		"AVD-AWS-0107":        "AVD-AWS-0107",
 		"CVE-2024-1234":       "CVE-2024-1234",
 		"ghsa-abcd-efgh-ijkl": "GHSA-ABCD-EFGH-IJKL",
 		"generic-api-key":     "GENERIC-API-KEY",
@@ -28,13 +38,18 @@ func TestNormalizeTrivyCheckID(t *testing.T) {
 // one, so a scanner upgrade silently brought back what a project had
 // silenced.
 func TestRuleRefMatchesEverySpellingOfATrivyCheck(t *testing.T) {
-	spellings := []string{"KSV012", "KSV-0012", "AVD-KSV-0012", "ksv-12"}
-	for _, entry := range spellings {
-		for _, prefix := range []string{"", "trivy:", "Trivy:"} {
-			ref := ParseRuleRef(prefix + entry)
-			for _, id := range spellings {
-				if !ref.Matches(id, "trivy") {
-					t.Errorf("%q does not match Trivy's %q", prefix+entry, id)
+	families := [][]string{
+		{"KSV012", "KSV-0012", "AVD-KSV-0012", "ksv012", "avd-ksv-0012"},
+		{"DS002", "DS-0002", "AVD-DS-0002"},
+	}
+	for _, spellings := range families {
+		for _, entry := range spellings {
+			for _, prefix := range []string{"", "trivy:", "Trivy:"} {
+				ref := ParseRuleRef(prefix + entry)
+				for _, id := range spellings {
+					if !ref.Matches(id, "trivy") {
+						t.Errorf("%q does not match Trivy's %q", prefix+entry, id)
+					}
 				}
 			}
 		}
@@ -48,8 +63,21 @@ func TestRuleRefMatchesEverySpellingOfATrivyCheck(t *testing.T) {
 	}{
 		// Different checks stay apart.
 		{"KSV012", "KSV-0120", []string{"trivy"}, false},
-		{"KSV012", "KCV-0012", []string{"trivy"}, false},
+		{"KSV012", "DS-0012", []string{"trivy"}, false},
 		{"DS002", "DS-0026", []string{"trivy"}, false},
+		// Only the spellings Trivy has used are read as one check: a short
+		// form is a word, not an id.
+		{"KSV12", "KSV-0012", []string{"trivy"}, false},
+		{"KSV12", "KSV012", []string{"trivy"}, false},
+		{"KSV0012", "KSV-0012", []string{"trivy"}, false},
+		{"DS26", "DS-0026", []string{"trivy"}, false},
+		{"trivy:DS26", "DS-0026", []string{"trivy"}, false},
+		// Other Trivy families compare as written: tfsec's legacy AWS001 is
+		// not Trivy's AWS-0001.
+		{"AWS001", "AWS-0001", []string{"trivy"}, false},
+		{"trivy:AWS001", "AWS-0001", []string{"trivy"}, false},
+		{"AVD-AWS-0001", "AWS-0001", []string{"trivy"}, false},
+		{"aws-0001", "AWS-0001", []string{"trivy"}, true},
 		// Advisories compare as written: zero padding means a different id.
 		{"trivy:CVE-2024-0042", "CVE-2024-0042", []string{"trivy"}, true},
 		{"trivy:CVE-2024-0042", "CVE-2024-42", []string{"trivy"}, false},
