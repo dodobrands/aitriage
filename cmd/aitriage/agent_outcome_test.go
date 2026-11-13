@@ -209,6 +209,51 @@ func TestAgentIaCFindingsFlag(t *testing.T) {
 	}
 }
 
+// --quality-findings accepts report or block, overrides the configuration
+// (with --health-profile too) and reaches the agent inside the container.
+func TestAgentQualityFindingsFlag(t *testing.T) {
+	previous, previousProfile := agentQualityFindings, agentHealthProfile
+	t.Cleanup(func() { agentQualityFindings, agentHealthProfile = previous, previousProfile })
+
+	agentQualityFindings = "gate"
+	if err := validateAgentFlags(); err == nil || !strings.Contains(err.Error(), "--quality-findings") {
+		t.Fatalf("validateAgentFlags() = %v, want the bad mode rejected", err)
+	}
+
+	agentQualityFindings = "block"
+	if err := validateAgentFlags(); err != nil {
+		t.Fatalf("validateAgentFlags() = %v, want block accepted", err)
+	}
+	cmd := newAgentPolicyTestCommand()
+	cmd.Flags().String("quality-findings", "", "")
+	agentHealthProfile = healthcheck.PolicyStrict
+	for name, value := range map[string]string{"quality-findings": "block", "health-profile": healthcheck.PolicyStrict} {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reported := &config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: "report"}}
+	if policy := agentPolicyFromFlags(cmd, reported); policy.QualityFindings != healthcheck.QualityFindingsBlock {
+		t.Fatalf("policy quality_findings = %q, want the flag to override the configuration", policy.QualityFindings)
+	}
+	agentHealthProfile = previousProfile
+	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), &config.Config{}); policy.QualityFindings != healthcheck.QualityFindingsReport {
+		t.Fatalf("default quality_findings = %q, want report", policy.QualityFindings)
+	}
+	blocked := &config.Config{HealthCheck: config.HealthCheckPolicyConfig{QualityFindings: "block"}}
+	if policy := agentPolicyFromFlags(newAgentPolicyTestCommand(), blocked); policy.QualityFindings != healthcheck.QualityFindingsBlock {
+		t.Fatalf("configured quality_findings = %q, want block", policy.QualityFindings)
+	}
+
+	args, err := agentContainerCommandArgs(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(args, " "); !strings.Contains(joined, "--quality-findings block") {
+		t.Fatalf("inner agent args do not forward --quality-findings:\n%s", joined)
+	}
+}
+
 func TestAgentPolicyAppliesTriagePolicyFlags(t *testing.T) {
 	cmd := newAgentPolicyTestCommand()
 	cmd.Flags().String("confirmed-min-severity", "", "")

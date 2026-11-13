@@ -209,10 +209,7 @@ func Scan(ctx context.Context, projectPath string, opts ScanOptions) (ScanReport
 		results[i].AuditStatus = status
 	}
 
-	healthResult := healthcheck.ApplyPolicy(
-		healthcheck.Evaluate(healthcheck.FromCoreResults(results)),
-		healthpolicy.FromConfig(ws.Config),
-	)
+	healthResult := healthcheck.Assess(healthcheck.FromCoreResults(results), healthpolicy.FromConfig(ws.Config))
 	hasCritical := healthResult.HasCriticalFailures
 	securityScore := healthResult.Score
 	securityGrade := healthResult.Grade

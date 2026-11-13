@@ -59,10 +59,20 @@ type Finding struct {
 	// policy, because the verdict it would have produced is unknown.
 	TriageFailed bool
 	// ReportOnly marks a finding the policy reports without scoring or
-	// gating it (an IaC misconfiguration under iac_findings: report). It is
-	// counted in Breakdown.ReportOnlyFindings and nowhere else; whatever its
-	// triage outcome, it cannot change the verdict.
+	// gating it (an IaC misconfiguration under iac_findings: report, a
+	// code-quality finding under quality_findings: report). It is counted in
+	// Breakdown.ReportOnlyFindings and nowhere else; whatever its triage
+	// outcome, it cannot change the verdict. Assess sets it from Origins and
+	// the policy.
 	ReportOnly bool
+	// ReportOnlyKind names the setting that made the finding report-only:
+	// ReportOnlyIaC or ReportOnlyQuality. Breakdown.ReportOnlyByKind counts
+	// report-only findings under it.
+	ReportOnlyKind string
+	// Origins describes the scanner reports behind the finding, as far as
+	// the report-only rule needs them (see ReportOnlyKind). Empty means the
+	// finding stands for one report: its Source and Class.
+	Origins []Origin
 }
 
 // Positive represents a verified good security practice (e.g. a PRESENT core check).
@@ -117,8 +127,12 @@ type Breakdown struct {
 
 	// ReportOnlyFindings counts active findings the policy reports without
 	// scoring or gating them (IaC misconfigurations under iac_findings:
-	// report). They are not part of ActiveFindings or any other count.
+	// report, code-quality findings under quality_findings: report). They are
+	// not part of ActiveFindings or any other count.
 	ReportOnlyFindings int `json:"report_only_findings,omitempty"`
+	// ReportOnlyByKind splits ReportOnlyFindings by the setting that reports
+	// them: ReportOnlyIaC ("iac") and ReportOnlyQuality ("quality").
+	ReportOnlyByKind map[string]int `json:"report_only_by_kind,omitempty"`
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -368,6 +382,12 @@ func Evaluate(in Input) Result {
 		}
 		if f.ReportOnly {
 			bd.ReportOnlyFindings++
+			if f.ReportOnlyKind != "" {
+				if bd.ReportOnlyByKind == nil {
+					bd.ReportOnlyByKind = map[string]int{}
+				}
+				bd.ReportOnlyByKind[f.ReportOnlyKind]++
+			}
 			continue
 		}
 		sev := strings.ToUpper(strings.TrimSpace(f.Severity))

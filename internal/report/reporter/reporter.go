@@ -55,6 +55,11 @@ func PrintTerminal(report scanner.ScanReport) {
 	fmt.Printf("       %d active (%d confirmed · %d unreviewed) · %d ignored (FP) · %d deduped · penalty %d · bonus %d\n",
 		hb.ActiveFindings, hb.ConfirmedFindings, hb.NeedsReviewFindings,
 		hb.IgnoredFindings, hb.DedupedFindings, hb.Penalty, hb.Bonus)
+	// The built-in engine's report-only findings are code-quality findings:
+	// listed below, but not part of the counts above.
+	if n := hb.ReportOnlyFindings; n > 0 {
+		fmt.Printf("       %d code-quality finding(s) below are reported, not scored and not gating (quality_findings: report)\n", n)
+	}
 	fmt.Println("----------------------------------------")
 
 	for _, r := range report.Results {

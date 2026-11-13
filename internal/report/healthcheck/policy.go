@@ -47,6 +47,20 @@ const (
 	IaCFindingsBlock = "block"
 )
 
+// Values of quality_findings: whether findings about code quality,
+// maintainability or hygiene with no direct security impact gate. They come
+// from built-in rules with metadata.subcategory quality and from the checks
+// of other scanners listed in qualityChecks.
+const (
+	// QualityFindingsReport triages and reports them, but keeps them out of
+	// the score and the gate verdict. The default: a security score should
+	// not move with the size of a file or a swallowed exception.
+	QualityFindingsReport = "report"
+	// QualityFindingsBlock scores and gates them like any other finding,
+	// as every release before quality_findings did.
+	QualityFindingsBlock = "block"
+)
+
 // Policy defines the security requirements used to decide whether a repository
 // may pass the security gate. Score remains informational; Verdict is the gate answer.
 type Policy struct {
@@ -68,9 +82,14 @@ type Policy struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
 	// applies to findings every report of which is an IaC misconfiguration;
-	// a finding another detector also reported gates as before. The caller
-	// marks such findings Finding.ReportOnly.
+	// a finding another detector also reported gates as before. Assess marks
+	// such findings Finding.ReportOnly.
 	IaCFindings string `json:"iac_findings,omitempty"`
+	// QualityFindings is QualityFindingsReport (the default) or
+	// QualityFindingsBlock. It applies to findings every report of which is
+	// a code-quality finding (see ReportOnlyKind); a finding a security rule
+	// also reported gates as before.
+	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
 // Verdict is the CI/CD-ready answer to "can this project pass its security policy?".
@@ -306,6 +325,7 @@ func normalizePolicy(policy Policy) Policy {
 	policy.BlockClasses = normalizeList(policy.BlockClasses)
 	policy.ConfirmedMinSeverity = NormalizeConfirmedMinSeverity(policy.ConfirmedMinSeverity)
 	policy.IaCFindings = NormalizeIaCFindings(policy.IaCFindings)
+	policy.QualityFindings = NormalizeQualityFindings(policy.QualityFindings)
 	return policy
 }
 
@@ -329,6 +349,32 @@ func ParseIaCFindings(value string) (string, bool) {
 		return IaCFindingsReport, true
 	case IaCFindingsBlock:
 		return IaCFindingsBlock, true
+	default:
+		return "", false
+	}
+}
+
+// NormalizeQualityFindings returns the canonical quality_findings mode.
+// Empty is the default, report. An unrecognised value becomes block: a typo
+// must fall back to the strict reading, not the loose one.
+func NormalizeQualityFindings(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return QualityFindingsReport
+	}
+	if mode, ok := ParseQualityFindings(value); ok {
+		return mode
+	}
+	return QualityFindingsBlock
+}
+
+// ParseQualityFindings reports whether value names a supported
+// quality_findings mode.
+func ParseQualityFindings(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case QualityFindingsReport:
+		return QualityFindingsReport, true
+	case QualityFindingsBlock:
+		return QualityFindingsBlock, true
 	default:
 		return "", false
 	}

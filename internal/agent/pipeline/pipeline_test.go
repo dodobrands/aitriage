@@ -104,3 +104,23 @@ func TestRunStateNilGuards(t *testing.T) {
 		t.Fatal("expected error for nil client")
 	}
 }
+
+// The pre-triage score the agent prints covers every scanner under the run's
+// policy: a --quality-findings block flag counts a code-quality finding that
+// the project configuration only reports.
+func TestPreTriageScoreFollowsTheRunPolicy(t *testing.T) {
+	var rich llm.RichScanResult
+	rich.Report.Results = []core.CheckResult{
+		{ID: "ENTR-12", Name: "God File Detected", Status: core.Absent, Severity: "LOW", File: "app/views.py", Line: 1, Subcategory: healthcheck.SubcategoryQuality},
+	}
+	rich.Report.HealthCheck.Policy = healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsReport}
+
+	reported := scoreUnderPolicy(rich, healthcheck.DefaultPolicy())
+	if reported.Report.SecurityScore != 100 || reported.Report.HealthCheck.Breakdown.ReportOnlyByKind[healthcheck.ReportOnlyQuality] != 1 {
+		t.Fatalf("score %d, breakdown %+v; want the quality finding reported only", reported.Report.SecurityScore, reported.Report.HealthCheck.Breakdown)
+	}
+	blocked := scoreUnderPolicy(rich, healthcheck.Policy{QualityFindings: healthcheck.QualityFindingsBlock})
+	if blocked.Report.SecurityScore >= 100 || blocked.Report.HealthCheck.Policy.QualityFindings != healthcheck.QualityFindingsBlock {
+		t.Fatalf("score %d, policy %+v; want the run's block policy to count the finding", blocked.Report.SecurityScore, blocked.Report.HealthCheck.Policy)
+	}
+}

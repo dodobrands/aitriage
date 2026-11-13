@@ -100,7 +100,17 @@ type ScanSummary struct {
 // result. It is exposed so callers (CLI, MCP) can inspect raw findings and
 // build state without duplicating orchestrator wiring.
 func Scan(ctx context.Context, opts Options) llm.RichScanResult {
-	return orchestrator.RunAllScanners(ctx, scannerOptions(opts))
+	return scoreUnderPolicy(orchestrator.RunAllScanners(ctx, scannerOptions(opts)), opts.Policy)
+}
+
+// scoreUnderPolicy scores a scan again under the run's policy. The scanners
+// scored it under the project configuration alone; the pre-triage score must
+// count the findings the post-triage gate counts, iac_findings and
+// quality_findings set by flags included.
+func scoreUnderPolicy(rich llm.RichScanResult, policy healthcheck.Policy) llm.RichScanResult {
+	rich.Report.HealthCheck.Policy = policy
+	orchestrator.RecomputeHealthCheck(&rich)
+	return rich
 }
 
 // scannerOptions maps the pipeline options onto the scanner orchestrator.
