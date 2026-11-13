@@ -489,7 +489,10 @@ func TestRefusedTemperatureIsDroppedForTheRun(t *testing.T) {
 	}{
 		{"openai error", http.StatusBadRequest, `{"error":{"message":"Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}`},
 		{"unwrapped error", http.StatusBadRequest, `{"object":"error","message":"temperature is not supported for this model","type":"BadRequestError","param":null,"code":400}`},
+		{"parameter check", http.StatusBadRequest, "{\"error\":{\"code\":\"invalid_parameter\",\"message\":\"Parameter `temperature` is invalid\"}}"},
 		{"validation error", http.StatusUnprocessableEntity, `{"detail":[{"type":"extra_forbidden","loc":["body","temperature"],"msg":"Extra inputs are not permitted"}]}`},
+		{"error string", http.StatusUnprocessableEntity, "{\"error\":\"Input validation error: `temperature` must be strictly positive\",\"error_type\":\"validation\"}"},
+		{"relayed provider error", http.StatusBadRequest, `{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\"error\":{\"message\":\"Unsupported parameter: 'temperature' is not supported with this model.\",\"param\":\"temperature\"}}","provider_name":"Upstream"}}}`},
 		{"plain text", http.StatusBadRequest, `Unsupported parameter: temperature`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -523,34 +526,76 @@ func TestRefusedTemperatureIsDroppedForTheRun(t *testing.T) {
 }
 
 func TestAnthropicRefusedTemperatureIsDropped(t *testing.T) {
-	f := refusingTemperature(t, http.StatusBadRequest, `{"type":"error","error":{"type":"invalid_request_error","message":"temperature: not supported for this model"}}`, anthropicReply)
-	var log bytes.Buffer
-	c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
-	for range 2 {
-		if err := chatOnce(t, c); err != nil {
-			t.Fatal(err)
+	for _, refusal := range []string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"temperature: not supported for this model"}}`,
+		// A schema validator's answer to a field the endpoint does not take.
+		`{"type":"error","error":{"type":"invalid_request_error","message":"temperature: Extra inputs are not permitted"}}`,
+	} {
+		f := refusingTemperature(t, http.StatusBadRequest, refusal, anthropicReply)
+		var log bytes.Buffer
+		c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
+		for range 2 {
+			if err := chatOnce(t, c); err != nil {
+				t.Fatalf("%s: %v", refusal, err)
+			}
 		}
-	}
-	if got := f.seen(); !sameTemperatures(got, "0", absent, absent) {
-		t.Fatalf("requests sent %v, want [0 %s %s]", got, absent, absent)
-	}
-	if lines := strings.Count(log.String(), "\n"); lines != 1 {
-		t.Fatalf("log = %q, want one line", log.String())
+		if got := f.seen(); !sameTemperatures(got, "0", absent, absent) {
+			t.Fatalf("%s: requests sent %v, want [0 %s %s]", refusal, got, absent, absent)
+		}
+		if lines := strings.Count(log.String(), "\n"); lines != 1 {
+			t.Fatalf("%s: log = %q, want one line", refusal, log.String())
+		}
 	}
 }
 
-// A 400 for another reason is the caller's error: the request is not repeated
-// and the temperature stays.
+// A 400 or 422 for another reason is the caller's error: the request is not
+// repeated and the temperature stays, also when the error repeats the request
+// it rejects, temperature included, or mentions the temperature without
+// refusing it.
 func TestUnrelatedBadRequestKeepsTheTemperature(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"context length", http.StatusBadRequest, `{"error":{"message":"This model's maximum context length is exceeded.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`},
+		{"request echoed", http.StatusBadRequest, `{"error":{"message":"Invalid value for 'messages[1].role': 'tool' is not one of 'system', 'assistant', 'user'.","type":"invalid_request_error","param":"messages[1].role","code":"invalid_value"},"request":{"model":"custom-model","temperature":0}}`},
+		{"validation input echoed", http.StatusUnprocessableEntity, `{"detail":[{"type":"missing","loc":["body","max_tokens"],"msg":"Field required","input":{"model":"custom-model","messages":[{"role":"user","content":"finding"}],"temperature":0}}]}`},
+		{"temperature mentioned", http.StatusBadRequest, `{"error":{"message":"Request failed. Parameters received: temperature=0, model=custom-model.","type":"invalid_request_error","param":null}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeProvider(t, func(w http.ResponseWriter, _ map[string]json.RawMessage) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			})
+			var log bytes.Buffer
+			c := openAICompatible(t, Config{Provider: "openai", Model: "custom-model"}, f, &log)
+			if err := chatOnce(t, c); err == nil {
+				t.Fatal("the error must reach the caller")
+			}
+			if got := f.seen(); !sameTemperatures(got, "0") {
+				t.Fatalf("requests sent %v, want one with the temperature", got)
+			}
+			if got := EffectiveTemperature(c); got != "0" || log.Len() != 0 {
+				t.Fatalf("EffectiveTemperature = %q, log %q; want the temperature kept and nothing printed", got, log.String())
+			}
+		})
+	}
+}
+
+// The same holds for Anthropic: an error that only repeats the request's
+// temperature does not refuse it.
+func TestAnthropicUnrelatedBadRequestKeepsTheTemperature(t *testing.T) {
 	f := newFakeProvider(t, func(w http.ResponseWriter, _ map[string]json.RawMessage) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"This model's maximum context length is exceeded.","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}`)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content: Invalid value"},"request":{"model":"claude-sonnet-4-5","max_tokens":4096,"temperature":0}}`)
 	})
 	var log bytes.Buffer
-	c := openAICompatible(t, Config{Provider: "openai", Model: "custom-model"}, f, &log)
+	c := claude(Config{Model: "claude-sonnet-4-5"}, f, &log)
 	if err := chatOnce(t, c); err == nil {
-		t.Fatal("a 400 must reach the caller")
+		t.Fatal("the error must reach the caller")
 	}
 	if got := f.seen(); !sameTemperatures(got, "0") {
 		t.Fatalf("requests sent %v, want one with the temperature", got)
