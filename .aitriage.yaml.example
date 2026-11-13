@@ -74,7 +74,8 @@ health_check:
   #     report and triage-findings.json, but not scored and not gating;
   #   block: scored and gating like any other finding.
   # A finding that another check also reported (DOCKER-NO-USER and Trivy's
-  # DS-0002) gates either way. A later minor release makes block the default.
+  # DS-0002) gates either way. The next major release makes block the default;
+  # set the key to keep report.
   iac_findings: report
 
   # Fail if the Health Check score is below this threshold (0 disables score gating)

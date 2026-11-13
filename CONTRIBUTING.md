@@ -171,6 +171,140 @@ The jobs start only for the repository owner's GitHub account
 (`github.actor_id`); for other contributors they are skipped, so run the checks
 above locally before opening a pull request.
 
+## Compatibility and versioning
+
+AITriage follows [Semantic Versioning](https://semver.org/). A pipeline either
+pins a release (`v1.14.0`) or follows a major version: the Action as `@v1` and
+the `:v1` scanner image, which move to every new stable `v1` release. Following
+`v1` must be safe: minor and patch releases add and fix, they never break a
+pipeline that worked.
+
+### The public contract
+
+- CLI commands, their arguments and flags.
+- Exit codes and what each one means ([README](README.md#exit-codes)).
+- Configuration: `.aitriage.yaml` keys and what each one means, the documented
+  `AITRIAGE_*` environment variables, and the files AITriage reads from a
+  repository (`.aitriage-suppressions.json`, `.aitriage-baseline.json`,
+  `.aitriageignore`, inline `aitriage-ignore` directives).
+- The GitHub Action's inputs and outputs (`action.yml`).
+- Machine-readable output: SARIF, `aitriage scan --format json`,
+  `triage-findings.json` and `manifest.json`, including what every field means
+  and the form of identifiers and paths.
+- The default gate: which findings fail the gate when the configuration does
+  not say.
+
+A change is breaking when a pipeline that changed nothing fails, passes or
+reads a different value because of it: a command, flag, key, input, output or
+field removed or renamed; a field whose type or meaning changes; an exit code
+that means something else; a default that makes the gate decide differently
+for a configuration that does not set it. Adding a command, flag, key, input,
+output or field is not breaking, so consumers of the JSON output must ignore
+fields they do not know.
+
+Outside the contract: the wording and layout of human-readable output
+(terminal, Markdown and HTML reports, log lines), the caches under
+`aitriage-reports/cache/`, and the Go packages under `internal/`. What a scan
+finds and how triage judges it follows its own rule, below.
+
+### Releases and major tags
+
+- A breaking change ships only in a major release (`v2.0.0`).
+- A minor release adds features and may change findings and verdicts (see
+  [Rules, severities and verdicts](#rules-severities-and-verdicts)). A patch
+  release fixes bugs.
+- The floating `v1` git tag and the `:v1` image move only within their major.
+  [`promote-major.yml`](.github/workflows/promote-major.yml) moves both
+  together to each stable `v1.x.y` once it is published, never to a
+  pre-release and never back to an older release. `v2.0.0` gets its own `v2`
+  tag and image; `v1` stays on the last `v1` release.
+
+### Deprecations and default changes
+
+Before a flag, key, input, output or field is removed, and before a default
+changes, at least one minor release must warn at runtime: on stderr, and in
+the summary of `aitriage agent`, each time a run uses the deprecated item or
+relies on the default that will change. The warning names the replacement, or
+the explicit setting that keeps today's behaviour, and the release that makes
+the change. A change of the gate default is breaking, so that release is the
+next major one.
+
+For example, `iac_findings` defaults to `report` in `v1`. Making `block` the
+default changes the gate for every configuration that does not set the key, so
+it ships in a major release, after `v1` minor releases have warned the runs
+that rely on the default.
+
+### The `triage-findings.json` schema version
+
+`schema_version` increments on any incompatible change to the file: a field
+removed or renamed, or a field whose type or meaning changes, such as the form
+of an identifier, how paths are written or what one entry stands for. Adding a
+field does not increment it. Consumers must reject a version they do not
+understand. An increment is a breaking change, so it ships in a major release.
+
+### Rules, severities and verdicts
+
+The contract covers how the gate decides, not which findings exist. A minor
+release may add, retune or retire rules, change severities, update the bundled
+scanners and change how findings are triaged. That changes what a run reports,
+how findings are classified and, under a gate, whether a pipeline passes. The
+release notes list every such change: rules added, retired or retuned,
+severity changes, scanner updates, and every change that can move verdicts.
+
+### The verdict cache after an upgrade
+
+The verdict cache stores each verdict under a namespace: a hash of the cache
+schema version, the AITriage version, the prompt version, a digest of the
+embedded rules, the provider, model and base URL, the thinking setting, the
+output language and the gate policy (`internal/agent/graph/cache.go`). The
+AITriage version is the `AITRIAGE_VERSION` the scanner image is built with.
+Every run inside the image (the default container runtime of `aitriage agent`,
+the Web UI and the AI IDE connectors, and the GitHub Action) therefore starts
+each release with an empty namespace: the first run after an upgrade triages
+every finding again at full LLM cost, and its verdicts can differ from the
+cached ones. A run with `--runtime native` has no `AITRIAGE_VERSION` unless
+its environment sets one; its namespace changes when the prompt version, the
+rules or the cache schema change. Release notes must say that the first run
+after the upgrade re-triages every finding.
+
+### Release checklist
+
+1. Check every change against the contract. A breaking change waits for a
+   major release; a deprecation or a default change needs its runtime warning
+   in an earlier minor release. An incompatible change to
+   `triage-findings.json` increments `schema_version`.
+2. Rule changes: scan a corpus with the last release and with the candidate
+   (`aitriage scan --format json`), compare the reports with
+   `go run ./scripts/rulediff <base-dir> <new-dir>` and check every lost
+   finding for a false negative.
+3. Changes that can move verdicts (the prompts, the validation of model
+   verdicts, batching or retries, the verdict cache) need a shadow run: triage
+   a sample of real repositories with LLM triage, once with the last release
+   and once with the candidate, with the same provider and model and an empty
+   `aitriage-reports/cache/`. Compare the two sets of `triage-findings.json`:
+   - `go run ./scripts/rulestats <dir>` on each set: TP, FP and NR per rule;
+   - `go run ./scripts/rulestats -compare <old-dir> <new-dir>`: findings whose
+     verdict flipped (TP→NR, FP→TP, ...) and findings present in one set only,
+     overall and per rule;
+   - `go run ./scripts/rulestats -reasons <dir>` on each set: why validation
+     rejected or downgraded model verdicts.
+
+   Explain or fix every flip away from a confirmed finding (TP→NR, TP→FP)
+   and every new dismissal (NR→FP) before the release, and put the totals in
+   the release notes. The reports print only rule ids and counts, so they can
+   be shared.
+4. Build the image from the release commit and run the publish gate of
+   [`docker-publish.yml`](.github/workflows/docker-publish.yml) on it before
+   pushing the tag: the scanner bundle checks, the process E2E tests against
+   the candidate image, and a Trivy image scan that finds no fixable HIGH or
+   CRITICAL vulnerability. Running the workflow by hand (`workflow_dispatch`)
+   on the branch that holds the release commit does all three; it also pushes
+   a `sha-` image tag (and `latest` from `main`), never `:v1`. A tag whose
+   image fails the gate leaves a release that is never published.
+5. The release notes list the contract changes (major releases only), the new
+   deprecation warnings, rule, severity and scanner changes, the shadow-run
+   totals, and that the first run after the upgrade re-triages every finding.
+
 ## Project Structure
 
 ```
@@ -189,7 +323,7 @@ rules/                 Embedded security rule catalog (see rules/README.md)
 web/                   React 19 + TypeScript + Vite frontend
 testdata/              Synthetic fixtures and third-party vulnerable apps (git submodules)
 examples/              Example GitHub Actions workflows
-scripts/               Release installers and their test scripts
+scripts/               Release installers and their test scripts; rulestats and rulediff (rule and triage quality reports)
 ```
 
 ## Reporting Issues
