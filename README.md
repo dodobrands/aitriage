@@ -464,9 +464,12 @@ are kept out of that queue or ranked lower, because they are not live secrets:
   the same file (`appuser_pass` next to `APP_USER: appuser`) or a placeholder written as a word of
   its own (`changeme`, `your-password-here`). A value is never ranked lower for being short, or
   for containing such a word inside a longer one. It is still a hardcoded secret for a person to
-  review. Values Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`) and `*_FILE` paths to
-  secret files are not reported. `ignore.rules` entries, inline comments, baseline entries and
-  dismissals written for `compose_hardcoded_secret` still cover default credentials.
+  review. Values Compose substitutes (`${DB_PASSWORD}`, `$DB_PASSWORD`), `*_FILE` paths to
+  secret files, and a `yes`/`no`, `true`/`false` or `1`/`0` under the MySQL and MariaDB images'
+  password switches (`MYSQL_RANDOM_ROOT_PASSWORD`, `MYSQL_ALLOW_EMPTY_PASSWORD`,
+  `MARIADB_RANDOM_ROOT_PASSWORD`, `MARIADB_ALLOW_EMPTY_ROOT_PASSWORD`) are not reported.
+  `ignore.rules` entries, inline comments, baseline entries and dismissals written for
+  `compose_hardcoded_secret` still cover default credentials.
 - Bandit's hardcoded-password reports (B105, B106, B107) are dropped when the string they quote
   cannot be a credential: it is empty, it is a sentence such as an error message, or it is the
   name of a token issued at run time (`csrf_token`, `X-XSRF-TOKEN`). Every other value, weak

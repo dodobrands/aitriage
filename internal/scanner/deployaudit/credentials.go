@@ -39,8 +39,9 @@ import (
 // Nor is a value weak for being short: a short random password is still a
 // credential. Every other literal value is reported as
 // compose_hardcoded_secret, CRITICAL, as before. Values the stack resolves
-// when it starts (${DB_PASSWORD}, $DB_PASSWORD) and paths of files that hold
-// the secret are not reported.
+// when it starts (${DB_PASSWORD}, $DB_PASSWORD), paths of files that hold the
+// secret and the yes/no password switches of the official database images are
+// not reported.
 
 // Issue ids of the Compose secret checks.
 const (
@@ -111,15 +112,32 @@ var placeholderWords = map[string]bool{
 // literal dollar sign has to be written "$$".
 var composeVariable = regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*$`)
 
+// passwordSwitches are the documented settings of the official MySQL and
+// MariaDB images that turn a password behaviour on or off. Their names hold
+// "PASSWORD", but a yes or no under them is no credential.
+var passwordSwitches = map[string]bool{
+	"MYSQL_RANDOM_ROOT_PASSWORD":        true,
+	"MYSQL_ALLOW_EMPTY_PASSWORD":        true,
+	"MARIADB_RANDOM_ROOT_PASSWORD":      true,
+	"MARIADB_ALLOW_EMPTY_ROOT_PASSWORD": true,
+}
+
+// switchValues are the values those images read as a switch.
+var switchValues = map[string]bool{"yes": true, "no": true, "true": true, "false": true, "1": true, "0": true}
+
 // composeLiteral reports whether the value of a password or secret key is a
-// literal the file commits. Empty values, interpolations and the path of a
-// file that holds the secret (POSTGRES_PASSWORD_FILE: /run/secrets/db, the
-// convention of the official database images) are not.
+// literal the file commits. Empty values, interpolations, the path of a file
+// that holds the secret (POSTGRES_PASSWORD_FILE: /run/secrets/db, the
+// convention of the official database images) and a yes or no under one of
+// those images' password switches (MYSQL_RANDOM_ROOT_PASSWORD: "1") are not.
+// Any other value under a switch is classified like every other value.
 func composeLiteral(key, value string) bool {
 	switch {
 	case value == "", strings.Contains(value, "${"), composeVariable.MatchString(value):
 		return false
 	case strings.HasSuffix(strings.ToLower(key), "_file") && strings.Contains(value, "/"):
+		return false
+	case passwordSwitches[strings.ToUpper(strings.TrimSpace(key))] && switchValues[strings.ToLower(strings.TrimSpace(value))]:
 		return false
 	}
 	return true

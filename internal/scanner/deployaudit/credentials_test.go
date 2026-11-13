@@ -236,10 +236,60 @@ func TestComposeLiteral(t *testing.T) {
 		// Without a path the image cannot read a file; keep reporting it.
 		{"DB_PASSWORD_FILE", "hunter22", true},
 		{"DB_PASSWORD", "/run/secrets/db_password", true},
+		// The password switches of the official MySQL and MariaDB images
+		// hold a yes or no, not a credential.
+		{"MYSQL_RANDOM_ROOT_PASSWORD", "1", false},
+		{"mysql_allow_empty_password", "yes", false},
+		{"MARIADB_RANDOM_ROOT_PASSWORD", "TRUE", false},
+		{"MARIADB_ALLOW_EMPTY_ROOT_PASSWORD", "0", false},
+		// Any other value under a switch, and a yes or no under any other
+		// key, is classified like every other value.
+		{"MYSQL_ALLOW_EMPTY_PASSWORD", "8f2Kq9vLx3TzR7mW4pYc", true},
+		{"MYSQL_RANDOM_ROOT_PASSWORD", "on", true},
+		{"MYSQL_PASSWORD", "1", true},
+		{"APP_MYSQL_RANDOM_ROOT_PASSWORD", "1", true},
 	}
 	for _, tc := range cases {
 		if got := composeLiteral(tc.key, tc.value); got != tc.want {
 			t.Errorf("composeLiteral(%q, %q) = %t; want %t", tc.key, tc.value, got, tc.want)
+		}
+	}
+}
+
+// MYSQL_RANDOM_ROOT_PASSWORD: '1', the documented way to let the image
+// generate a root password, was reported as a hardcoded secret. A yes or no
+// under the database images' password switches is not reported; a real value
+// under such a switch, and a '1' under any other key, still are.
+func TestComposePasswordSwitchesAreNotCredentials(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{"docker-compose.yml": `services:
+  orders-db:
+    image: mysql:8.4
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: '1'
+      MYSQL_ALLOW_EMPTY_PASSWORD: yes
+      MYSQL_PASSWORD: '1'
+  archive-db:
+    image: mariadb:11
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: "true"
+      MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 8f2Kq9vLx3TzR7mW4pYc
+`})
+	findings, err := AuditDeployFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]DeployFinding{}
+	for _, f := range findings {
+		key, _, _ := strings.Cut(f.Evidence, ":")
+		got[key] = f
+	}
+	if len(got) != 2 || len(findings) != 2 {
+		t.Fatalf("findings = %+v; want MYSQL_PASSWORD and MARIADB_ALLOW_EMPTY_ROOT_PASSWORD only", findings)
+	}
+	for _, key := range []string{"MYSQL_PASSWORD", "MARIADB_ALLOW_EMPTY_ROOT_PASSWORD"} {
+		if f := got[key]; f.Issue != IssueComposeHardcodedSecret || f.Severity != "CRITICAL" {
+			t.Errorf("%s = %s %s; want a CRITICAL %s", key, f.Issue, f.Severity, IssueComposeHardcodedSecret)
 		}
 	}
 }
