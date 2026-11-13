@@ -253,6 +253,61 @@ func TestSwallowedExceptionsGateUnderQualityReport(t *testing.T) {
 	}
 }
 
+// block_classes matches a Trivy Kubernetes or Dockerfile check under every
+// spelling Trivy has used for it, on both sides, so a scanner upgrade that
+// respells a check does not relax the gate. Every other id compares as
+// written, as in ignore.rules.
+func TestBlockClassesMatchEverySpellingOfATrivyCheck(t *testing.T) {
+	finding := func(source, rule string) Finding {
+		return Finding{Source: source, Class: rule, Severity: "MEDIUM", File: "deploy/app.yaml", Line: 8, Identity: source + rule}
+	}
+	cases := []struct {
+		entry   string
+		finding Finding
+		want    int
+	}{
+		{"KSV012", finding("trivy", "KSV-0012"), 1},
+		{"AVD-KSV-0012", finding("trivy", "KSV-0012"), 1},
+		{"avd-ksv-0012", finding("trivy", "KSV-0012"), 1},
+		{"KSV-0012", finding("trivy", "KSV012"), 1},
+		{"KSV-0012", finding("trivy", "AVD-KSV-0012"), 1},
+		{"KSV-0012", finding("trivy", "KSV-0012"), 1},
+		{"DS002", finding("trivy", "DS-0002"), 1},
+		// Different checks stay apart, and so does a spelling Trivy never used.
+		{"KSV-0120", finding("trivy", "KSV-0012"), 0},
+		{"KCV-0012", finding("trivy", "KSV-0012"), 0},
+		{"KSV12", finding("trivy", "KSV-0012"), 0},
+		// Other Trivy check families compare as written.
+		{"AWS001", finding("trivy", "AWS-0001"), 0},
+		// Advisories compare as written: zero padding means another id.
+		{"CVE-2024-42", finding("trivy", "CVE-2024-0042"), 0},
+		{"cve-2024-0042", finding("trivy", "CVE-2024-0042"), 1},
+		// Other scanners compare as written, even with check-shaped ids.
+		{"B-0105", finding("bandit", "B105"), 0},
+		{"ENTR-018", finding("core", "ENTR-18"), 0},
+		{"KSV012", finding("semgrep", "KSV-0012"), 0},
+	}
+	for _, tc := range cases {
+		res := Assess(Input{Findings: []Finding{tc.finding}}, Policy{BlockClasses: []string{tc.entry}})
+		got := 0
+		for _, reason := range res.Verdict.BlockingReasons {
+			if reason.Code == "blocked_class" {
+				got = reason.Count
+			}
+		}
+		if got != tc.want {
+			t.Errorf("block_classes [%s] against %s %s: blocked count %d, want %d", tc.entry, tc.finding.Source, tc.finding.Class, got, tc.want)
+		}
+	}
+
+	// Two reports of one check in two spellings are two findings, each
+	// counted once.
+	twice := Input{Findings: []Finding{finding("trivy", "KSV012"), finding("trivy", "AVD-KSV-0012")}}
+	if bd := Evaluate(twice).Breakdown; blockedClassCount(bd, "ksv-0012") != 2 || blockedClassCount(bd, "ksv012") != 2 {
+		t.Errorf("blocked counts %d / %d, want 2 under either spelling", blockedClassCount(bd, "ksv-0012"), blockedClassCount(bd, "ksv012"))
+	}
+}
+
 // qualityInput is a project with one unreviewed security finding and, apart
 // from it, findings that are nothing but code quality or IaC.
 func qualityInput() Input {

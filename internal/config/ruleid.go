@@ -35,6 +35,14 @@ func NormalizeTrivyCheckID(id string) string {
 	return id
 }
 
+// IsTrivyCheckID reports whether id is one of the spellings Trivy has used
+// for a Kubernetes or Dockerfile check, in any case: the ids
+// NormalizeTrivyCheckID maps to one form. Every other id compares as written.
+func IsTrivyCheckID(id string) bool {
+	_, ok := trivyCheck(strings.ToUpper(strings.TrimSpace(id)))
+	return ok
+}
+
 // trivyCheck returns the canonical form of an upper-cased KSV or DS check id
 // in one of the spellings Trivy has used, or false.
 func trivyCheck(id string) (string, bool) {

@@ -33,6 +33,18 @@ func TestNormalizeTrivyCheckID(t *testing.T) {
 	}
 }
 
+func TestIsTrivyCheckID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"KSV012": true, "KSV-0012": true, "avd-ksv-0012": true, "DS002": true, " ds-0002 ": true,
+		"KSV12": false, "AWS-0107": false, "AWS001": false,
+		"CVE-2024-1234": false, "GHSA-abcd-efgh-ijkl": false, "generic-api-key": false, "NFR-ENV-001": false, "": false,
+	} {
+		if got := IsTrivyCheckID(id); got != want {
+			t.Errorf("IsTrivyCheckID(%q) = %t; want %t", id, got, want)
+		}
+	}
+}
+
 // Trivy has reported one check as KSV012, AVD-KSV-0012 and KSV-0012 in
 // different releases. A reference written for one spelling matched only that
 // one, so a scanner upgrade silently brought back what a project had

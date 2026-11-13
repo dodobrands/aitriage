@@ -3,6 +3,8 @@ package healthcheck
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 const (
@@ -296,7 +298,11 @@ func namedBlockingReasons(bd Breakdown, policy Policy) []BlockingReason {
 // entry may be a canonical class ("hardcoded_secret", or "hardcoded-secret" as
 // the configuration examples spell it) or a rule id, which is what classes
 // were before findings of several detectors were merged: a policy written
-// then must keep blocking the findings it blocked.
+// then must keep blocking the findings it blocked. An entry in a spelling
+// Trivy has used for a Kubernetes or Dockerfile check (KSV012, KSV-0012,
+// AVD-KSV-0012) matches the findings Trivy reported under any spelling of
+// that check, so a scanner upgrade that respells it does not relax the gate;
+// every other id compares as written, as in ignore.rules.
 func blockedClassCount(bd Breakdown, key string) int {
 	count := bd.CountByClass[key]
 	if c, ok := LookupClass(key); ok && bd.CountByClass[c.Key] > count {
@@ -305,6 +311,13 @@ func blockedClassCount(bd Breakdown, key string) int {
 	n := bd.CountByRule[key]
 	for _, successor := range ruleSuccessors[key] {
 		n += bd.CountByRule[successor]
+	}
+	if config.IsTrivyCheckID(key) {
+		// Every Trivy report of the check is counted here once, whatever
+		// its spelling, the one in the entry included.
+		if t := bd.trivyChecks[config.NormalizeTrivyCheckID(key)]; t > n {
+			n = t
+		}
 	}
 	if n > count {
 		count = n

@@ -21,6 +21,8 @@ import (
 	"math"
 	"sort"
 	"strings"
+
+	"github.com/dodobrands/aitriage/internal/config"
 )
 
 // Finding is a source-agnostic, normalised issue used by the Health Check engine.
@@ -137,6 +139,12 @@ type Breakdown struct {
 	// ReportOnlyByKind splits ReportOnlyFindings by the setting that reports
 	// them: ReportOnlyIaC ("iac") and ReportOnlyQuality ("quality").
 	ReportOnlyByKind map[string]int `json:"report_only_by_kind,omitempty"`
+
+	// trivyChecks counts active findings Trivy reported per Trivy check id
+	// behind them, in the one spelling config.NormalizeTrivyCheckID gives
+	// every spelling of a check. block_classes matches it right after
+	// Evaluate; it is not serialised.
+	trivyChecks map[string]int
 }
 
 // Result is the outcome of a Health Check evaluation.
@@ -298,9 +306,10 @@ func reportingSource(f Finding) string {
 }
 
 // countNames counts an active finding under every name block_sources and
-// block_classes match against: each scanner and each rule behind it, and
-// its class. Evaluate counts the project with it, and Assess one finding
-// at a time, so both see the same names.
+// block_classes match against: each scanner and each rule behind it, its
+// class and, for a finding Trivy reported, each Trivy check behind it in
+// its one spelling. Evaluate counts the project with it, and Assess one
+// finding at a time, so both see the same names.
 func (bd *Breakdown) countNames(f Finding) {
 	if bd.CountBySource == nil {
 		bd.CountBySource = map[string]int{}
@@ -315,13 +324,36 @@ func (bd *Breakdown) countNames(f Finding) {
 	if len(sources) == 0 {
 		sources = []string{reportingSource(f)}
 	}
+	trivy := false
 	for _, source := range sources {
 		bd.CountBySource[source]++
+		trivy = trivy || source == "trivy"
 	}
-	for _, rule := range rulesOf(f) {
+	rules := rulesOf(f)
+	for _, rule := range rules {
 		bd.CountByRule[rule]++
 	}
 	bd.CountByClass[classKeyOf(f)]++
+	if !trivy {
+		return
+	}
+	// As in ignore.rules: a finding that answers to trivy matches a check
+	// under any spelling Trivy has used for it.
+	counted := map[string]bool{}
+	for _, rule := range rules {
+		if !config.IsTrivyCheckID(rule) {
+			continue
+		}
+		id := config.NormalizeTrivyCheckID(rule)
+		if counted[id] {
+			continue
+		}
+		counted[id] = true
+		if bd.trivyChecks == nil {
+			bd.trivyChecks = map[string]int{}
+		}
+		bd.trivyChecks[id]++
+	}
 }
 
 func sortedUnique(values []string) []string {
