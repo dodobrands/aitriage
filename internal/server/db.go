@@ -11,6 +11,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
+
+	"github.com/dodobrands/aitriage/internal/agent/llm"
 )
 
 const schema = `
@@ -326,8 +328,12 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	}
 	_, _ = db.Exec("ALTER TABLE runway_sessions ADD COLUMN progress_message TEXT")
 
-	// 2b. Patch old engine_llm_model to gemini-2.5-flash
-	_, _ = db.Exec("UPDATE system_config SET config_val = 'gemini-2.5-flash' WHERE config_key = 'engine_llm_model' AND config_val = 'gemini-2.0-flash'")
+	// 2b. Move engine_llm_model off models their providers have shut down,
+	// which fail every request, to the current default of the same provider
+	// (internal/agent/llm/factory.go). A model that still works is left as
+	// the user chose it.
+	_, _ = db.Exec("UPDATE system_config SET config_val = ? WHERE config_key = 'engine_llm_model' AND config_val IN ('gemini-2.0-flash', 'gemini-1.5-pro')", llm.DefaultGeminiModel)
+	_, _ = db.Exec("UPDATE system_config SET config_val = ? WHERE config_key = 'engine_llm_model' AND config_val = 'claude-3-5-sonnet'", llm.DefaultAnthropicModel)
 
 	legacyUsersPath := ""
 	if dbPath != ":memory:" && !strings.HasPrefix(dbPath, "file:") {
@@ -384,7 +390,7 @@ func SeedDefaultData(db *sql.DB) error {
 	// Seed default config
 	defaultConfigs := map[string]string{
 		"engine_llm_provider": "gemini",
-		"engine_llm_model":    "gemini-2.5-flash",
+		"engine_llm_model":    llm.DefaultGeminiModel,
 		"engine_concurrency":  "5",
 		"engine_scan_depth":   "thorough",
 		"sla_critical":        "1",

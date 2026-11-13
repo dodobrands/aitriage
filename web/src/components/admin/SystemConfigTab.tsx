@@ -2,6 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAdmin } from '../../hooks/useAdmin';
 
+// Models offered for the Web engine: the current default model of each
+// provider (internal/agent/llm/factory.go). A model saved earlier that is not
+// on this list is still shown, so the form always displays the stored value.
+const ENGINE_MODELS = [
+  { value: 'gemini-3.5-flash-lite', label: 'admin.gemini35FlashLite' },
+  { value: 'claude-sonnet-5-5', label: 'admin.claudeSonnet55' },
+  { value: 'gpt-6-luna', label: 'admin.gpt6Luna' },
+];
+
 export const SystemConfigTab: React.FC = () => {
   const { t } = useTranslation('pages');
   const { config, updateConfig, loading: loadingConfig } = useAdmin();
@@ -149,11 +158,13 @@ export const SystemConfigTab: React.FC = () => {
                   onChange={(e) => updateField('engine_llm_model', e.target.value)}
                   className="bg-surface-container-lowest border border-outline-variant px-3 py-2 text-label-caps text-[10px] text-primary outline-none focus:border-ai-accent cursor-pointer transition-none group-hover:bg-white/5 appearance-none min-w-[160px] text-right"
                 >
-                  <option value="gemini-2.5-flash">{t('admin.gemini25Flash')}</option>
-                  <option value="gemini-2.0-flash">{t('admin.gemini20Flash')}</option>
-                  <option value="gemini-1.5-pro">{t('admin.gemini15Pro')}</option>
-                  <option value="claude-3-5-sonnet">{t('admin.claude35Sonnet')}</option>
-                  <option value="gpt-4o">{t('admin.gpt4o')}</option>
+                  {ENGINE_MODELS.map((model) => (
+                    <option key={model.value} value={model.value}>{t(model.label)}</option>
+                  ))}
+                  {localConfig.engine_llm_model &&
+                    !ENGINE_MODELS.some((model) => model.value === localConfig.engine_llm_model) && (
+                      <option value={localConfig.engine_llm_model}>{localConfig.engine_llm_model}</option>
+                    )}
                 </select>
                 <div className="absolute bottom-0 right-0 w-1 h-1 bg-primary/40" />
               </div>
