@@ -84,6 +84,8 @@ func OriginKind(o Origin) string {
 //     gates as it always did.
 //   - A code-quality finding is LOW or INFO. A rule pack can label any rule
 //     quality; a more severe finding is scored and gated whatever its label.
+//   - No block_sources or block_classes entry names f: an explicit entry
+//     always gates. The names are matched as the gate matches them.
 func ReportOnlyKind(policy Policy, f Finding) string {
 	return reportOnlyKind(normalizePolicy(policy), f)
 }
@@ -101,6 +103,9 @@ func reportOnlyKind(policy Policy, f Finding) string {
 			return ""
 		}
 	default:
+		return ""
+	}
+	if namedByBlockLists(policy, f) {
 		return ""
 	}
 	return kind
@@ -131,6 +136,20 @@ func qualitySeverity(severity string) bool {
 	default:
 		return false
 	}
+}
+
+// namedByBlockLists reports whether a block_sources or block_classes entry
+// names f: its class, a rule behind it (an earlier id of a split rule
+// included) or a scanner that reported it. f is counted the way Evaluate
+// counts an active finding and matched by the gate's own namedBlockingReasons,
+// so a finding the gate would block by name is never left out of it.
+func namedByBlockLists(policy Policy, f Finding) bool {
+	if len(policy.BlockSources) == 0 && len(policy.BlockClasses) == 0 {
+		return false
+	}
+	var bd Breakdown
+	bd.countNames(f)
+	return len(namedBlockingReasons(bd, policy)) > 0
 }
 
 // Assess scores the findings under policy and attaches the verdict. It marks

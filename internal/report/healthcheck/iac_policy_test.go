@@ -5,7 +5,9 @@ import "testing"
 // A report-only finding (an IaC misconfiguration under iac_findings: report)
 // is counted apart and changes neither the score nor any part of the
 // verdict: not fail_on, not the thresholds, not block_sources, and not an
-// incomplete triage.
+// incomplete triage. Evaluate trusts the mark; Assess never puts it on a
+// finding block_sources or block_classes names
+// (TestExplicitBlockEntriesBeatReportOnly).
 func TestReportOnlyFindingsAreNeitherScoredNorGated(t *testing.T) {
 	iac := Finding{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, Identity: "iac", ReportOnly: true}
 	code := Finding{Source: "aitriage", Class: "FAST-SQLI", Severity: "MEDIUM", File: "app.py", Line: 7, Identity: "code", NeedsReview: true}

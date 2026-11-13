@@ -289,6 +289,41 @@ func sourcesOf(f Finding) []string {
 	return sortedUnique(f.Sources)
 }
 
+// reportingSource is the scanner a finding's penalty is attributed to.
+func reportingSource(f Finding) string {
+	if src := strings.ToLower(strings.TrimSpace(f.Source)); src != "" {
+		return src
+	}
+	return "unknown"
+}
+
+// countNames counts an active finding under every name block_sources and
+// block_classes match against: each scanner and each rule behind it, and
+// its class. Evaluate counts the project with it, and Assess one finding
+// at a time, so both see the same names.
+func (bd *Breakdown) countNames(f Finding) {
+	if bd.CountBySource == nil {
+		bd.CountBySource = map[string]int{}
+	}
+	if bd.CountByRule == nil {
+		bd.CountByRule = map[string]int{}
+	}
+	if bd.CountByClass == nil {
+		bd.CountByClass = map[string]int{}
+	}
+	sources := sourcesOf(f)
+	if len(sources) == 0 {
+		sources = []string{reportingSource(f)}
+	}
+	for _, source := range sources {
+		bd.CountBySource[source]++
+	}
+	for _, rule := range rulesOf(f) {
+		bd.CountByRule[rule]++
+	}
+	bd.CountByClass[classKeyOf(f)]++
+}
+
 func sortedUnique(values []string) []string {
 	seen := make(map[string]bool, len(values))
 	out := make([]string, 0, len(values))
@@ -419,24 +454,10 @@ func Evaluate(in Input) Result {
 		if f.NeedsReview {
 			rawNeedsReview += w
 		}
-		src := strings.ToLower(strings.TrimSpace(f.Source))
-		if src == "" {
-			src = "unknown"
-		}
 		// The penalty is attributed once, to the reporting source; the counts
 		// name every scanner and rule behind the finding.
-		sources := sourcesOf(f)
-		if len(sources) == 0 {
-			sources = []string{src}
-		}
-		for _, source := range sources {
-			bd.CountBySource[source]++
-		}
-		for _, rule := range rulesOf(f) {
-			bd.CountByRule[rule]++
-		}
-		bd.CountByClass[classKeyOf(f)]++
-		rawBySource[src] += w
+		bd.countNames(f)
+		rawBySource[reportingSource(f)] += w
 	}
 
 	// 3. Apply diminishing-returns saturation so heavy repos degrade smoothly

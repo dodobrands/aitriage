@@ -145,6 +145,57 @@ func TestQualityFindingsDefaultKeepsTheGateOfV114(t *testing.T) {
 	}
 }
 
+// An explicit block_classes or block_sources entry beats report: a finding
+// it names (by class, by a rule behind it, an earlier id of a split rule
+// included, or by a scanner that reported it) is scored and gates, whether
+// it is code quality under quality_findings: report or an IaC
+// misconfiguration under the default iac_findings: report. The other
+// findings stay reported only.
+func TestExplicitBlockEntriesBeatReportOnly(t *testing.T) {
+	reportQuality := func(p Policy) Policy {
+		p.QualityFindings = QualityFindingsReport
+		return p
+	}
+	// A finding as AI triage builds it, with the rules and scanners behind it.
+	triaged := Finding{Source: "aitriage", Class: "ENTR-07", Severity: "LOW", File: "web/src/api.ts", Line: 3, NeedsReview: true,
+		Rules: []string{"ENTR-07"}, Sources: []string{"aitriage"},
+		Origins: []Origin{{Type: "core", Source: "aitriage", RuleID: "ENTR-07", Subcategory: SubcategoryQuality}}}
+	// No quality rule has been split yet: the fixture labels one quality to
+	// show that an entry naming its earlier id (ruleSuccessors) beats report.
+	split := Finding{Source: "deploy", Class: "compose_default_credential", Severity: "LOW", File: "compose.yaml", Line: 3, NeedsReview: true,
+		Origins: []Origin{{Type: "deploy", Source: "deploy", RuleID: "compose_default_credential", Subcategory: SubcategoryQuality}}}
+	iac := Finding{Source: "trivy", Class: "KSV-0012", Severity: "HIGH", File: "k8s/app.yaml", Line: 10, NeedsReview: true,
+		Origins: []Origin{{Type: "external", Source: "trivy", RuleID: "KSV-0012", Kind: kindMisconfiguration}}}
+	cases := []struct {
+		name     string
+		findings []Finding
+		policy   Policy
+		gating   int
+		reported int
+	}{
+		{"a rule id", qualityOnlyInput().Findings, reportQuality(Policy{BlockClasses: []string{"ENTR-12"}}), 1, 3},
+		{"a scanner", qualityOnlyInput().Findings, reportQuality(Policy{BlockSources: []string{"nfr"}}), 1, 3},
+		{"a rule behind a triaged finding", []Finding{triaged}, reportQuality(Policy{BlockClasses: []string{"ENTR-07"}}), 1, 0},
+		{"a scanner behind a triaged finding", []Finding{triaged}, reportQuality(Policy{BlockSources: []string{"aitriage"}}), 1, 0},
+		{"the earlier id of a split rule", []Finding{split}, reportQuality(Policy{BlockClasses: []string{"compose_hardcoded_secret"}}), 1, 0},
+		{"entries that name nothing", qualityOnlyInput().Findings, reportQuality(Policy{BlockClasses: []string{"sql_injection"}, BlockSources: []string{"semgrep"}}), 0, 4},
+		{"iac by scanner", []Finding{iac}, Policy{BlockSources: []string{"trivy"}}, 1, 0},
+		{"iac by check", []Finding{iac}, Policy{BlockClasses: []string{"KSV-0012"}}, 1, 0},
+		{"iac by class", []Finding{iac}, Policy{BlockClasses: []string{"k8s-container-runs-as-root"}}, 1, 0},
+		{"iac by entries that name nothing", []Finding{iac}, Policy{BlockClasses: []string{"KSV-0017"}, BlockSources: []string{"gitleaks"}}, 0, 1},
+	}
+	for _, tc := range cases {
+		res := Assess(Input{Findings: tc.findings}, tc.policy)
+		bd := res.Breakdown
+		if bd.ActiveFindings != tc.gating || bd.ReportOnlyFindings != tc.reported {
+			t.Errorf("%s: %d gating, %d reported only; want %d and %d (breakdown %+v)", tc.name, bd.ActiveFindings, bd.ReportOnlyFindings, tc.gating, tc.reported, bd)
+		}
+		if blocked := !res.Verdict.Passed; blocked != (tc.gating > 0) || (blocked && res.Score == 100) {
+			t.Errorf("%s: score %d, verdict %+v; want the named findings scored and blocking", tc.name, res.Score, res.Verdict)
+		}
+	}
+}
+
 // The quality kind covers LOW and INFO findings only. A rule pack can label
 // a severe rule quality; its findings are scored and gate like any other.
 // IaC misconfigurations are reported whatever their severity, as before.

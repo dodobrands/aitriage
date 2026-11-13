@@ -86,13 +86,15 @@ type Policy struct {
 	FPCriticalRequiresHighConfidence bool `json:"fp_critical_requires_high_confidence,omitempty"`
 	// IaCFindings is IaCFindingsReport (the default) or IaCFindingsBlock. It
 	// applies to findings every report of which is an IaC misconfiguration;
-	// a finding another detector also reported gates as before. Assess marks
-	// such findings Finding.ReportOnly.
+	// a finding another detector also reported, or one that BlockSources or
+	// BlockClasses names, gates as before. Assess marks such findings
+	// Finding.ReportOnly (see ReportOnlyKind).
 	IaCFindings string `json:"iac_findings,omitempty"`
 	// QualityFindings is QualityFindingsBlock (the default) or
 	// QualityFindingsReport. It applies to LOW and INFO findings every report
 	// of which is a code-quality finding (see ReportOnlyKind); a finding a
-	// security rule also reported gates as before.
+	// security rule also reported, or one that BlockSources or BlockClasses
+	// names, gates as before.
 	QualityFindings string `json:"quality_findings,omitempty"`
 }
 
@@ -232,37 +234,7 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		})
 	}
 
-	for _, source := range policy.BlockSources {
-		key := normalizeKey(source)
-		if key == "" {
-			continue
-		}
-		if count := res.Breakdown.CountBySource[key]; count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_source",
-				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
-				Source:    key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
-
-	for _, class := range policy.BlockClasses {
-		key := normalizeKey(class)
-		if key == "" {
-			continue
-		}
-		if count := blockedClassCount(res.Breakdown, key); count > 0 {
-			reasons = append(reasons, BlockingReason{
-				Code:      "blocked_class",
-				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
-				Class:     key,
-				Count:     count,
-				Threshold: 0,
-			})
-		}
-	}
+	reasons = append(reasons, namedBlockingReasons(res.Breakdown, policy)...)
 
 	if len(reasons) == 0 {
 		return Verdict{
@@ -278,6 +250,46 @@ func EvaluatePolicy(res Result, policy Policy) Verdict {
 		Summary:         fmt.Sprintf("Security policy %q failed with %d blocking reason(s)", policy.Profile, len(reasons)),
 		BlockingReasons: reasons,
 	}
+}
+
+// namedBlockingReasons returns a reason for each block_sources and
+// block_classes entry that names an active finding counted in bd. The gate
+// applies it to the whole project; Assess applies it to one finding at a
+// time, so a finding the gate would block by name is never report-only.
+func namedBlockingReasons(bd Breakdown, policy Policy) []BlockingReason {
+	var reasons []BlockingReason
+	for _, source := range policy.BlockSources {
+		key := normalizeKey(source)
+		if key == "" {
+			continue
+		}
+		if count := bd.CountBySource[key]; count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_source",
+				Message:   fmt.Sprintf("Findings from source %q are blocked by policy", key),
+				Source:    key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+
+	for _, class := range policy.BlockClasses {
+		key := normalizeKey(class)
+		if key == "" {
+			continue
+		}
+		if count := blockedClassCount(bd, key); count > 0 {
+			reasons = append(reasons, BlockingReason{
+				Code:      "blocked_class",
+				Message:   fmt.Sprintf("Findings with class %q are blocked by policy", key),
+				Class:     key,
+				Count:     count,
+				Threshold: 0,
+			})
+		}
+	}
+	return reasons
 }
 
 // blockedClassCount counts the active findings a block_classes entry names. An
