@@ -64,6 +64,7 @@ func Run(ctx context.Context, state *AgentState, llmClient llm.Client) error {
 		state.TriageFailureReason = incomplete.Reason
 		state.TriageFailureStage = incomplete.Stage
 		state.TriageFailureCause = incomplete.Cause
+		state.TriageDeclined = incomplete.Declined
 		fmt.Fprintf(os.Stderr, "   ⚠️ AI triage did not complete (%s stage): %s\n      %d finding(s) left without a verdict; finishing the run with deterministic artifacts.\n",
 			incomplete.Stage, incomplete.Reason, incomplete.Unclassified)
 	} else {

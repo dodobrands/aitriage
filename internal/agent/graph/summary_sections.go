@@ -11,10 +11,12 @@ import (
 
 // unclassifiedNotes explains the Needs Review findings without an accepted
 // model verdict, with the remedy that fits each cause. A verdict that failed
-// validation (nr-fallback) needs a person. Retries and smaller batches help
-// when the model left findings out of every reply (triage-failed, no
-// verdict); they do nothing when the provider itself failed, and the only
-// remedy then is to run again once it is available.
+// validation (nr-fallback) needs a person, and so does a finding the model
+// declined to classify on its own: the same model is likely to decline it
+// again. Retries and smaller batches help when the model left findings out of
+// every reply (triage-failed, no verdict); they do nothing when the provider
+// itself failed, and the only remedy then is to run again once it is
+// available.
 func unclassifiedNotes(state *AgentState) []string {
 	tally := tallyDispositions(state)
 	rejected := tally.Unclassified - tally.TriageFailed
@@ -24,8 +26,14 @@ func unclassifiedNotes(state *AgentState) []string {
 	}
 	if tally.TriageFailed > 0 {
 		if state.TriageFailureCause == TriageFailureCauseNoVerdict {
-			notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
-				tally.TriageFailed, classifyMaxRetries(), GetBatchSize(state)))
+			declined := min(state.TriageDeclined, tally.TriageFailed)
+			if declined > 0 {
+				notes = append(notes, fmt.Sprintf("%d not triaged: the model declined to classify them (`stop_reason: refusal`), each sent on its own — review them by hand, or triage them with another model; the same model is likely to decline them again", declined))
+			}
+			if rest := tally.TriageFailed - declined; rest > 0 {
+				notes = append(notes, fmt.Sprintf("%d not triaged: no reply carried a verdict for them — retries=%d, batch=%d; re-run, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`",
+					rest, classifyMaxRetries(), GetBatchSize(state)))
+			}
 		} else {
 			notes = append(notes, fmt.Sprintf("%d not triaged: the LLM provider failed — repeat the run once the provider is available", tally.TriageFailed))
 		}

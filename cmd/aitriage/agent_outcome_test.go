@@ -124,6 +124,53 @@ func TestAgentWritesArtifactsAndExitsTwoWhenTriageIsIncomplete(t *testing.T) {
 	}
 }
 
+// The closing message of an incomplete triage names its reason and the
+// remedy that fits the cause: waiting for the provider helps nothing when the
+// model left findings out, and a finding the model declined needs a person.
+func TestAgentOutcomeNamesTheRemedyForTheCause(t *testing.T) {
+	state := &graph.AgentState{HealthCheck: healthcheck.Result{Verdict: healthcheck.Verdict{Passed: false, Summary: "failed"}}}
+	const declinedReason = "claude-sonnet-5-5 declined to classify 1 finding(s) (stop_reason refusal, category cyber), each sent on its own"
+	for _, tc := range []struct {
+		name       string
+		incomplete *graph.TriageIncompleteError
+		want       []string
+	}{
+		{
+			name:       "provider failure",
+			incomplete: &graph.TriageIncompleteError{Reason: "openai chat error: 401 Unauthorized", Unclassified: 2, Cause: graph.TriageFailureCauseProvider},
+			want:       []string{"401 Unauthorized", "2 finding(s) without a verdict", "Re-run once the LLM provider is available."},
+		},
+		{
+			name:       "left out of every reply",
+			incomplete: &graph.TriageIncompleteError{Reason: "no reply carried a verdict for them", Unclassified: 2, Cause: graph.TriageFailureCauseNoVerdict},
+			want:       []string{"Re-run, and if the model keeps leaving findings out, raise AITRIAGE_CLASSIFY_RETRIES or lower AITRIAGE_BATCH_SIZE."},
+		},
+		{
+			name:       "declined",
+			incomplete: &graph.TriageIncompleteError{Reason: declinedReason, Unclassified: 1, Declined: 1, Cause: graph.TriageFailureCauseNoVerdict},
+			want:       []string{declinedReason, "The model declined to classify 1 of them and is likely to decline them again: review them by hand, or triage them with another model."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if code, _ := exitStatus(agentOutcome(&out, state, tc.incomplete)); code != 2 {
+				t.Fatalf("exit status = %d, want 2", code)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			}
+			if tc.incomplete.Cause != graph.TriageFailureCauseProvider && strings.Contains(out.String(), "provider is available") {
+				t.Errorf("output tells to wait for the provider:\n%s", out.String())
+			}
+			if strings.Contains(out.String(), "`") {
+				t.Errorf("output carries Markdown:\n%s", out.String())
+			}
+		})
+	}
+}
+
 func TestAgentOutcomeExitStatuses(t *testing.T) {
 	passed := &graph.AgentState{HealthCheck: healthcheck.Result{Verdict: healthcheck.Verdict{Passed: true}}}
 	if err := agentOutcome(&bytes.Buffer{}, passed, nil); err != nil {

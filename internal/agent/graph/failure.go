@@ -55,7 +55,8 @@ const (
 	TriageFailureCauseProvider = "provider_failure"
 	// TriageFailureCauseNoVerdict: the provider answered, but after every
 	// retry no reply carried a verdict for some findings (left out,
-	// malformed or empty replies, verdicts naming another finding).
+	// malformed or empty replies, verdicts naming another finding), or the
+	// model declined to classify a finding sent on its own.
 	TriageFailureCauseNoVerdict = "no_verdict"
 )
 
@@ -72,6 +73,10 @@ type TriageIncompleteError struct {
 	Reason string
 	// Unclassified counts the findings left without a verdict.
 	Unclassified int
+	// Declined counts the part of Unclassified the model declined to
+	// classify (stop_reason refusal) in a request that carried only that
+	// finding.
+	Declined int
 	// Cause is TriageFailureCauseProvider or TriageFailureCauseNoVerdict.
 	Cause string
 	// Err is the underlying provider error.
@@ -80,6 +85,34 @@ type TriageIncompleteError struct {
 
 func (e *TriageIncompleteError) Error() string {
 	return fmt.Sprintf("AI triage did not complete (%s stage): %s", e.Stage, e.Reason)
+}
+
+// Remedy says what to do about the incomplete triage, as a sentence fragment
+// ("re-run once the LLM provider is available"); setting names are in
+// backticks.
+func (e *TriageIncompleteError) Remedy() string {
+	return triageRemedy(e.Cause, e.Declined, e.Unclassified)
+}
+
+// triageRemedy says what to do about an incomplete triage that left
+// unclassified findings, declined of them by the model. After a provider
+// failure a re-run helps once the provider is back; findings left out of
+// every reply may get a verdict with more attempts or smaller requests; a
+// finding the model declined on its own is likely to be declined again by
+// the same model, so a person has to judge it.
+func triageRemedy(cause string, declined, unclassified int) string {
+	if cause != TriageFailureCauseNoVerdict {
+		return "re-run once the LLM provider is available"
+	}
+	retry := "re-run, and if the model keeps leaving findings out, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`"
+	if declined <= 0 {
+		return retry
+	}
+	refused := fmt.Sprintf("the model declined to classify %d of them and is likely to decline them again: review them by hand, or triage them with another model", declined)
+	if declined >= unclassified {
+		return refused
+	}
+	return refused + "; for the rest, " + retry
 }
 
 func (e *TriageIncompleteError) Unwrap() error { return e.Err }

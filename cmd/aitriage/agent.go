@@ -364,11 +364,14 @@ func writeAgentArtifacts(state *graph.AgentState) error {
 // triage wins over the gate: its verdict is not authoritative, and CI must be
 // able to tell "re-run when the provider is back" (status 2) from "fix the
 // code" (status 1, ErrPolicyViolation). The gate cannot pass on an incomplete
-// triage either way, unless fail_on is never.
+// triage either way, unless fail_on is never. The message names the remedy
+// that fits the cause: waiting for the provider, retrying with more attempts
+// or smaller requests, or reviewing by hand what the model declined.
 func agentOutcome(w io.Writer, state *graph.AgentState, incomplete *graph.TriageIncompleteError) error {
 	if incomplete != nil {
-		_, _ = fmt.Fprintf(w, "\nAI triage did not complete: %s\nArtifacts were written; %d finding(s) without a verdict are marked triage-failed. Re-run once the LLM provider is available.\n",
-			incomplete.Reason, incomplete.Unclassified)
+		remedy := strings.ReplaceAll(incomplete.Remedy(), "`", "")
+		_, _ = fmt.Fprintf(w, "\nAI triage did not complete: %s\nArtifacts were written; %d finding(s) without a verdict are marked triage-failed. %s%s.\n",
+			incomplete.Reason, incomplete.Unclassified, strings.ToUpper(remedy[:1]), remedy[1:])
 		if !state.HealthCheck.Verdict.Passed {
 			printPolicyFailure(w, state.HealthCheck.Verdict)
 		}

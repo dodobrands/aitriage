@@ -83,10 +83,7 @@ func integrityNotice(count int) string {
 // not finish: what failed, what it means for the findings, and what to do.
 func triageIncompleteBanner(state *AgentState) string {
 	tally := tallyDispositions(state)
-	remedy := "re-run once the LLM provider is available"
-	if state.TriageFailureCause == TriageFailureCauseNoVerdict {
-		remedy = "re-run, and if the model keeps leaving findings out, raise `AITRIAGE_CLASSIFY_RETRIES` or lower `AITRIAGE_BATCH_SIZE`"
-	}
+	remedy := triageRemedy(state.TriageFailureCause, state.TriageDeclined, tally.TriageFailed)
 	return fmt.Sprintf("> **AI triage did not complete: %s.** %d finding(s) have no verdict and are listed as Needs Manual Review (unclassified, `triage-failed`). The security gate cannot pass on an incomplete triage; %s.\n\n",
 		state.TriageFailureReason, tally.TriageFailed, remedy)
 }
