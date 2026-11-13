@@ -218,16 +218,20 @@ tied to the finding:
   flagged line, above it and at most 30 lines before it: code that runs
   before the flagged statement on its path;
 - evidence.observed is code only (no comment or string text) and names a
-  variable or function the flagged statement uses, for example the variable
-  that is validated or escaped before the flagged line passes it on;
+  variable whose data the flagged statement uses, for example the variable
+  that is validated or escaped before the flagged line passes it on; a
+  module, package or function name alone (os, path, request) does not tie
+  a check to the finding;
 - evidence.line is a guard of that variable or a re-assignment of it through
   a call: an if, elif or assert that checks it and exits early (return,
   raise, throw, abort) or encloses the flagged statement, an early exit
-  under such a check, or x = f(x) such as cmd = shlex.quote(cmd). The
-  assignment that produces the value (cmd = "ls " + request.args["dir"],
-  data = request.get_json()), a call whose result nothing checks (a log
-  call, validate(x) on its own line), a sanitiser result stored under a new
-  name, and a check in another function are not mitigations;
+  under such a check, or x = f(x) such as cmd = shlex.quote(cmd). The check
+  must run on every path to the flagged statement. The assignment that
+  produces the value (cmd = "ls " + request.args["dir"], data =
+  request.get_json()), a call whose result nothing checks (a log call,
+  validate(x) on its own line), a sanitiser result stored under a new name,
+  a check in another function, and a check inside another branch, a loop
+  body or a single switch case are not mitigations;
 - code_mitigation never dismisses a CRITICAL finding: a person decides those,
   so return Needs Manual Review or True Positive for them unless the finding
   is test_only. For a HIGH finding in a language other than Python, Go,

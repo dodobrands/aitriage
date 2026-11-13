@@ -42,7 +42,8 @@ func TestClassificationPromptStatesHowAMitigationIsTiedToItsFinding(t *testing.T
 	for _, want := range []string{
 		"in the same function as the flagged line, above it and at most 30 lines before it",
 		"code only (no comment or string text)",
-		"names a variable or function the flagged statement uses",
+		"names a variable whose data the flagged statement uses",
+		"a module, package or function name alone (os, path, request) does not tie a check to the finding",
 		"never dismisses a CRITICAL finding",
 		"return Needs Manual Review or True Positive",
 	} {
@@ -62,7 +63,8 @@ func TestClassificationPromptStatesTheShapeOfAMitigation(t *testing.T) {
 		"x = f(x)",
 		"The assignment that produces the value",
 		"a call whose result nothing checks",
-		"a check in another function are not mitigations",
+		"The check must run on every path to the flagged statement",
+		"a check in another function, and a check inside another branch, a loop body or a single switch case are not mitigations",
 		"other than Python, Go, JavaScript and TypeScript",
 	} {
 		if !strings.Contains(prompt, want) {
