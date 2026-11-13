@@ -258,6 +258,65 @@ func TestThinkingWithoutTextIsNoAnswer(t *testing.T) {
 	}
 }
 
+// A reply is an answer only when it is complete and says something. One with
+// no content blocks, with text that is empty or only whitespace, or cut off
+// at the token limit is no answer: an error that matches ErrNoAnswer (and
+// ErrTruncated when cut off), never empty or partial text a stage would use
+// or a conversation would send back as an empty assistant turn. Like any
+// reply without an answer, it is not sent again.
+func TestRepliesWithoutACompleteAnswerAreNoAnswer(t *testing.T) {
+	const partial = `{\"finding_dispositions\":[{\"finding_index\":0`
+	for _, tc := range []struct {
+		name, content, stopReason, wantText string
+		truncated                           bool
+	}{
+		{name: "no content blocks", content: `[]`, stopReason: "end_turn", wantText: "wrote no text (stop_reason end_turn)"},
+		{name: "empty text", content: `[` + thinkingBlock + `,{"type":"text","text":""}]`, stopReason: "end_turn", wantText: "wrote no text"},
+		{name: "whitespace only", content: `[` + thinkingBlock + `,{"type":"text","text":" \n\t "},{"type":"text","text":"\n"}]`, stopReason: "end_turn", wantText: "wrote no text"},
+		{name: "cut off in the answer", content: `[` + thinkingBlock + `,{"type":"text","text":"` + partial + `"}]`, stopReason: "max_tokens", wantText: "stop_reason max_tokens, max_tokens 16000", truncated: true},
+		{name: "cut off while thinking", content: `[` + thinkingBlock + `]`, stopReason: "max_tokens", wantText: "stop_reason max_tokens", truncated: true},
+		{name: "context window exceeded", content: `[{"type":"text","text":"` + partial + `"}]`, stopReason: "model_context_window_exceeded", wantText: "stop_reason model_context_window_exceeded", truncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakeSonnet55(t, func() string { return sonnet55Message(tc.content, tc.stopReason, "null") })
+			var log bytes.Buffer
+			c := NewRetryClient(claude(Config{}, f, &log), 3)
+
+			got, usage, err := c.Chat(context.Background(), classificationRequest())
+			if got != "" {
+				t.Fatalf("answer = %q, want none", got)
+			}
+			if !errors.Is(err, ErrNoAnswer) || errors.Is(err, ErrRefused) || errors.Is(err, ErrTruncated) != tc.truncated {
+				t.Fatalf("err = %v; want ErrNoAnswer, not ErrRefused, ErrTruncated %v", err, tc.truncated)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) || !strings.Contains(err.Error(), "claude-sonnet-5-5") {
+				t.Fatalf("err = %v, want the model and %q", err, tc.wantText)
+			}
+			if usage.CompletionTokens != 340 {
+				t.Fatalf("usage = %+v, want the tokens the reply cost", usage)
+			}
+			if got := len(f.seen()); got != 1 {
+				t.Fatalf("requests = %d, want 1: the same request is not sent again", got)
+			}
+			if log.Len() != 0 {
+				t.Fatalf("log = %q, want nothing", log.String())
+			}
+		})
+	}
+}
+
+// Text around the answer is kept as the model wrote it: only a reply with
+// nothing but whitespace is no answer.
+func TestAnswerWithSurroundingWhitespaceIsKept(t *testing.T) {
+	f := fakeSonnet55(t, func() string {
+		return sonnet55Message(`[`+thinkingBlock+`,{"type":"text","text":"\n"},{"type":"text","text":"ok\n"}]`, "end_turn", "null")
+	})
+	got, _, err := claude(Config{}, f, io.Discard).Chat(context.Background(), classificationRequest())
+	if err != nil || got != "\nok\n" {
+		t.Fatalf("answer %q, err %v; want the text blocks as written", got, err)
+	}
+}
+
 // Claude Sonnet 5.5 answers 400 to any temperature but its default. The
 // default model never gets one, not even a configured one, and one line says
 // so. A name AITriage takes for an older model but that the endpoint serves
@@ -346,8 +405,11 @@ func TestRefusalErrorMatchesNoAnswer(t *testing.T) {
 	if !errors.Is(err, ErrRefused) || !errors.Is(err, ErrNoAnswer) {
 		t.Fatalf("%v does not match ErrRefused and ErrNoAnswer", err)
 	}
-	if errors.Is(errors.New("empty response from anthropic"), ErrNoAnswer) {
+	if errors.Is(errors.New("anthropic chat error: 529 overloaded"), ErrNoAnswer) {
 		t.Fatal("an unrelated error matches ErrNoAnswer")
+	}
+	if !errors.Is(fmt.Errorf("anthropic chat error: %w", ErrTruncated), ErrNoAnswer) || errors.Is(err, ErrTruncated) {
+		t.Fatal("ErrTruncated must match ErrNoAnswer, and a refusal is not a truncated reply")
 	}
 	if got := (&RefusalError{Model: "m"}).Error(); !strings.Contains(got, "category none") {
 		t.Fatalf("Error() = %q, want category none when the provider named none", got)
